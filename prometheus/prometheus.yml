@@ -1,0 +1,46 @@
+# Prometheus configuration for reth-kona stack
+
+global:
+  scrape_interval: 15s       # Default scrape interval
+  evaluation_interval: 15s   # Evaluate rules every 15 seconds
+  scrape_timeout: 10s        # Scrape timeout
+
+  # Attach these labels to any time series or alerts when communicating with
+  # external systems (federation, remote storage, Alertmanager).
+  external_labels:
+    cluster: 'reth-kona-stack'
+    environment: 'dev'
+
+# Scrape configurations
+scrape_configs:
+  # Op-Reth (Execution Layer) metrics
+  - job_name: 'op-reth'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['op-reth:9001']  # Service name from docker-compose
+        labels:
+          service: 'op-reth'
+          layer: 'execution'
+          instance: 'reth'
+
+  # Kona-Node (Consensus Layer) metrics
+  - job_name: 'kona-node'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    static_configs:
+      - targets: ['kona-node:9002']  # Service name from docker-compose
+        labels:
+          service: 'kona-node'
+          layer: 'consensus'
+          instance: 'kona'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+          instance: 'reth-kona-prometheus'
