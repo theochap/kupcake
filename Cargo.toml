@@ -1,0 +1,29 @@
+[package]
+name = "kupcake"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "kupcake"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "env"] }
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+strum = { version = "0.27.2", features = ["derive"] }
+rand = "0.9.2"
+tempdir = "0.3.7"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.20"
+bollard = "0.18"
+futures = "0.3"
+derive_more = { version = "2.0.1", features = ["deref", "deref_mut", "from"] }
+names = { version = "0.14", default-features = false }
+notify = { version = "6.1", default-features = false, features = ["macos_kqueue"] }
+alloy-core = { version = "0.8", features = ["serde"] }
+url = "2.5"
+serde_json = "1.0.145"
+toml = "0.8"
+hex = "0.4"

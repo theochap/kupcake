@@ -3,3 +3,10 @@ jwttoken/
 
 # Environment files with secrets
 .env
+
+# Added by cargo
+
+/target
+
+# Automatically generated data directories
+/data-*
