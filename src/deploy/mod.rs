@@ -38,9 +38,8 @@ impl Deployer {
             .context("Failed to initialize Docker client")?;
 
         tracing::info!(
-            host = self.anvil_config.host,
-            port = self.anvil_config.port,
-            "✓ Starting anvil"
+            anvil_config = ?self.anvil_config,
+            "Starting Anvil..."
         );
 
         let anvil = self
@@ -48,14 +47,10 @@ impl Deployer {
             .start(&mut docker, self.outdata.join("anvil"), self.l1_chain_id)
             .await?;
 
-        tracing::info!(
-            container_id = anvil.container_id,
-            "✓ Anvil container started",
-        );
+        tracing::info!("Deploying L1 contracts...");
 
-        let op_deployer = self
-            .op_deployer_config
-            .start(
+        self.op_deployer_config
+            .deploy_contracts(
                 &mut docker,
                 self.outdata.join("deployer"),
                 &anvil,
@@ -64,13 +59,9 @@ impl Deployer {
             )
             .await?;
 
-        tracing::info!(
-            container_id = op_deployer.container_id,
-            "✓ Op Deployer container started",
-        );
+        tracing::info!("Starting L2 nodes...");
 
         tracing::info!("Next steps:");
-        tracing::info!("  - Deploy L1 contracts");
         tracing::info!("  - Start L2 nodes");
         tracing::info!("  - Configure network");
 

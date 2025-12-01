@@ -88,10 +88,7 @@ async fn main() -> Result<()> {
             container_name: format!("{}-anvil", network_name),
             host: "0.0.0.0".to_string(),
             port: 8545,
-            fork_url: cli
-                .l1_rpc_provider
-                .map(|provider| provider.to_rpc_url(cli.l1_chain))
-                .transpose()?,
+            fork_url: cli.l1_rpc_provider.to_rpc_url(cli.l1_chain)?,
             extra_args: vec![],
         },
 

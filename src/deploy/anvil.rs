@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 use alloy_core::primitives::Bytes;
 use anyhow::Context;
 use bollard::{
-    container::{Config, StartContainerOptions},
+    container::Config,
     secret::{HostConfig, PortBinding},
 };
 use serde::{Deserialize, Serialize};
@@ -11,10 +11,11 @@ use url::Url;
 
 use crate::deploy::{AccountInfo, docker::KupDocker, fs::FsHandler};
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AnvilConfig {
     pub host: String,
     pub port: u16,
-    pub fork_url: Option<String>,
+    pub fork_url: String,
 
     pub extra_args: Vec<String>,
 
@@ -54,13 +55,6 @@ impl AnvilConfig {
         host_config_path: PathBuf,
         chain_id: u64,
     ) -> Result<AnvilHandler, anyhow::Error> {
-        tracing::info!(
-            "Starting Anvil container '{}' on port {} with chain ID {}",
-            self.container_name,
-            self.port,
-            chain_id
-        );
-
         if !host_config_path.exists() {
             FsHandler::create_host_config_directory(&host_config_path)?;
         }
@@ -81,11 +75,8 @@ impl AnvilConfig {
                 .to_string(),
         ];
 
-        // Add fork URL if provided
-        if let Some(ref fork_url) = self.fork_url {
-            cmd.push("--fork-url".to_string());
-            cmd.push(fork_url.clone());
-        }
+        cmd.push("--fork-url".to_string());
+        cmd.push(self.fork_url.clone());
 
         cmd.extend(self.extra_args);
 
@@ -128,20 +119,12 @@ impl AnvilConfig {
 
         // Start the container
         let container_id = docker
-            .create_and_start_container(
-                &self.container_name,
-                config,
-                None::<StartContainerOptions<String>>,
-            )
+            .create_and_start_container(&self.container_name, config, Default::default())
             .await
             .context("Failed to start Anvil container")?;
 
-        tracing::info!("✓ Anvil container started: {}", container_id);
-        tracing::info!("  Data persisted to: {}", host_config_path.display());
-
         // Wait for the Anvil config file to be created
         let config_file_path = host_config_path.join("anvil.json");
-        tracing::info!("Waiting for Anvil config file...");
 
         FsHandler::wait_for_file(&config_file_path, std::time::Duration::from_secs(30))
             .await
@@ -157,11 +140,6 @@ impl AnvilConfig {
                 ))?,
         )
         .context("Failed to parse Anvil config")?;
-
-        tracing::info!(
-            l1_config = ?l1_config,
-            "✓ Anvil config parsed successfully",
-        );
 
         // Get the account infos from the Anvil config
         let account_infos = l1_config

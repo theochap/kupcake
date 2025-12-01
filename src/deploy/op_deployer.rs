@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use bollard::{
-    container::{Config, StartContainerOptions},
-    secret::HostConfig,
-};
+use bollard::{container::Config, secret::HostConfig};
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::{AccountInfo, KupDocker, anvil::AnvilHandler, fs::FsHandler};
+use crate::deploy::{
+    AccountInfo, KupDocker, anvil::AnvilHandler, docker::CreateAndStartContainerOptions,
+    fs::FsHandler,
+};
 
 /// The minimum number of accounts required for the intent file. Those are:
 /// [`ChainConfig::base_fee_vault_recipient`], [`ChainConfig::l1_fee_vault_recipient`], [`ChainConfig::sequencer_fee_vault_recipient`], [`ChainRoles::l1_proxy_admin_owner`],
@@ -61,16 +61,89 @@ pub struct OpDeployerConfig {
     pub container_name: String,
 }
 
-pub struct OpDeployerHandler {
-    pub container_id: String,
-}
-
 impl OpDeployerConfig {
+    pub async fn run_docker_container(
+        &self,
+        docker: &mut KupDocker,
+        container_name: &str,
+        host_config_path: &PathBuf,
+        container_config_path: &PathBuf,
+        cmd: Vec<String>,
+    ) -> Result<(), anyhow::Error> {
+        // Get current user UID and GID to run container as non-root
+        // This ensures files created by the container have the correct and can be rewritten by this process.
+        #[cfg(unix)]
+        let user = {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = std::fs::metadata(&host_config_path)
+                .context("Failed to get metadata for host config path")?;
+            Some(format!("{}:{}", metadata.uid(), metadata.gid()))
+        };
+
+        #[cfg(not(unix))]
+        let user: Option<String> = None;
+
+        // Get the network mode - use the Docker network if available
+        let network_mode = docker.network_id.as_ref().map(|id| id.clone());
+
+        // Bind mount: host_path:container_path
+        // This maps the host file to the container file so data persists on the host
+        let host_config = HostConfig {
+            binds: Some(vec![format!(
+                "{}:{}:rw",
+                host_config_path.display(),
+                container_config_path.to_string_lossy()
+            )]),
+            auto_remove: Some(false),
+            network_mode,
+            ..Default::default()
+        };
+
+        // Create container configuration
+        let config = Config {
+            image: Some(format!(
+                "{}:{}",
+                docker.config.op_deployer_docker_image, docker.config.op_deployer_docker_tag
+            )),
+            cmd: Some(cmd),
+            host_config: Some(host_config),
+            user,
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
+            ..Default::default()
+        };
+
+        // Start the container
+        let container_id = docker
+            .create_and_start_container(
+                container_name,
+                config,
+                CreateAndStartContainerOptions {
+                    stream_logs: true,
+                    wait_for_container: true,
+                    start_options: None,
+                },
+            )
+            .await
+            .context(format!(
+                "Failed to start Op Deployer container: {}",
+                container_name
+            ))?;
+
+        tracing::debug!(
+            container_id,
+            container_name,
+            "Op Deployer container completed successfully",
+        );
+
+        Ok(())
+    }
+
     async fn generate_intent_file(
         &self,
         docker: &mut KupDocker,
-        host_config_path: PathBuf,
-        container_config_path: PathBuf,
+        host_config_path: &PathBuf,
+        container_config_path: &PathBuf,
         l1_chain_id: u64,
         l2_chain_id: u64,
     ) -> Result<PathBuf, anyhow::Error> {
@@ -89,52 +162,16 @@ impl OpDeployerConfig {
             "standard-overrides".to_string(),
         ];
 
-        // Get current user UID and GID to run container as non-root
-        // This ensures files created by the container have the correct and can be rewritten by this process.
-        #[cfg(unix)]
-        let user = {
-            use std::os::unix::fs::MetadataExt;
-            let metadata = std::fs::metadata(&host_config_path)
-                .context("Failed to get metadata for host config path")?;
-            Some(format!("{}:{}", metadata.uid(), metadata.gid()))
-        };
+        tracing::debug!(l2_chain_id, "Deploying contracts");
 
-        #[cfg(not(unix))]
-        let user: Option<String> = None;
-
-        // Bind mount: host_path:container_path
-        // This maps the host file to the container file so data persists on the host
-        let host_config = HostConfig {
-            binds: Some(vec![format!(
-                "{}:{}:rw",
-                host_config_path.display(),
-                container_config_path.to_string_lossy()
-            )]),
-            auto_remove: Some(true),
-            ..Default::default()
-        };
-
-        // Create container configuration
-        let config = Config {
-            image: Some(format!(
-                "{}:{}",
-                docker.config.op_deployer_docker_image, docker.config.op_deployer_docker_tag
-            )),
-            cmd: Some(cmd),
-            host_config: Some(host_config),
-            user,
-            ..Default::default()
-        };
-
-        // Start the container
-        docker
-            .create_and_start_container(
-                &format!("{}-init", self.container_name),
-                config,
-                None::<StartContainerOptions<String>>,
-            )
-            .await
-            .context("Failed to start Op Deployer container")?;
+        self.run_docker_container(
+            docker,
+            &format!("{}-init", self.container_name),
+            host_config_path,
+            container_config_path,
+            cmd,
+        )
+        .await?;
 
         // Wait for the intent file to be created
         let config_file_path = host_config_path.join("intent.toml");
@@ -142,10 +179,7 @@ impl OpDeployerConfig {
             .await
             .context("Op Deployer config file was not created in time")?;
 
-        tracing::info!(
-            "✓ Op Deployer intent file created at: {}",
-            config_file_path.display()
-        );
+        tracing::debug!(?config_file_path, "Op Deployer intent file created");
 
         Ok(config_file_path)
     }
@@ -153,10 +187,10 @@ impl OpDeployerConfig {
     async fn apply_contract_deployments(
         &self,
         docker: &mut KupDocker,
-        host_config_path: PathBuf,
-        container_config_path: PathBuf,
+        host_config_path: &PathBuf,
+        container_config_path: &PathBuf,
         anvil_handler: &AnvilHandler,
-    ) -> Result<OpDeployerHandler, anyhow::Error> {
+    ) -> Result<(), anyhow::Error> {
         let cmd = vec![
             "op-deployer".to_string(),
             "--cache-dir".to_string(),
@@ -170,66 +204,83 @@ impl OpDeployerConfig {
             anvil_handler.account_infos[0].private_key.to_string(),
         ];
 
-        // Get the network mode - use the Docker network if available
-        let network_mode = docker.network_id.as_ref().map(|id| id.clone());
+        self.run_docker_container(
+            docker,
+            &format!("{}-apply", self.container_name),
+            host_config_path,
+            container_config_path,
+            cmd,
+        )
+        .await?;
 
-        // Bind mount: host_path:container_path
-        // This maps the host file to the container file so data persists on the host
-        let host_config = HostConfig {
-            binds: Some(vec![format!(
-                "{}:{}:rw",
-                host_config_path.display(),
-                container_config_path.to_string_lossy()
-            )]),
-            auto_remove: Some(true),
-            network_mode,
-            ..Default::default()
-        };
-
-        // Create container configuration
-        let config = Config {
-            image: Some(format!(
-                "{}:{}",
-                docker.config.op_deployer_docker_image, docker.config.op_deployer_docker_tag
-            )),
-            cmd: Some(cmd),
-            host_config: Some(host_config),
-            ..Default::default()
-        };
-
-        // Start the container
-        let container_id = docker
-            .create_and_start_container(
-                &format!("{}-apply", self.container_name),
-                config,
-                None::<StartContainerOptions<String>>,
-            )
-            .await
-            .context("Failed to start Op Deployer apply container")?;
-
-        tracing::info!("✓ Op Deployer apply container started: {}", container_id);
-
-        // Wait for the container to complete
-        docker
-            .wait_for_container(&container_id)
-            .await
-            .context("Op Deployer apply container failed")?;
-
-        tracing::info!("✓ Op Deployer apply container completed successfully");
-
-        Ok(OpDeployerHandler { container_id })
+        Ok(())
     }
 
-    pub async fn start(
+    async fn generate_config_files(
+        &self,
+        docker: &mut KupDocker,
+        host_config_path: &PathBuf,
+        container_config_path: &PathBuf,
+        l2_chain_id: u64,
+    ) -> Result<(), anyhow::Error> {
+        let container_config_path_str = container_config_path.display().to_string();
+        let config_cmd = |config_type: &str| -> Vec<String> {
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!(
+                    "op-deployer --cache-dir {container_config_path_str}/.cache inspect {config_type} --workdir {container_config_path_str} {l2_chain_id} > {container_config_path_str}/{config_type}.json",
+                ),
+            ]
+        };
+
+        self.run_docker_container(
+            docker,
+            &format!("{}-inspect-genesis", self.container_name),
+            host_config_path,
+            container_config_path,
+            config_cmd("genesis"),
+        )
+        .await?;
+
+        self.run_docker_container(
+            docker,
+            &format!("{}-inspect-rollup", self.container_name),
+            host_config_path,
+            container_config_path,
+            config_cmd("rollup"),
+        )
+        .await?;
+
+        // Wait for the rollup config file to be created
+        let genesis_file_path = host_config_path.join("genesis.json");
+        let rollup_file_path = host_config_path.join("rollup.json");
+
+        let (genesis_result, rollup_result) = tokio::join!(
+            FsHandler::wait_for_file(&genesis_file_path, std::time::Duration::from_secs(30)),
+            FsHandler::wait_for_file(&rollup_file_path, std::time::Duration::from_secs(30)),
+        );
+
+        genesis_result.context("Op Deployer genesis config file was not created in time")?;
+        rollup_result.context("Op Deployer rollup config file was not created in time")?;
+
+        tracing::debug!(
+            ?genesis_file_path,
+            ?rollup_file_path,
+            "Op Deployer config files created",
+        );
+
+        Ok(())
+    }
+
+    pub async fn deploy_contracts(
         self,
         docker: &mut KupDocker,
         host_config_path: PathBuf,
         anvil_handler: &AnvilHandler,
         l1_chain_id: u64,
         l2_chain_id: u64,
-    ) -> Result<OpDeployerHandler, anyhow::Error> {
-        tracing::info!("Starting Op Deployer container '{}'", self.container_name);
-
+    ) -> Result<(), anyhow::Error> {
         // Build the command
         // Container path where anvil will write the config
         let container_config_path = PathBuf::from("/data");
@@ -241,8 +292,8 @@ impl OpDeployerConfig {
         let config_file_path = self
             .generate_intent_file(
                 docker,
-                host_config_path.clone(),
-                container_config_path.clone(),
+                &host_config_path,
+                &container_config_path,
                 l1_chain_id,
                 l2_chain_id,
             )
@@ -254,20 +305,29 @@ impl OpDeployerConfig {
             .await
             .context("Failed to update intent file with account addresses")?;
 
-        tracing::info!("✓ Intent file updated with account addresses from Anvil");
+        tracing::debug!("Intent file updated with account addresses from Anvil");
 
         // Now apply the contract deployments.
-        let op_deployer_handler = self
-            .apply_contract_deployments(
-                docker,
-                host_config_path,
-                container_config_path,
-                anvil_handler,
-            )
-            .await
-            .context("Failed to apply contract deployments")?;
+        self.apply_contract_deployments(
+            docker,
+            &host_config_path,
+            &container_config_path,
+            anvil_handler,
+        )
+        .await
+        .context("Failed to apply contract deployments")?;
 
-        Ok(op_deployer_handler)
+        // Now generate the config files to be used by the L2 nodes.
+        self.generate_config_files(
+            docker,
+            &host_config_path,
+            &container_config_path,
+            l2_chain_id,
+        )
+        .await
+        .context("Failed to generate config files")?;
+
+        Ok(())
     }
 
     /// Updates the intent.toml file with account addresses from Anvil.

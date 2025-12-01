@@ -14,7 +14,7 @@ use bollard::{
 };
 use derive_more::Deref;
 use futures::{StreamExt, executor::block_on, future::join_all};
-use tokio::time::timeout;
+use tokio::{task::JoinHandle, time::timeout};
 
 /// Timeout for shutting down docker and cleaning up containers.
 const DOCKER_DROP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -49,16 +49,16 @@ pub struct KupDocker {
 impl Drop for KupDocker {
     fn drop(&mut self) {
         if self.config.no_cleanup {
-            tracing::info!("Cleanup of docker containers on exit is disabled. Exiting.");
+            tracing::debug!("Cleanup of docker containers on exit is disabled. Exiting.");
             return;
         }
 
         if self.containers.is_empty() && self.network_id.is_none() {
-            tracing::info!("No containers or networks to cleanup. Exiting.");
+            tracing::debug!("No containers or networks to cleanup. Exiting.");
             return;
         }
 
-        tracing::info!("Cleaning up {} container(s)...", self.containers.len());
+        tracing::debug!("Cleaning up {} container(s)...", self.containers.len());
 
         // Spawn a blocking task to stop all containers
         let docker = self.docker.clone();
@@ -81,12 +81,12 @@ impl Drop for KupDocker {
 
             // Remove network if it exists
             if let Some(network_id) = network_id {
-                tracing::info!("Removing network: {}", network_id);
+                tracing::trace!(network_id, "Removing network");
                 docker
                     .remove_network(&network_id)
                     .await
                     .context("Failed to remove network")?;
-                tracing::info!("✓ Network removed successfully");
+                tracing::trace!(network_id, "Network removed");
             }
 
             Ok::<_, anyhow::Error>(())
@@ -118,7 +118,7 @@ impl KupDocker {
                 .map_err(|e| anyhow::anyhow!("Failed to pull Foundry image: {}", e))?
                 .status
         {
-            tracing::debug!("Image pull: {}", status);
+            tracing::trace!(status, "Image pull");
         }
 
         Ok(())
@@ -142,9 +142,9 @@ impl KupDocker {
             .await
             .context("Failed to create Docker network")?;
 
-        tracing::info!("✓ Docker network created: {}", network_name);
+        tracing::trace!(network_name, "Docker network created");
 
-        tracing::info!(
+        tracing::debug!(
             image = docker.config.foundry_docker_image,
             tag = docker.config.foundry_docker_tag,
             "Pulling Foundry from docker..."
@@ -157,7 +157,7 @@ impl KupDocker {
             )
             .await?;
 
-        tracing::info!(
+        tracing::debug!(
             image = docker.config.op_deployer_docker_image,
             tag = docker.config.op_deployer_docker_tag,
             "Pulling Op Deployer from docker..."
@@ -170,7 +170,7 @@ impl KupDocker {
             )
             .await?;
 
-        tracing::info!("✓ Images pulled successfully");
+        tracing::trace!("Images pulled successfully");
 
         Ok(docker)
     }
@@ -198,7 +198,7 @@ impl KupDocker {
             .unwrap_or(network_name.to_string());
 
         self.network_id = Some(network_id.clone());
-        tracing::info!("✓ Docker network created: {}", network_id);
+        tracing::trace!(network_id, "Docker network created");
 
         Ok(network_id)
     }
@@ -208,7 +208,7 @@ impl KupDocker {
     /// This method blocks until the container exits and returns the exit code.
     /// If the container exits with a non-zero code, an error is returned.
     pub async fn wait_for_container(&self, container_id: &str) -> Result<i64> {
-        tracing::info!("Waiting for container {} to complete...", container_id);
+        tracing::trace!(container_id, "Waiting for container to complete");
 
         let wait_options = WaitContainerOptions {
             condition: "not-running",
@@ -224,11 +224,7 @@ impl KupDocker {
             anyhow::bail!("Container wait stream ended without response");
         };
 
-        tracing::info!(
-            "Container {} completed with exit code: {}",
-            container_id,
-            exit_code
-        );
+        tracing::debug!(container_id, exit_code, "Container completed");
 
         if exit_code != 0 {
             anyhow::bail!(
@@ -242,29 +238,34 @@ impl KupDocker {
     }
 
     /// Stream logs from a container.
-    pub async fn stream_logs(&self, container_id: &str) -> Result<()> {
+    pub async fn stream_logs(&self, container_id: &str) -> Result<JoinHandle<()>> {
         let logs_options = LogsOptions::<String> {
-            follow: true,
             stdout: true,
             stderr: true,
+            follow: true,
             ..Default::default()
         };
 
         let mut log_stream = self.logs(container_id, Some(logs_options));
+        let container_id = container_id.to_string();
 
-        while let Some(log_result) = log_stream.next().await {
-            match log_result {
-                Ok(log) => {
-                    tracing::debug!("[Container {}] {}", container_id, log);
-                }
-                Err(e) => {
-                    tracing::error!("Error streaming logs: {}", e);
-                    break;
+        let logs_handle = tokio::spawn(async move {
+            while let Some(log_result) = log_stream.next().await {
+                match log_result {
+                    Ok(log) => {
+                        tracing::debug!(?container_id, ?log);
+                    }
+                    Err(e) => {
+                        tracing::error!("Error streaming logs: {}", e);
+                        break;
+                    }
                 }
             }
-        }
 
-        Ok(())
+            tracing::trace!(container_id, "Logs stream ended");
+        });
+
+        Ok(logs_handle)
     }
 
     /// Stream logs and wait for container completion simultaneously.
@@ -292,9 +293,9 @@ impl KupDocker {
         &mut self,
         container_name: &str,
         config: Config<String>,
-        options: Option<StartContainerOptions<String>>,
+        options: CreateAndStartContainerOptions,
     ) -> Result<String> {
-        tracing::info!("Creating container: {}", container_name);
+        tracing::trace!(container_name, "Creating container");
         // Create the container
         let container = self
             .docker
@@ -309,12 +310,20 @@ impl KupDocker {
             .context("Failed to create container")?;
 
         let container_id = container.id;
-        tracing::info!("Starting container: {}", container_id);
+        tracing::trace!(container_id, container_name, "Starting container");
 
         self.docker
-            .start_container(&container_id, options)
+            .start_container(&container_id, options.start_options)
             .await
             .context("Failed to start container")?;
+
+        if options.stream_logs {
+            self.stream_logs(&container_id).await?;
+        }
+
+        if options.wait_for_container {
+            self.wait_for_container(&container_id).await?;
+        }
 
         self.containers.insert(container_id.to_string());
 
@@ -325,7 +334,7 @@ impl KupDocker {
         docker: &Docker,
         container_id: &String,
     ) -> Result<()> {
-        tracing::info!("Stopping container: {}", container_id);
+        tracing::trace!(container_id, "Stopping and removing container");
 
         // Kill the container (stop with timeout=0)
         docker
@@ -348,7 +357,7 @@ impl KupDocker {
             .await
             .ok(); // Ignore errors if already removed
 
-        tracing::info!("✓ Container stopped: {}", container_id);
+        tracing::trace!(container_id, "Container stopped and removed");
         Ok(())
     }
 
@@ -367,6 +376,22 @@ impl KupDocker {
                 Ok(false)
             }
             Err(_) => Ok(false),
+        }
+    }
+}
+
+pub struct CreateAndStartContainerOptions {
+    pub start_options: Option<StartContainerOptions<String>>,
+    pub wait_for_container: bool,
+    pub stream_logs: bool,
+}
+
+impl Default for CreateAndStartContainerOptions {
+    fn default() -> Self {
+        Self {
+            start_options: None,
+            wait_for_container: false,
+            stream_logs: false,
         }
     }
 }

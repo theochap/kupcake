@@ -96,11 +96,11 @@ pub struct Cli {
 
     /// The URL of an L1 RPC endpoint.
     ///
-    /// If not provided, the L1 chain will be started with an empty state.
+    /// If not provided, the L1 chain will be started with a public node endpoint.
     ///
     /// If public node is selected, anvil will be started in fork-mode using a node from `<https://publicnode.com/>`
-    #[arg(long, alias = "l1-rpc", env = "KUP_L1_RPC_URL")]
-    pub l1_rpc_provider: Option<L1Provider>,
+    #[arg(long, alias = "l1-rpc", env = "KUP_L1_RPC_URL", default_value_t = L1Provider::PublicNode)]
+    pub l1_rpc_provider: L1Provider,
 
     /// The L1 chain info (chain ID or name).
     #[arg(long, alias = "l1", env = "KUP_L1_CHAIN", default_value_t = DEFAULT_L1_CHAIN_INFO)]
