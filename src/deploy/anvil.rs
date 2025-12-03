@@ -89,9 +89,6 @@ impl AnvilConfig {
             }]),
         )]);
 
-        // Get the network mode - use the Docker network if available
-        let network_mode = docker.network_id.as_ref().map(|id| id.clone());
-
         // Bind mount: host_path:container_path
         // This maps the host file to the container file so data persists on the host
         let host_config = HostConfig {
@@ -101,7 +98,7 @@ impl AnvilConfig {
                 host_config_path.display(),
                 container_config_path.to_string_lossy()
             )]),
-            network_mode,
+            network_mode: Some(docker.network_id.clone()),
             ..Default::default()
         };
 
@@ -152,16 +149,9 @@ impl AnvilConfig {
             })
             .collect();
 
-        // Determine the RPC URL based on whether we're using a Docker network
-        let l1_rpc_url = if docker.network_id.is_some() {
-            // When using Docker network, containers can communicate using container names
-            Url::parse(&format!("http://{}:8545", self.container_name))
-                .context("Failed to parse Anvil RPC URL")?
-        } else {
-            // When not using Docker network, use host and port
-            Url::parse(&format!("http://{}:{}", self.host, self.port))
-                .context("Failed to parse Anvil RPC URL")?
-        };
+        // When using Docker network, containers can communicate using container names
+        let l1_rpc_url = Url::parse(&format!("http://{}:8545", self.container_name))
+            .context("Failed to parse Anvil RPC URL")?;
 
         Ok(AnvilHandler {
             container_id,

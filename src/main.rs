@@ -8,7 +8,10 @@ use rand::Rng;
 
 use kupcake::{
     cli::{Cli, OutData},
-    deploy::{AnvilConfig, Deployer, KupDockerConfig, OpDeployerConfig},
+    deploy::{
+        AnvilConfig, Deployer, KonaNodeConfig, KupDockerConfig, L2NodesConfig, OpDeployerConfig,
+        OpRethConfig,
+    },
 };
 
 const FOUNDRY_DOCKER_IMAGE: &str = "ghcr.io/foundry-rs/foundry";
@@ -17,6 +20,12 @@ const FOUNDRY_DOCKER_TAG: &str = "latest";
 const OP_DEPLOYER_DOCKER_IMAGE: &str =
     "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-deployer";
 const OP_DEPLOYER_DOCKER_TAG: &str = "v0.5.0-rc.2";
+
+const KONA_NODE_DOCKER_IMAGE: &str = "ghcr.io/op-rs/kona/kona-node";
+const KONA_NODE_DOCKER_TAG: &str = "1.2.4";
+
+const OP_RETH_DOCKER_IMAGE: &str = "ghcr.io/paradigmxyz/op-reth";
+const OP_RETH_DOCKER_TAG: &str = "latest";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -97,12 +106,27 @@ async fn main() -> Result<()> {
             foundry_docker_tag: FOUNDRY_DOCKER_TAG.to_string(),
             op_deployer_docker_image: OP_DEPLOYER_DOCKER_IMAGE.to_string(),
             op_deployer_docker_tag: OP_DEPLOYER_DOCKER_TAG.to_string(),
+            kona_node_docker_image: KONA_NODE_DOCKER_IMAGE.to_string(),
+            kona_node_docker_tag: KONA_NODE_DOCKER_TAG.to_string(),
+            op_reth_docker_image: OP_RETH_DOCKER_IMAGE.to_string(),
+            op_reth_docker_tag: OP_RETH_DOCKER_TAG.to_string(),
             net_name: format!("{}-network", network_name),
             no_cleanup: cli.no_cleanup,
         },
 
         op_deployer_config: OpDeployerConfig {
             container_name: format!("{}-op-deployer", network_name),
+        },
+
+        l2_nodes_config: L2NodesConfig {
+            op_reth: OpRethConfig {
+                container_name: format!("{}-op-reth", network_name),
+                ..Default::default()
+            },
+            kona_node: KonaNodeConfig {
+                container_name: format!("{}-kona-node", network_name),
+                ..Default::default()
+            },
         },
     };
 

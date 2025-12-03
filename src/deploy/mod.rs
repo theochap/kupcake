@@ -7,10 +7,12 @@ use std::path::PathBuf;
 mod anvil;
 mod docker;
 mod fs;
+mod l2_nodes;
 mod op_deployer;
 
 pub use anvil::AnvilConfig;
 pub use docker::{KupDocker, KupDockerConfig};
+pub use l2_nodes::{KonaNodeConfig, L2NodesConfig, OpRethConfig};
 pub use op_deployer::OpDeployerConfig;
 
 pub struct AccountInfo {
@@ -24,8 +26,9 @@ pub struct Deployer {
     pub outdata: PathBuf,
 
     pub anvil_config: AnvilConfig,
-    pub docker_config: KupDockerConfig,
     pub op_deployer_config: OpDeployerConfig,
+    pub docker_config: KupDockerConfig,
+    pub l2_nodes_config: L2NodesConfig,
 }
 
 impl Deployer {
@@ -49,24 +52,37 @@ impl Deployer {
 
         tracing::info!("Deploying L1 contracts...");
 
+        // Deploy L1 contracts - the deployer output goes to the same directory
+        // that will be used for L2 nodes config (genesis.json, rollup.json)
+        let l2_nodes_data_path = self.outdata.join("deployer");
+
         self.op_deployer_config
             .deploy_contracts(
                 &mut docker,
-                self.outdata.join("deployer"),
+                l2_nodes_data_path.clone(),
                 &anvil,
                 self.l1_chain_id,
                 self.l2_chain_id,
             )
             .await?;
 
-        tracing::info!("Starting L2 nodes...");
+        tracing::info!("Starting L2 nodes (kona-node + op-reth)...");
 
-        tracing::info!("Next steps:");
-        tracing::info!("  - Start L2 nodes");
-        tracing::info!("  - Configure network");
+        let l2_nodes = self
+            .l2_nodes_config
+            .start(&mut docker, l2_nodes_data_path, &anvil)
+            .await
+            .context("Failed to start L2 nodes")?;
 
-        // Keep the container running (you'll likely want to handle this differently)
-        tracing::info!("Container is running. Press Ctrl+C to stop.");
+        tracing::info!("✓ Deployment complete!");
+        tracing::info!("");
+        tracing::info!("L1 (Anvil) RPC:       {}", anvil.l1_rpc_url);
+        tracing::info!("L2 (op-reth) HTTP:    {}", l2_nodes.op_reth.http_rpc_url);
+        tracing::info!("L2 (op-reth) WS:      {}", l2_nodes.op_reth.ws_rpc_url);
+        tracing::info!("Kona Node RPC:        {}", l2_nodes.kona_node.rpc_url);
+        tracing::info!("");
+        tracing::info!("Press Ctrl+C to stop all nodes and cleanup.");
+
         tokio::signal::ctrl_c().await?;
 
         Ok(())

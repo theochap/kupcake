@@ -26,6 +26,12 @@ pub struct KupDockerConfig {
     pub op_deployer_docker_image: String,
     pub op_deployer_docker_tag: String,
 
+    pub kona_node_docker_image: String,
+    pub kona_node_docker_tag: String,
+
+    pub op_reth_docker_image: String,
+    pub op_reth_docker_tag: String,
+
     pub net_name: String,
 
     pub no_cleanup: bool,
@@ -41,7 +47,7 @@ pub struct KupDocker {
     pub containers: HashSet<String>,
 
     /// Network ID for container communication.
-    pub network_id: Option<String>,
+    pub network_id: String,
 
     pub config: KupDockerConfig,
 }
@@ -53,7 +59,7 @@ impl Drop for KupDocker {
             return;
         }
 
-        if self.containers.is_empty() && self.network_id.is_none() {
+        if self.containers.is_empty() {
             tracing::debug!("No containers or networks to cleanup. Exiting.");
             return;
         }
@@ -63,7 +69,6 @@ impl Drop for KupDocker {
         // Spawn a blocking task to stop all containers
         let docker = self.docker.clone();
         let containers = mem::take(&mut self.containers);
-        let network_id = self.network_id.take();
 
         let cleanup = async {
             // Stop and remove containers first
@@ -80,14 +85,12 @@ impl Drop for KupDocker {
                 .collect::<Result<Vec<_>>>()?;
 
             // Remove network if it exists
-            if let Some(network_id) = network_id {
-                tracing::trace!(network_id, "Removing network");
-                docker
-                    .remove_network(&network_id)
-                    .await
-                    .context("Failed to remove network")?;
-                tracing::trace!(network_id, "Network removed");
-            }
+            tracing::trace!(self.network_id, "Removing network");
+            docker
+                .remove_network(&self.network_id)
+                .await
+                .context("Failed to remove network")?;
+            tracing::trace!(self.network_id, "Network removed");
 
             Ok::<_, anyhow::Error>(())
         };
@@ -126,23 +129,17 @@ impl KupDocker {
 
     /// Create a new Docker client.
     pub async fn new(config: KupDockerConfig) -> Result<Self> {
-        let mut docker = Self {
-            docker: Docker::connect_with_local_defaults()
-                .context("Failed to connect to Docker. Is Docker running?")?,
+        let docker = Docker::connect_with_local_defaults()
+            .context("Failed to connect to Docker. Is Docker running?")?;
+
+        let network_id = Self::create_network(&docker, &config.net_name).await?;
+
+        let docker = Self {
+            docker,
             config,
+            network_id,
             containers: HashSet::new(),
-            network_id: None,
         };
-
-        let network_name = docker.config.net_name.clone();
-
-        // Create a Docker network for container communication
-        docker
-            .create_network(&network_name)
-            .await
-            .context("Failed to create Docker network")?;
-
-        tracing::trace!(network_name, "Docker network created");
 
         tracing::debug!(
             image = docker.config.foundry_docker_image,
@@ -170,13 +167,39 @@ impl KupDocker {
             )
             .await?;
 
+        tracing::debug!(
+            image = docker.config.kona_node_docker_image,
+            tag = docker.config.kona_node_docker_tag,
+            "Pulling kona-node from docker..."
+        );
+
+        docker
+            .pull_image(
+                &docker.config.kona_node_docker_image,
+                &docker.config.kona_node_docker_tag,
+            )
+            .await?;
+
+        tracing::debug!(
+            image = docker.config.op_reth_docker_image,
+            tag = docker.config.op_reth_docker_tag,
+            "Pulling op-reth from docker..."
+        );
+
+        docker
+            .pull_image(
+                &docker.config.op_reth_docker_image,
+                &docker.config.op_reth_docker_tag,
+            )
+            .await?;
+
         tracing::trace!("Images pulled successfully");
 
         Ok(docker)
     }
 
     /// Create a Docker network for container communication.
-    pub async fn create_network(&mut self, network_name: &str) -> Result<String> {
+    pub async fn create_network(docker: &Docker, network_name: &str) -> Result<String> {
         tracing::info!("Creating Docker network: {}", network_name);
 
         let create_network_options = CreateNetworkOptions {
@@ -186,8 +209,7 @@ impl KupDocker {
             ..Default::default()
         };
 
-        let response = self
-            .docker
+        let response = docker
             .create_network(create_network_options)
             .await
             .context("Failed to create Docker network")?;
@@ -197,7 +219,6 @@ impl KupDocker {
             .then(|| response.id)
             .unwrap_or(network_name.to_string());
 
-        self.network_id = Some(network_id.clone());
         tracing::trace!(network_id, "Docker network created");
 
         Ok(network_id)

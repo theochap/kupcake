@@ -83,9 +83,6 @@ impl OpDeployerConfig {
         #[cfg(not(unix))]
         let user: Option<String> = None;
 
-        // Get the network mode - use the Docker network if available
-        let network_mode = docker.network_id.as_ref().map(|id| id.clone());
-
         // Bind mount: host_path:container_path
         // This maps the host file to the container file so data persists on the host
         let host_config = HostConfig {
@@ -95,7 +92,7 @@ impl OpDeployerConfig {
                 container_config_path.to_string_lossy()
             )]),
             auto_remove: Some(false),
-            network_mode,
+            network_mode: Some(docker.network_id.clone()),
             ..Default::default()
         };
 
