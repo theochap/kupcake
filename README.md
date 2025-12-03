@@ -2,14 +2,15 @@
 
 A CLI tool to bootstrap a Rust-based OP Stack chain locally in seconds.
 
-Kupcake spins up a local L1 (via Anvil fork) and deploys all OP Stack contracts automatically, generating the configuration files needed to run your L2 nodes.
+Kupcake spins up a local L1 (via Anvil fork), deploys all OP Stack contracts automatically, and starts a complete L2 node stack using **kona-node** and **op-reth**.
 
 ## Features
 
 - **One-command deployment** — Deploy a complete OP Stack chain with a single command
 - **Local L1 via Anvil** — Forks Sepolia or Mainnet using Foundry's Anvil
 - **Automatic contract deployment** — Uses `op-deployer` to deploy all OP Stack contracts
-- **Config generation** — Outputs `genesis.json` and `rollup.json` ready for your L2 nodes
+- **Full L2 node stack** — Runs kona-node (consensus) + op-reth (execution) out of the box
+- **Config generation** — Outputs `genesis.json` and `rollup.json` for L2 nodes
 - **Docker-based** — No local toolchain required, just Docker
 
 ## Requirements
@@ -31,9 +32,17 @@ That's it! Kupcake will:
 1. Create a Docker network
 2. Start Anvil forking Sepolia
 3. Deploy OP Stack contracts via `op-deployer`
-4. Generate `genesis.json` and `rollup.json` in the output directory
+4. Generate `genesis.json` and `rollup.json`
+5. Start op-reth (L2 execution client)
+6. Start kona-node (L2 consensus client in sequencer mode)
 
-Press `Ctrl+C` to stop and clean up containers.
+Once running, you'll have:
+- **L1 (Anvil)** at `http://localhost:8545`
+- **L2 (op-reth) HTTP** at `http://localhost:9545`
+- **L2 (op-reth) WS** at `ws://localhost:9546`
+- **Kona Node RPC** at `http://localhost:7545`
+
+Press `Ctrl+C` to stop and clean up all containers.
 
 ## Usage
 
@@ -98,16 +107,35 @@ After running, you'll find these files in the output directory (`data-<network-n
 │  3. Generate config files                                   │
 │     └─> Docker: op-deployer inspect genesis/rollup          │
 │                                                             │
+│  4. Start L2 execution client                               │
+│     └─> Docker: ghcr.io/paradigmxyz/op-reth                 │
+│                                                             │
+│  5. Start L2 consensus client (sequencer mode)              │
+│     └─> Docker: ghcr.io/op-rs/kona/kona-node:1.2.4          │
+│                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Next Steps
+## Components
 
-After kupcake completes, you can:
+| Component | Image | Description |
+|-----------|-------|-------------|
+| Anvil | `ghcr.io/foundry-rs/foundry` | Local L1 chain (forks Sepolia/Mainnet) |
+| op-deployer | `us-docker.pkg.dev/oplabs-tools-artifacts/images/op-deployer` | Deploys OP Stack contracts |
+| op-reth | `ghcr.io/paradigmxyz/op-reth` | L2 execution client (EVM) |
+| kona-node | `ghcr.io/op-rs/kona/kona-node:1.2.4` | L2 consensus client (sequencer) |
 
-1. **Start L2 execution client** (e.g., op-reth, op-geth) with `genesis.json`
-2. **Start L2 consensus client** (e.g., kona-node, op-node) with `rollup.json`
-3. **Configure your network** with the deployed contract addresses from `state.json`
+## Ports
+
+| Service | Port | Protocol |
+|---------|------|----------|
+| Anvil (L1) | 8545 | HTTP |
+| op-reth HTTP | 9545 | HTTP |
+| op-reth WebSocket | 9546 | WS |
+| op-reth Auth RPC | 9551 | HTTP |
+| op-reth Metrics | 9001 | HTTP |
+| kona-node RPC | 7545 | HTTP |
+| kona-node Metrics | 7300 | HTTP |
 
 ## License
 

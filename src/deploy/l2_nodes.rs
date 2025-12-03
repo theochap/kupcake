@@ -200,8 +200,6 @@ impl L2NodesConfig {
             self.op_reth.http_port.to_string(),
             "--http.api".to_string(),
             "eth,net,web3,debug,trace,txpool".to_string(),
-            "--http.corsdomain".to_string(),
-            "*".to_string(),
             // WebSocket RPC configuration
             "--ws".to_string(),
             "--ws.addr".to_string(),
@@ -210,8 +208,6 @@ impl L2NodesConfig {
             self.op_reth.ws_port.to_string(),
             "--ws.api".to_string(),
             "eth,net,web3,debug,trace,txpool".to_string(),
-            "--ws.origins".to_string(),
-            "*".to_string(),
             // Auth RPC for Engine API (kona-node communication)
             "--authrpc.addr".to_string(),
             "0.0.0.0".to_string(),
