@@ -21,8 +21,8 @@ const OP_DEPLOYER_DOCKER_IMAGE: &str =
     "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-deployer";
 const OP_DEPLOYER_DOCKER_TAG: &str = "v0.5.0-rc.2";
 
-const KONA_NODE_DOCKER_IMAGE: &str = "ghcr.io/op-rs/kona/kona-node";
-const KONA_NODE_DOCKER_TAG: &str = "1.2.4";
+const KONA_NODE_DOCKER_IMAGE: &str = "ghcr.io/theochap/kona-node";
+const KONA_NODE_DOCKER_TAG: &str = "test";
 
 const OP_RETH_DOCKER_IMAGE: &str = "ghcr.io/paradigmxyz/op-reth";
 const OP_RETH_DOCKER_TAG: &str = "latest";

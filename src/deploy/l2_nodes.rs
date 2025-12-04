@@ -370,6 +370,8 @@ impl L2NodesConfig {
             anvil_handler.l1_rpc_url.to_string(),
             "--l1-beacon".to_string(),
             anvil_handler.l1_rpc_url.to_string(),
+            "--l1.slot-duration".to_string(),
+            "12".to_string(),
             "--l2".to_string(),
             op_reth_handler.authrpc_url.to_string(),
             "--p2p.no-discovery".to_string(),
