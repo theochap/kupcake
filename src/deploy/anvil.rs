@@ -9,7 +9,7 @@ use bollard::{
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::deploy::{AccountInfo, docker::KupDocker, fs::FsHandler};
+use crate::deploy::{AccountInfo, cmd_builders::AnvilCmdBuilder, docker::KupDocker, fs::FsHandler};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AnvilConfig {
@@ -59,26 +59,17 @@ impl AnvilConfig {
             FsHandler::create_host_config_directory(&host_config_path)?;
         }
 
-        // Build the command
+        // Build the command using the builder
         // Container path where anvil will write the config
         let container_config_path = PathBuf::from("/data");
 
-        let mut cmd = vec![
-            "--host".to_string(),
-            "0.0.0.0".to_string(),
-            "--chain-id".to_string(),
-            chain_id.to_string(),
-            "--config-out".to_string(),
-            container_config_path
-                .join("anvil.json")
-                .display()
-                .to_string(),
-        ];
-
-        cmd.push("--fork-url".to_string());
-        cmd.push(self.fork_url.clone());
-
-        cmd.extend(self.extra_args);
+        let cmd = AnvilCmdBuilder::new(chain_id)
+            .host("0.0.0.0")
+            .port(8545) // Internal port, mapped to self.port on host
+            .fork_url(&self.fork_url)
+            .config_out(container_config_path.join("anvil.json"))
+            .extra_args(self.extra_args.clone())
+            .build();
 
         // Configure port binding
         let port_bindings = HashMap::from([(

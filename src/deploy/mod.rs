@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 mod anvil;
+pub mod cmd_builders;
 mod docker;
 mod fs;
 mod grafana;
@@ -12,7 +13,9 @@ mod l2_nodes;
 mod op_deployer;
 
 pub use anvil::AnvilConfig;
-pub use docker::{KupDocker, KupDockerConfig, PortMapping, PortProtocol, ServiceConfig, ServiceHandler};
+pub use docker::{
+    KupDocker, KupDockerConfig, PortMapping, PortProtocol, ServiceConfig, ServiceHandler,
+};
 pub use grafana::{GrafanaConfig, MonitoringConfig, PrometheusConfig};
 pub use l2_nodes::{
     KonaNodeConfig, L2NodesConfig, OpBatcherConfig, OpChallengerConfig, OpProposerConfig,

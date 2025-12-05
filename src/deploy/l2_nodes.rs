@@ -8,6 +8,10 @@ use url::Url;
 
 use crate::deploy::{
     anvil::AnvilHandler,
+    cmd_builders::{
+        KonaNodeCmdBuilder, OpBatcherCmdBuilder, OpChallengerCmdBuilder, OpProposerCmdBuilder,
+        OpRethCmdBuilder,
+    },
     docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig},
     fs::FsHandler,
 };
@@ -339,60 +343,23 @@ impl L2NodesConfig {
     ) -> Result<OpRethHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
-        // Build the op-reth command
-        let mut cmd = vec![
-            "node".to_string(),
-            "--chain".to_string(),
-            container_config_path
-                .join("genesis.json")
-                .display()
-                .to_string(),
-            "--datadir".to_string(),
-            container_config_path
-                .join("reth-data")
-                .display()
-                .to_string(),
-            // HTTP RPC configuration
-            "--http".to_string(),
-            "--http.addr".to_string(),
-            "0.0.0.0".to_string(),
-            "--http.port".to_string(),
-            self.op_reth.http_port.to_string(),
-            "--http.api".to_string(),
-            "eth,net,web3,debug,trace,txpool".to_string(),
-            // WebSocket RPC configuration
-            "--ws".to_string(),
-            "--ws.addr".to_string(),
-            "0.0.0.0".to_string(),
-            "--ws.port".to_string(),
-            self.op_reth.ws_port.to_string(),
-            "--ws.api".to_string(),
-            "eth,net,web3,debug,trace,txpool".to_string(),
-            // Auth RPC for Engine API (kona-node communication)
-            "--authrpc.addr".to_string(),
-            "0.0.0.0".to_string(),
-            "--authrpc.port".to_string(),
-            self.op_reth.authrpc_port.to_string(),
-            "--authrpc.jwtsecret".to_string(),
-            container_config_path.join("jwt.hex").display().to_string(),
-            // Metrics
-            "--metrics".to_string(),
-            format!("0.0.0.0:{}", self.op_reth.metrics_port),
-            // Discovery (disabled for local devnet)
-            "--disable-discovery".to_string(),
-            // Rollup mode
-            "--rollup.sequencer-http".to_string(),
-            format!(
-                "http://{}:{}",
-                self.op_reth.container_name, self.op_reth.http_port
-            ),
-            // Logging
-            "--log.stdout.format".to_string(),
-            "terminal".to_string(),
-        ];
-
-        // Add extra arguments
-        cmd.extend(self.op_reth.extra_args.clone());
+        // Build the op-reth command using the builder
+        let cmd = OpRethCmdBuilder::new(
+            container_config_path.join("genesis.json"),
+            container_config_path.join("reth-data"),
+        )
+        .http_port(self.op_reth.http_port)
+        .ws_port(self.op_reth.ws_port)
+        .authrpc_port(self.op_reth.authrpc_port)
+        .authrpc_jwtsecret(container_config_path.join("jwt.hex"))
+        .metrics("0.0.0.0", self.op_reth.metrics_port)
+        .discovery(false)
+        .sequencer_http(format!(
+            "http://{}:{}",
+            self.op_reth.container_name, self.op_reth.http_port
+        ))
+        .extra_args(self.op_reth.extra_args.clone())
+        .build();
 
         let service_config = ServiceConfig::new(format!(
             "{}:{}",
@@ -453,38 +420,20 @@ impl L2NodesConfig {
     ) -> Result<KonaNodeHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
-        // Build the kona-node command
-        let mut cmd = vec![
-            // Metrics
-            "--metrics.enabled".to_string(),
-            "--metrics.port".to_string(),
-            format!("{}", self.kona_node.metrics_port),
-            "node".to_string(),
-            "--mode".to_string(),
-            "sequencer".to_string(),
-            "--l1".to_string(),
+        // Build the kona-node command using the builder
+        let cmd = KonaNodeCmdBuilder::new(
             anvil_handler.l1_rpc_url.to_string(),
-            "--l1-beacon".to_string(),
-            anvil_handler.l1_rpc_url.to_string(),
-            "--l1.slot-duration".to_string(),
-            "12".to_string(),
-            "--l2".to_string(),
             op_reth_handler.authrpc_url.to_string(),
-            "--p2p.no-discovery".to_string(),
-            "--rollup-cfg".to_string(),
-            container_config_path
-                .join("rollup.json")
-                .display()
-                .to_string(),
-            "--l2.jwt-secret".to_string(),
-            container_config_path.join("jwt.hex").display().to_string(),
-            // RPC server configuration
-            "--rpc.port".to_string(),
-            format!("{}", self.kona_node.rpc_port),
-        ];
-
-        // Add extra arguments
-        cmd.extend(self.kona_node.extra_args.clone());
+            container_config_path.join("rollup.json"),
+            container_config_path.join("jwt.hex"),
+        )
+        .mode("sequencer")
+        .l1_slot_duration(12)
+        .rpc_port(self.kona_node.rpc_port)
+        .metrics(true, self.kona_node.metrics_port)
+        .discovery(false)
+        .extra_args(self.kona_node.extra_args.clone())
+        .build();
 
         let service_config = ServiceConfig::new(format!(
             "{}:{}",
@@ -538,38 +487,18 @@ impl L2NodesConfig {
         // The batcher account is at index 7 in the Anvil accounts
         let batcher_private_key = &anvil_handler.account_infos[7].private_key;
 
-        // Build the op-batcher command
-        let mut cmd = vec![
-            "op-batcher".to_string(),
-            "--l1-eth-rpc".to_string(),
+        // Build the op-batcher command using the builder
+        let cmd = OpBatcherCmdBuilder::new(
             anvil_handler.l1_rpc_url.to_string(),
-            "--l2-eth-rpc".to_string(),
             op_reth_handler.http_rpc_url.to_string(),
-            "--rollup-rpc".to_string(),
             kona_node_handler.rpc_url.to_string(),
-            "--private-key".to_string(),
             batcher_private_key.to_string(),
-            // RPC configuration
-            "--rpc.addr".to_string(),
-            "0.0.0.0".to_string(),
-            "--rpc.port".to_string(),
-            self.op_batcher.rpc_port.to_string(),
-            "--rpc.enable-admin".to_string(),
-            // Metrics
-            "--metrics.enabled".to_string(),
-            "--metrics.addr".to_string(),
-            "0.0.0.0".to_string(),
-            "--metrics.port".to_string(),
-            self.op_batcher.metrics_port.to_string(),
-            // Batcher configuration
-            "--data-availability-type".to_string(),
-            "blobs".to_string(),
-            "--throttle.unsafe-da-bytes-lower-threshold".to_string(),
-            "0".to_string(),
-        ];
-
-        // Add extra arguments
-        cmd.extend(self.op_batcher.extra_args.clone());
+        )
+        .rpc_port(self.op_batcher.rpc_port)
+        .metrics(true, "0.0.0.0", self.op_batcher.metrics_port)
+        .data_availability_type("blobs")
+        .extra_args(self.op_batcher.extra_args.clone())
+        .build();
 
         let service_config = ServiceConfig::new(format!(
             "{}:{}",
@@ -637,36 +566,19 @@ impl L2NodesConfig {
             .as_str()
             .context("DisputeGameFactory address not found in state.json")?;
 
-        // Build the op-proposer command
-        let mut cmd = vec![
-            "op-proposer".to_string(),
-            "--l1-eth-rpc".to_string(),
+        // Build the op-proposer command using the builder
+        let cmd = OpProposerCmdBuilder::new(
             anvil_handler.l1_rpc_url.to_string(),
-            "--rollup-rpc".to_string(),
             kona_node_handler.rpc_url.to_string(),
-            "--private-key".to_string(),
             proposer_private_key.to_string(),
-            "--game-factory-address".to_string(),
-            dgf_address.to_string(),
-            "--proposal-interval".to_string(),
-            self.op_proposer.proposal_interval.clone(),
-            "--game-type".to_string(),
-            "254".to_string(), // Permissioned game type
-            // RPC configuration
-            "--rpc.addr".to_string(),
-            "0.0.0.0".to_string(),
-            "--rpc.port".to_string(),
-            self.op_proposer.rpc_port.to_string(),
-            // Metrics
-            "--metrics.enabled".to_string(),
-            "--metrics.addr".to_string(),
-            "0.0.0.0".to_string(),
-            "--metrics.port".to_string(),
-            self.op_proposer.metrics_port.to_string(),
-        ];
-
-        // Add extra arguments
-        cmd.extend(self.op_proposer.extra_args.clone());
+            dgf_address,
+        )
+        .game_type(254) // Permissioned game type
+        .proposal_interval(&self.op_proposer.proposal_interval)
+        .rpc_port(self.op_proposer.rpc_port)
+        .metrics(true, "0.0.0.0", self.op_proposer.metrics_port)
+        .extra_args(self.op_proposer.extra_args.clone())
+        .build();
 
         let service_config = ServiceConfig::new(format!(
             "{}:{}",
@@ -734,41 +646,23 @@ impl L2NodesConfig {
             .as_str()
             .context("DisputeGameFactory address not found in state.json")?;
 
-        // Build the op-challenger command
-        let mut cmd = vec![
-            "op-challenger".to_string(),
-            "--l1-eth-rpc".to_string(),
+        // Build the op-challenger command using the builder
+        let cmd = OpChallengerCmdBuilder::new(
             anvil_handler.l1_rpc_url.to_string(),
-            "--rollup-rpc".to_string(),
-            kona_node_handler.rpc_url.to_string(),
-            "--l2-eth-rpc".to_string(),
             format!(
                 "http://{}:{}",
                 self.op_reth.container_name, self.op_reth.http_port
             ),
-            "--private-key".to_string(),
+            kona_node_handler.rpc_url.to_string(),
             challenger_private_key.to_string(),
-            "--game-factory-address".to_string(),
-            dgf_address.to_string(),
-            "--trace-type".to_string(),
-            "permissioned".to_string(),
-            "--game-allowlist".to_string(),
-            "254".to_string(), // Permissioned game type
-            // RPC configuration
-            "--rpc.addr".to_string(),
-            "0.0.0.0".to_string(),
-            "--rpc.port".to_string(),
-            self.op_challenger.rpc_port.to_string(),
-            // Metrics
-            "--metrics.enabled".to_string(),
-            "--metrics.addr".to_string(),
-            "0.0.0.0".to_string(),
-            "--metrics.port".to_string(),
-            self.op_challenger.metrics_port.to_string(),
-        ];
-
-        // Add extra arguments
-        cmd.extend(self.op_challenger.extra_args.clone());
+            dgf_address,
+        )
+        .trace_type("permissioned")
+        .game_allowlist([254]) // Permissioned game type
+        .rpc_port(self.op_challenger.rpc_port)
+        .metrics(true, "0.0.0.0", self.op_challenger.metrics_port)
+        .extra_args(self.op_challenger.extra_args.clone())
+        .build();
 
         let service_config = ServiceConfig::new(format!(
             "{}:{}",
