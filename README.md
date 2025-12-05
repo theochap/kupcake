@@ -10,6 +10,8 @@ Kupcake spins up a local L1 (via Anvil fork), deploys all OP Stack contracts aut
 - **Local L1 via Anvil** — Forks Sepolia or Mainnet using Foundry's Anvil
 - **Automatic contract deployment** — Uses `op-deployer` to deploy all OP Stack contracts
 - **Full L2 node stack** — Runs kona-node (consensus) + op-reth (execution) out of the box
+- **Complete sequencer stack** — Includes op-batcher, op-proposer, and op-challenger
+- **Built-in monitoring** — Prometheus + Grafana dashboards for metrics visualization
 - **Config generation** — Outputs `genesis.json` and `rollup.json` for L2 nodes
 - **Docker-based** — No local toolchain required, just Docker
 
@@ -35,12 +37,19 @@ That's it! Kupcake will:
 4. Generate `genesis.json` and `rollup.json`
 5. Start op-reth (L2 execution client)
 6. Start kona-node (L2 consensus client in sequencer mode)
+7. Start op-batcher, op-proposer, and op-challenger
+8. Start Prometheus + Grafana monitoring stack
 
 Once running, you'll have:
 - **L1 (Anvil)** at `http://localhost:8545`
 - **L2 (op-reth) HTTP** at `http://localhost:9545`
 - **L2 (op-reth) WS** at `ws://localhost:9546`
 - **Kona Node RPC** at `http://localhost:7545`
+- **Op Batcher RPC** at `http://localhost:8548`
+- **Op Proposer RPC** at `http://localhost:8560`
+- **Op Challenger RPC** at `http://localhost:8561`
+- **Prometheus** at `http://localhost:9099`
+- **Grafana** at `http://localhost:3019` (admin/admin)
 
 Press `Ctrl+C` to stop and clean up all containers.
 
@@ -111,7 +120,13 @@ After running, you'll find these files in the output directory (`data-<network-n
 │     └─> Docker: ghcr.io/paradigmxyz/op-reth                 │
 │                                                             │
 │  5. Start L2 consensus client (sequencer mode)              │
-│     └─> Docker: ghcr.io/op-rs/kona/kona-node:1.2.4          │
+│     └─> Docker: ghcr.io/op-rs/kona/kona-node                │
+│                                                             │
+│  6. Start sequencer services                                │
+│     └─> Docker: op-batcher, op-proposer, op-challenger      │
+│                                                             │
+│  7. Start monitoring stack                                  │
+│     └─> Docker: Prometheus + Grafana                        │
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -123,7 +138,12 @@ After running, you'll find these files in the output directory (`data-<network-n
 | Anvil | `ghcr.io/foundry-rs/foundry` | Local L1 chain (forks Sepolia/Mainnet) |
 | op-deployer | `us-docker.pkg.dev/oplabs-tools-artifacts/images/op-deployer` | Deploys OP Stack contracts |
 | op-reth | `ghcr.io/paradigmxyz/op-reth` | L2 execution client (EVM) |
-| kona-node | `ghcr.io/op-rs/kona/kona-node:1.2.4` | L2 consensus client (sequencer) |
+| kona-node | `ghcr.io/op-rs/kona/kona-node` | L2 consensus client (sequencer) |
+| op-batcher | `us-docker.pkg.dev/oplabs-tools-artifacts/images/op-batcher` | Batches L2 transactions to L1 |
+| op-proposer | `us-docker.pkg.dev/oplabs-tools-artifacts/images/op-proposer` | Proposes L2 output roots to L1 |
+| op-challenger | `us-docker.pkg.dev/oplabs-tools-artifacts/images/op-challenger` | Monitors and challenges invalid proposals |
+| Prometheus | `prom/prometheus` | Metrics collection and storage |
+| Grafana | `grafana/grafana` | Metrics visualization and dashboards |
 
 ## Ports
 
@@ -136,6 +156,14 @@ After running, you'll find these files in the output directory (`data-<network-n
 | op-reth Metrics | 9001 | HTTP |
 | kona-node RPC | 7545 | HTTP |
 | kona-node Metrics | 7300 | HTTP |
+| op-batcher RPC | 8548 | HTTP |
+| op-batcher Metrics | 7301 | HTTP |
+| op-proposer RPC | 8560 | HTTP |
+| op-proposer Metrics | 7302 | HTTP |
+| op-challenger RPC | 8561 | HTTP |
+| op-challenger Metrics | 7303 | HTTP |
+| Prometheus | 9099 | HTTP |
+| Grafana | 3019 | HTTP |
 
 ## License
 
