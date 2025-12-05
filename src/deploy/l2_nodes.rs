@@ -29,6 +29,12 @@ pub const DEFAULT_KONA_NODE_METRICS_PORT: u16 = 7300;
 pub const DEFAULT_OP_BATCHER_RPC_PORT: u16 = 8548;
 pub const DEFAULT_OP_BATCHER_METRICS_PORT: u16 = 7301;
 
+pub const DEFAULT_OP_PROPOSER_RPC_PORT: u16 = 8560;
+pub const DEFAULT_OP_PROPOSER_METRICS_PORT: u16 = 7302;
+
+pub const DEFAULT_OP_CHALLENGER_RPC_PORT: u16 = 8561;
+pub const DEFAULT_OP_CHALLENGER_METRICS_PORT: u16 = 7303;
+
 /// Configuration for the op-reth execution client.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpRethConfig {
@@ -150,6 +156,72 @@ impl Default for OpBatcherConfig {
     }
 }
 
+/// Configuration for the op-proposer component.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct OpProposerConfig {
+    /// Container name for op-proposer.
+    pub container_name: String,
+
+    /// Host for the RPC endpoint.
+    pub host: String,
+
+    /// Port for the op-proposer RPC server.
+    pub rpc_port: u16,
+
+    /// Port for metrics.
+    pub metrics_port: u16,
+
+    /// Proposal interval.
+    pub proposal_interval: String,
+
+    /// Extra arguments to pass to op-proposer.
+    pub extra_args: Vec<String>,
+}
+
+impl Default for OpProposerConfig {
+    fn default() -> Self {
+        Self {
+            container_name: "kupcake-op-proposer".to_string(),
+            host: "0.0.0.0".to_string(),
+            rpc_port: DEFAULT_OP_PROPOSER_RPC_PORT,
+            metrics_port: DEFAULT_OP_PROPOSER_METRICS_PORT,
+            proposal_interval: "12s".to_string(),
+            extra_args: Vec::new(),
+        }
+    }
+}
+
+/// Configuration for the op-challenger component.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct OpChallengerConfig {
+    /// Container name for op-challenger.
+    pub container_name: String,
+
+    /// Host for the RPC endpoint.
+    pub host: String,
+
+    /// Port for the op-challenger RPC server.
+    pub rpc_port: u16,
+
+    /// Port for metrics.
+    pub metrics_port: u16,
+
+    /// Extra arguments to pass to op-challenger.
+    pub extra_args: Vec<String>,
+}
+
+impl Default for OpChallengerConfig {
+    fn default() -> Self {
+        Self {
+            container_name: "kupcake-op-challenger".to_string(),
+            host: "0.0.0.0".to_string(),
+            rpc_port: DEFAULT_OP_CHALLENGER_RPC_PORT,
+            metrics_port: DEFAULT_OP_CHALLENGER_METRICS_PORT,
+            extra_args: Vec::new(),
+        }
+    }
+}
+
 /// Combined configuration for all L2 node components.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct L2NodesConfig {
@@ -161,6 +233,12 @@ pub struct L2NodesConfig {
 
     /// Configuration for op-batcher.
     pub op_batcher: OpBatcherConfig,
+
+    /// Configuration for op-proposer.
+    pub op_proposer: OpProposerConfig,
+
+    /// Configuration for op-challenger.
+    pub op_challenger: OpChallengerConfig,
 }
 
 impl Default for L2NodesConfig {
@@ -169,6 +247,8 @@ impl Default for L2NodesConfig {
             op_reth: OpRethConfig::default(),
             kona_node: KonaNodeConfig::default(),
             op_batcher: OpBatcherConfig::default(),
+            op_proposer: OpProposerConfig::default(),
+            op_challenger: OpChallengerConfig::default(),
         }
     }
 }
@@ -206,11 +286,31 @@ pub struct OpBatcherHandler {
     pub rpc_url: Url,
 }
 
+/// Handler for the op-proposer.
+pub struct OpProposerHandler {
+    pub container_id: String,
+    pub container_name: String,
+
+    /// The RPC URL for the op-proposer.
+    pub rpc_url: Url,
+}
+
+/// Handler for the op-challenger.
+pub struct OpChallengerHandler {
+    pub container_id: String,
+    pub container_name: String,
+
+    /// The RPC URL for the op-challenger.
+    pub rpc_url: Url,
+}
+
 /// Handler for the complete L2 node setup.
 pub struct L2NodesHandler {
     pub op_reth: OpRethHandler,
     pub kona_node: KonaNodeHandler,
     pub op_batcher: OpBatcherHandler,
+    pub op_proposer: OpProposerHandler,
+    pub op_challenger: OpChallengerHandler,
 }
 
 impl L2NodesConfig {
@@ -643,16 +743,281 @@ impl L2NodesConfig {
         })
     }
 
+    /// Start the op-proposer.
+    async fn start_op_proposer(
+        &self,
+        docker: &mut KupDocker,
+        host_config_path: &PathBuf,
+        anvil_handler: &AnvilHandler,
+        _op_reth_handler: &OpRethHandler,
+        kona_node_handler: &KonaNodeHandler,
+        _l2_chain_id: u64,
+    ) -> Result<OpProposerHandler, anyhow::Error> {
+        let container_config_path = PathBuf::from("/data");
+
+        // The proposer account is at index 8 in the Anvil accounts
+        let proposer_private_key = &anvil_handler.account_infos[8].private_key;
+
+        // Read the DisputeGameFactory address from state.json
+        let state_file_path = host_config_path.join("state.json");
+        let state_content = tokio::fs::read_to_string(&state_file_path)
+            .await
+            .context("Failed to read state.json for DisputeGameFactory address")?;
+
+        let state: serde_json::Value =
+            serde_json::from_str(&state_content).context("Failed to parse state.json")?;
+
+        let dgf_address = state["opChainDeployments"][0]["DisputeGameFactoryProxy"]
+            .as_str()
+            .context("DisputeGameFactory address not found in state.json")?;
+
+        // Build the op-proposer command
+        let mut cmd = vec![
+            "op-proposer".to_string(),
+            "--l1-eth-rpc".to_string(),
+            anvil_handler.l1_rpc_url.to_string(),
+            "--rollup-rpc".to_string(),
+            kona_node_handler.rpc_url.to_string(),
+            "--private-key".to_string(),
+            proposer_private_key.to_string(),
+            "--game-factory-address".to_string(),
+            dgf_address.to_string(),
+            "--proposal-interval".to_string(),
+            self.op_proposer.proposal_interval.clone(),
+            "--game-type".to_string(),
+            "254".to_string(), // Permissioned game type
+            // RPC configuration
+            "--rpc.addr".to_string(),
+            "0.0.0.0".to_string(),
+            "--rpc.port".to_string(),
+            self.op_proposer.rpc_port.to_string(),
+            // Metrics
+            "--metrics.enabled".to_string(),
+            "--metrics.addr".to_string(),
+            "0.0.0.0".to_string(),
+            "--metrics.port".to_string(),
+            self.op_proposer.metrics_port.to_string(),
+        ];
+
+        // Add extra arguments
+        cmd.extend(self.op_proposer.extra_args.clone());
+
+        // Configure port bindings
+        let port_bindings = HashMap::from([
+            (
+                format!("{}/tcp", self.op_proposer.rpc_port),
+                Some(vec![PortBinding {
+                    host_ip: Some("0.0.0.0".to_string()),
+                    host_port: Some(self.op_proposer.rpc_port.to_string()),
+                }]),
+            ),
+            (
+                format!("{}/tcp", self.op_proposer.metrics_port),
+                Some(vec![PortBinding {
+                    host_ip: Some("0.0.0.0".to_string()),
+                    host_port: Some(self.op_proposer.metrics_port.to_string()),
+                }]),
+            ),
+        ]);
+
+        let host_config = HostConfig {
+            port_bindings: Some(port_bindings),
+            binds: Some(vec![format!(
+                "{}:{}:rw",
+                host_config_path.display(),
+                container_config_path.to_string_lossy()
+            )]),
+            network_mode: Some(docker.network_id.clone()),
+            ..Default::default()
+        };
+
+        let config = Config {
+            image: Some(format!(
+                "{}:{}",
+                docker.config.op_proposer_docker_image, docker.config.op_proposer_docker_tag
+            )),
+            cmd: Some(cmd),
+            host_config: Some(host_config),
+            ..Default::default()
+        };
+
+        let container_id = docker
+            .create_and_start_container(
+                &self.op_proposer.container_name,
+                config,
+                CreateAndStartContainerOptions {
+                    stream_logs: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("Failed to start op-proposer container")?;
+
+        tracing::info!(
+            container_id = %container_id,
+            container_name = %self.op_proposer.container_name,
+            "op-proposer container started"
+        );
+
+        // Determine RPC URL based on Docker network mode
+        let rpc_url = Url::parse(&format!(
+            "http://{}:{}",
+            self.op_proposer.container_name, self.op_proposer.rpc_port
+        ))
+        .context("Failed to parse op-proposer RPC URL")?;
+
+        Ok(OpProposerHandler {
+            container_id,
+            container_name: self.op_proposer.container_name.clone(),
+            rpc_url,
+        })
+    }
+
+    /// Start the op-challenger.
+    async fn start_op_challenger(
+        &self,
+        docker: &mut KupDocker,
+        host_config_path: &PathBuf,
+        anvil_handler: &AnvilHandler,
+        kona_node_handler: &KonaNodeHandler,
+        _l2_chain_id: u64,
+    ) -> Result<OpChallengerHandler, anyhow::Error> {
+        let container_config_path = PathBuf::from("/data");
+
+        // The challenger account is at index 9 in the Anvil accounts
+        let challenger_private_key = &anvil_handler.account_infos[9].private_key;
+
+        // Read the DisputeGameFactory address from state.json
+        let state_file_path = host_config_path.join("state.json");
+        let state_content = tokio::fs::read_to_string(&state_file_path)
+            .await
+            .context("Failed to read state.json for DisputeGameFactory address")?;
+
+        let state: serde_json::Value =
+            serde_json::from_str(&state_content).context("Failed to parse state.json")?;
+
+        let dgf_address = state["opChainDeployments"][0]["DisputeGameFactoryProxy"]
+            .as_str()
+            .context("DisputeGameFactory address not found in state.json")?;
+
+        // Build the op-challenger command
+        let mut cmd = vec![
+            "op-challenger".to_string(),
+            "--l1-eth-rpc".to_string(),
+            anvil_handler.l1_rpc_url.to_string(),
+            "--rollup-rpc".to_string(),
+            kona_node_handler.rpc_url.to_string(),
+            "--l2-eth-rpc".to_string(),
+            format!(
+                "http://{}:{}",
+                self.op_reth.container_name, self.op_reth.http_port
+            ),
+            "--private-key".to_string(),
+            challenger_private_key.to_string(),
+            "--game-factory-address".to_string(),
+            dgf_address.to_string(),
+            "--trace-type".to_string(),
+            "permissioned".to_string(),
+            "--game-allowlist".to_string(),
+            "254".to_string(), // Permissioned game type
+            // RPC configuration
+            "--rpc.addr".to_string(),
+            "0.0.0.0".to_string(),
+            "--rpc.port".to_string(),
+            self.op_challenger.rpc_port.to_string(),
+            // Metrics
+            "--metrics.enabled".to_string(),
+            "--metrics.addr".to_string(),
+            "0.0.0.0".to_string(),
+            "--metrics.port".to_string(),
+            self.op_challenger.metrics_port.to_string(),
+        ];
+
+        // Add extra arguments
+        cmd.extend(self.op_challenger.extra_args.clone());
+
+        // Configure port bindings
+        let port_bindings = HashMap::from([
+            (
+                format!("{}/tcp", self.op_challenger.rpc_port),
+                Some(vec![PortBinding {
+                    host_ip: Some("0.0.0.0".to_string()),
+                    host_port: Some(self.op_challenger.rpc_port.to_string()),
+                }]),
+            ),
+            (
+                format!("{}/tcp", self.op_challenger.metrics_port),
+                Some(vec![PortBinding {
+                    host_ip: Some("0.0.0.0".to_string()),
+                    host_port: Some(self.op_challenger.metrics_port.to_string()),
+                }]),
+            ),
+        ]);
+
+        let host_config = HostConfig {
+            port_bindings: Some(port_bindings),
+            binds: Some(vec![format!(
+                "{}:{}:rw",
+                host_config_path.display(),
+                container_config_path.to_string_lossy()
+            )]),
+            network_mode: Some(docker.network_id.clone()),
+            ..Default::default()
+        };
+
+        let config = Config {
+            image: Some(format!(
+                "{}:{}",
+                docker.config.op_challenger_docker_image, docker.config.op_challenger_docker_tag
+            )),
+            cmd: Some(cmd),
+            host_config: Some(host_config),
+            ..Default::default()
+        };
+
+        let container_id = docker
+            .create_and_start_container(
+                &self.op_challenger.container_name,
+                config,
+                CreateAndStartContainerOptions {
+                    stream_logs: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("Failed to start op-challenger container")?;
+
+        tracing::info!(
+            container_id = %container_id,
+            container_name = %self.op_challenger.container_name,
+            "op-challenger container started"
+        );
+
+        // Determine RPC URL based on Docker network mode
+        let rpc_url = Url::parse(&format!(
+            "http://{}:{}",
+            self.op_challenger.container_name, self.op_challenger.rpc_port
+        ))
+        .context("Failed to parse op-challenger RPC URL")?;
+
+        Ok(OpChallengerHandler {
+            container_id,
+            container_name: self.op_challenger.container_name.clone(),
+            rpc_url,
+        })
+    }
+
     /// Start all L2 node components.
     ///
     /// This starts op-reth first (execution client), then kona-node (consensus client),
-    /// and finally op-batcher (batch submitter).
+    /// followed by op-batcher (batch submitter), op-proposer, and op-challenger.
     /// The components communicate via the Engine API using JWT authentication.
     pub async fn start(
         self,
         docker: &mut KupDocker,
         host_config_path: PathBuf,
         anvil_handler: &AnvilHandler,
+        l2_chain_id: u64,
     ) -> Result<L2NodesHandler, anyhow::Error> {
         if !host_config_path.exists() {
             FsHandler::create_host_config_directory(&host_config_path)?;
@@ -692,11 +1057,40 @@ impl L2NodesConfig {
             )
             .await?;
 
+        tracing::info!("Starting op-proposer...");
+
+        // Start op-proposer
+        let op_proposer_handler = self
+            .start_op_proposer(
+                docker,
+                &host_config_path,
+                anvil_handler,
+                &op_reth_handler,
+                &kona_node_handler,
+                l2_chain_id,
+            )
+            .await?;
+
+        tracing::info!("Starting op-challenger...");
+
+        // Start op-challenger
+        let op_challenger_handler = self
+            .start_op_challenger(
+                docker,
+                &host_config_path,
+                anvil_handler,
+                &kona_node_handler,
+                l2_chain_id,
+            )
+            .await?;
+
         tracing::info!(
             l2_http_rpc = %op_reth_handler.http_rpc_url,
             l2_ws_rpc = %op_reth_handler.ws_rpc_url,
             kona_node_rpc = %kona_node_handler.rpc_url,
             op_batcher_rpc = %op_batcher_handler.rpc_url,
+            op_proposer_rpc = %op_proposer_handler.rpc_url,
+            op_challenger_rpc = %op_challenger_handler.rpc_url,
             "L2 nodes started successfully"
         );
 
@@ -704,6 +1098,8 @@ impl L2NodesConfig {
             op_reth: op_reth_handler,
             kona_node: kona_node_handler,
             op_batcher: op_batcher_handler,
+            op_proposer: op_proposer_handler,
+            op_challenger: op_challenger_handler,
         })
     }
 }

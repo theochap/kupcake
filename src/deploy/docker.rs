@@ -35,6 +35,18 @@ pub struct KupDockerConfig {
     pub op_batcher_docker_image: String,
     pub op_batcher_docker_tag: String,
 
+    pub op_proposer_docker_image: String,
+    pub op_proposer_docker_tag: String,
+
+    pub op_challenger_docker_image: String,
+    pub op_challenger_docker_tag: String,
+
+    pub prometheus_docker_image: String,
+    pub prometheus_docker_tag: String,
+
+    pub grafana_docker_image: String,
+    pub grafana_docker_tag: String,
+
     pub net_name: String,
 
     pub no_cleanup: bool,
@@ -206,6 +218,58 @@ impl KupDocker {
             .pull_image(
                 &docker.config.op_batcher_docker_image,
                 &docker.config.op_batcher_docker_tag,
+            )
+            .await?;
+
+        tracing::debug!(
+            image = docker.config.op_proposer_docker_image,
+            tag = docker.config.op_proposer_docker_tag,
+            "Pulling op-proposer from docker..."
+        );
+
+        docker
+            .pull_image(
+                &docker.config.op_proposer_docker_image,
+                &docker.config.op_proposer_docker_tag,
+            )
+            .await?;
+
+        tracing::debug!(
+            image = docker.config.op_challenger_docker_image,
+            tag = docker.config.op_challenger_docker_tag,
+            "Pulling op-challenger from docker..."
+        );
+
+        docker
+            .pull_image(
+                &docker.config.op_challenger_docker_image,
+                &docker.config.op_challenger_docker_tag,
+            )
+            .await?;
+
+        tracing::debug!(
+            image = docker.config.prometheus_docker_image,
+            tag = docker.config.prometheus_docker_tag,
+            "Pulling Prometheus from docker..."
+        );
+
+        docker
+            .pull_image(
+                &docker.config.prometheus_docker_image,
+                &docker.config.prometheus_docker_tag,
+            )
+            .await?;
+
+        tracing::debug!(
+            image = docker.config.grafana_docker_image,
+            tag = docker.config.grafana_docker_tag,
+            "Pulling Grafana from docker..."
+        );
+
+        docker
+            .pull_image(
+                &docker.config.grafana_docker_image,
+                &docker.config.grafana_docker_tag,
             )
             .await?;
 

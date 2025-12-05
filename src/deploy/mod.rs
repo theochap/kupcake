@@ -7,12 +7,17 @@ use std::path::PathBuf;
 mod anvil;
 mod docker;
 mod fs;
+mod grafana;
 mod l2_nodes;
 mod op_deployer;
 
 pub use anvil::AnvilConfig;
 pub use docker::{KupDocker, KupDockerConfig};
-pub use l2_nodes::{KonaNodeConfig, L2NodesConfig, OpBatcherConfig, OpRethConfig};
+pub use grafana::{GrafanaConfig, MonitoringConfig, PrometheusConfig};
+pub use l2_nodes::{
+    KonaNodeConfig, L2NodesConfig, OpBatcherConfig, OpChallengerConfig, OpProposerConfig,
+    OpRethConfig,
+};
 pub use op_deployer::OpDeployerConfig;
 
 pub struct AccountInfo {
@@ -29,6 +34,10 @@ pub struct Deployer {
     pub op_deployer_config: OpDeployerConfig,
     pub docker_config: KupDockerConfig,
     pub l2_nodes_config: L2NodesConfig,
+    pub monitoring_config: MonitoringConfig,
+
+    /// Path to the dashboards directory (optional).
+    pub dashboards_path: Option<PathBuf>,
 }
 
 impl Deployer {
@@ -66,13 +75,40 @@ impl Deployer {
             )
             .await?;
 
-        tracing::info!("Starting L2 nodes (op-reth + kona-node + op-batcher)...");
+        tracing::info!(
+            "Starting L2 nodes (op-reth + kona-node + op-batcher + op-proposer + op-challenger)..."
+        );
 
         let l2_nodes = self
             .l2_nodes_config
-            .start(&mut docker, l2_nodes_data_path, &anvil)
+            .start(
+                &mut docker,
+                l2_nodes_data_path.clone(),
+                &anvil,
+                self.l2_chain_id,
+            )
             .await
             .context("Failed to start L2 nodes")?;
+
+        // Start monitoring stack if enabled
+        let monitoring = if self.monitoring_config.enabled {
+            tracing::info!("Starting monitoring stack (Prometheus + Grafana)...");
+
+            let monitoring_data_path = self.outdata.join("monitoring");
+            Some(
+                self.monitoring_config
+                    .start(
+                        &mut docker,
+                        monitoring_data_path,
+                        &l2_nodes,
+                        self.dashboards_path,
+                    )
+                    .await
+                    .context("Failed to start monitoring stack")?,
+            )
+        } else {
+            None
+        };
 
         tracing::info!("✓ Deployment complete!");
         tracing::info!("");
@@ -81,6 +117,14 @@ impl Deployer {
         tracing::info!("L2 (op-reth) WS:      {}", l2_nodes.op_reth.ws_rpc_url);
         tracing::info!("Kona Node RPC:        {}", l2_nodes.kona_node.rpc_url);
         tracing::info!("Op Batcher RPC:       {}", l2_nodes.op_batcher.rpc_url);
+        tracing::info!("Op Proposer RPC:      {}", l2_nodes.op_proposer.rpc_url);
+        tracing::info!("Op Challenger RPC:    {}", l2_nodes.op_challenger.rpc_url);
+
+        if let Some(ref mon) = monitoring {
+            tracing::info!("Prometheus:           {}", mon.prometheus.url);
+            tracing::info!("Grafana:              {}", mon.grafana.url);
+        }
+
         tracing::info!("");
 
         tracing::info!("Press Ctrl+C to stop all nodes and cleanup.");

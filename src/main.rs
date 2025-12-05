@@ -9,8 +9,9 @@ use rand::Rng;
 use kupcake::{
     cli::{Cli, OutData},
     deploy::{
-        AnvilConfig, Deployer, KonaNodeConfig, KupDockerConfig, L2NodesConfig, OpBatcherConfig,
-        OpDeployerConfig, OpRethConfig,
+        AnvilConfig, Deployer, GrafanaConfig, KonaNodeConfig, KupDockerConfig, L2NodesConfig,
+        MonitoringConfig, OpBatcherConfig, OpChallengerConfig, OpDeployerConfig, OpProposerConfig,
+        OpRethConfig, PrometheusConfig,
     },
 };
 
@@ -29,6 +30,20 @@ const OP_RETH_DOCKER_TAG: &str = "latest";
 
 const OP_BATCHER_DOCKER_IMAGE: &str = "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-batcher";
 const OP_BATCHER_DOCKER_TAG: &str = "v1.16.2";
+
+const OP_PROPOSER_DOCKER_IMAGE: &str =
+    "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-proposer";
+const OP_PROPOSER_DOCKER_TAG: &str = "develop";
+
+const OP_CHALLENGER_DOCKER_IMAGE: &str =
+    "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-challenger";
+const OP_CHALLENGER_DOCKER_TAG: &str = "develop";
+
+const PROMETHEUS_DOCKER_IMAGE: &str = "prom/prometheus";
+const PROMETHEUS_DOCKER_TAG: &str = "latest";
+
+const GRAFANA_DOCKER_IMAGE: &str = "grafana/grafana";
+const GRAFANA_DOCKER_TAG: &str = "latest";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -115,6 +130,14 @@ async fn main() -> Result<()> {
             op_reth_docker_tag: OP_RETH_DOCKER_TAG.to_string(),
             op_batcher_docker_image: OP_BATCHER_DOCKER_IMAGE.to_string(),
             op_batcher_docker_tag: OP_BATCHER_DOCKER_TAG.to_string(),
+            op_proposer_docker_image: OP_PROPOSER_DOCKER_IMAGE.to_string(),
+            op_proposer_docker_tag: OP_PROPOSER_DOCKER_TAG.to_string(),
+            op_challenger_docker_image: OP_CHALLENGER_DOCKER_IMAGE.to_string(),
+            op_challenger_docker_tag: OP_CHALLENGER_DOCKER_TAG.to_string(),
+            prometheus_docker_image: PROMETHEUS_DOCKER_IMAGE.to_string(),
+            prometheus_docker_tag: PROMETHEUS_DOCKER_TAG.to_string(),
+            grafana_docker_image: GRAFANA_DOCKER_IMAGE.to_string(),
+            grafana_docker_tag: GRAFANA_DOCKER_TAG.to_string(),
             net_name: format!("{}-network", network_name),
             no_cleanup: cli.no_cleanup,
         },
@@ -136,7 +159,30 @@ async fn main() -> Result<()> {
                 container_name: format!("{}-op-batcher", network_name),
                 ..Default::default()
             },
+            op_proposer: OpProposerConfig {
+                container_name: format!("{}-op-proposer", network_name),
+                ..Default::default()
+            },
+            op_challenger: OpChallengerConfig {
+                container_name: format!("{}-op-challenger", network_name),
+                ..Default::default()
+            },
         },
+
+        monitoring_config: MonitoringConfig {
+            prometheus: PrometheusConfig {
+                container_name: format!("{}-prometheus", network_name),
+                ..Default::default()
+            },
+            grafana: GrafanaConfig {
+                container_name: format!("{}-grafana", network_name),
+                ..Default::default()
+            },
+            enabled: true,
+        },
+
+        // Use the dashboards from the project's grafana/dashboards directory
+        dashboards_path: Some(PathBuf::from("grafana/dashboards")),
     };
 
     deployer.deploy().await?;

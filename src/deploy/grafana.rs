@@ -1,0 +1,539 @@
+//! Grafana and Prometheus deployment for metrics collection and visualization.
+
+use std::{collections::HashMap, path::PathBuf};
+
+use anyhow::Context;
+use bollard::{
+    container::Config,
+    secret::{HostConfig, PortBinding},
+};
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+use crate::deploy::{
+    docker::{CreateAndStartContainerOptions, KupDocker},
+    fs::FsHandler,
+    l2_nodes::L2NodesHandler,
+};
+
+/// Default ports for monitoring components.
+pub const DEFAULT_PROMETHEUS_PORT: u16 = 9099;
+pub const DEFAULT_GRAFANA_PORT: u16 = 3019;
+
+/// Configuration for Prometheus.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PrometheusConfig {
+    /// Container name for Prometheus.
+    pub container_name: String,
+
+    /// Host for the Prometheus server.
+    pub host: String,
+
+    /// Port for the Prometheus server.
+    pub port: u16,
+
+    /// Scrape interval in seconds.
+    pub scrape_interval: u64,
+}
+
+impl Default for PrometheusConfig {
+    fn default() -> Self {
+        Self {
+            container_name: "kupcake-prometheus".to_string(),
+            host: "0.0.0.0".to_string(),
+            port: DEFAULT_PROMETHEUS_PORT,
+            scrape_interval: 15,
+        }
+    }
+}
+
+/// Configuration for Grafana.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GrafanaConfig {
+    /// Container name for Grafana.
+    pub container_name: String,
+
+    /// Host for the Grafana server.
+    pub host: String,
+
+    /// Port for the Grafana server.
+    pub port: u16,
+
+    /// Admin username.
+    pub admin_user: String,
+
+    /// Admin password.
+    pub admin_password: String,
+}
+
+impl Default for GrafanaConfig {
+    fn default() -> Self {
+        Self {
+            container_name: "kupcake-grafana".to_string(),
+            host: "0.0.0.0".to_string(),
+            port: DEFAULT_GRAFANA_PORT,
+            admin_user: "admin".to_string(),
+            admin_password: "admin".to_string(),
+        }
+    }
+}
+
+/// Combined configuration for monitoring stack.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitoringConfig {
+    /// Configuration for Prometheus.
+    pub prometheus: PrometheusConfig,
+
+    /// Configuration for Grafana.
+    pub grafana: GrafanaConfig,
+
+    /// Whether monitoring is enabled.
+    pub enabled: bool,
+}
+
+impl Default for MonitoringConfig {
+    fn default() -> Self {
+        Self {
+            prometheus: PrometheusConfig::default(),
+            grafana: GrafanaConfig::default(),
+            enabled: true,
+        }
+    }
+}
+
+/// Handler for Prometheus.
+pub struct PrometheusHandler {
+    pub container_id: String,
+    pub container_name: String,
+
+    /// The URL for the Prometheus server.
+    pub url: Url,
+}
+
+/// Handler for Grafana.
+pub struct GrafanaHandler {
+    pub container_id: String,
+    pub container_name: String,
+
+    /// The URL for the Grafana server.
+    pub url: Url,
+}
+
+/// Handler for the complete monitoring stack.
+pub struct MonitoringHandler {
+    pub prometheus: PrometheusHandler,
+    pub grafana: GrafanaHandler,
+}
+
+/// Metrics target for Prometheus scraping.
+struct MetricsTarget {
+    job_name: &'static str,
+    container_name: String,
+    port: u16,
+    service_label: &'static str,
+    layer_label: &'static str,
+}
+
+impl MonitoringConfig {
+    /// Generate the Prometheus configuration file based on running services.
+    async fn generate_prometheus_config(
+        &self,
+        host_config_path: &PathBuf,
+        l2_nodes: &L2NodesHandler,
+    ) -> Result<PathBuf, anyhow::Error> {
+        let targets = vec![
+            MetricsTarget {
+                job_name: "op-reth",
+                container_name: l2_nodes.op_reth.container_name.clone(),
+                port: 9001, // DEFAULT_OP_RETH_METRICS_PORT
+                service_label: "op-reth",
+                layer_label: "execution",
+            },
+            MetricsTarget {
+                job_name: "kona-node",
+                container_name: l2_nodes.kona_node.container_name.clone(),
+                port: 7300, // DEFAULT_KONA_NODE_METRICS_PORT
+                service_label: "kona-node",
+                layer_label: "consensus",
+            },
+            MetricsTarget {
+                job_name: "op-batcher",
+                container_name: l2_nodes.op_batcher.container_name.clone(),
+                port: 7301, // DEFAULT_OP_BATCHER_METRICS_PORT
+                service_label: "op-batcher",
+                layer_label: "batcher",
+            },
+            MetricsTarget {
+                job_name: "op-proposer",
+                container_name: l2_nodes.op_proposer.container_name.clone(),
+                port: 7302, // DEFAULT_OP_PROPOSER_METRICS_PORT
+                service_label: "op-proposer",
+                layer_label: "proposer",
+            },
+            MetricsTarget {
+                job_name: "op-challenger",
+                container_name: l2_nodes.op_challenger.container_name.clone(),
+                port: 7303, // DEFAULT_OP_CHALLENGER_METRICS_PORT
+                service_label: "op-challenger",
+                layer_label: "challenger",
+            },
+        ];
+
+        let mut scrape_configs = String::new();
+        for target in &targets {
+            scrape_configs.push_str(&format!(
+                r#"
+  - job_name: '{}'
+    metrics_path: '/metrics'
+    scrape_interval: {}s
+    static_configs:
+      - targets: ['{}:{}']
+        labels:
+          service: '{}'
+          layer: '{}'"#,
+                target.job_name,
+                self.prometheus.scrape_interval,
+                target.container_name,
+                target.port,
+                target.service_label,
+                target.layer_label,
+            ));
+        }
+
+        // Add Prometheus self-monitoring
+        scrape_configs.push_str(&format!(
+            r#"
+
+  - job_name: 'prometheus'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['localhost:{}']
+        labels:
+          service: 'prometheus'"#,
+            self.prometheus.port
+        ));
+
+        let config_content = format!(
+            r#"# Prometheus configuration for kupcake OP Stack
+
+global:
+  scrape_interval: {}s
+  evaluation_interval: {}s
+  scrape_timeout: 10s
+
+  external_labels:
+    cluster: 'kupcake-op-stack'
+    environment: 'dev'
+
+scrape_configs:{}"#,
+            self.prometheus.scrape_interval, self.prometheus.scrape_interval, scrape_configs
+        );
+
+        let config_path = host_config_path.join("prometheus.yml");
+        tokio::fs::write(&config_path, config_content)
+            .await
+            .context("Failed to write Prometheus config file")?;
+
+        tracing::debug!(path = ?config_path, "Prometheus config written");
+        Ok(config_path)
+    }
+
+    /// Generate the Grafana datasource configuration.
+    async fn generate_grafana_datasource(
+        &self,
+        host_config_path: &PathBuf,
+    ) -> Result<PathBuf, anyhow::Error> {
+        let datasource_content = format!(
+            r#"apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://{}:{}
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: '{}s'
+      httpMethod: 'POST'"#,
+            self.prometheus.container_name, self.prometheus.port, self.prometheus.scrape_interval
+        );
+
+        let datasources_dir = host_config_path.join("grafana/provisioning/datasources");
+        tokio::fs::create_dir_all(&datasources_dir)
+            .await
+            .context("Failed to create Grafana datasources directory")?;
+
+        let config_path = datasources_dir.join("prometheus.yml");
+        tokio::fs::write(&config_path, datasource_content)
+            .await
+            .context("Failed to write Grafana datasource config")?;
+
+        tracing::debug!(path = ?config_path, "Grafana datasource config written");
+        Ok(config_path)
+    }
+
+    /// Generate the Grafana dashboard provisioning configuration.
+    async fn generate_grafana_dashboard_provisioning(
+        &self,
+        host_config_path: &PathBuf,
+    ) -> Result<PathBuf, anyhow::Error> {
+        let dashboard_provisioning = r#"apiVersion: 1
+
+providers:
+  - name: 'Kupcake Dashboards'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards"#;
+
+        let dashboards_dir = host_config_path.join("grafana/provisioning/dashboards");
+        tokio::fs::create_dir_all(&dashboards_dir)
+            .await
+            .context("Failed to create Grafana dashboards directory")?;
+
+        let config_path = dashboards_dir.join("dashboards.yml");
+        tokio::fs::write(&config_path, dashboard_provisioning)
+            .await
+            .context("Failed to write Grafana dashboard provisioning config")?;
+
+        tracing::debug!(path = ?config_path, "Grafana dashboard provisioning config written");
+        Ok(config_path)
+    }
+
+    /// Copy dashboard files to the Grafana provisioning directory.
+    async fn copy_dashboards(
+        &self,
+        host_config_path: &PathBuf,
+        dashboards_source: &PathBuf,
+    ) -> Result<(), anyhow::Error> {
+        let dashboards_dest = host_config_path.join("grafana/provisioning/dashboards");
+
+        // Read all JSON files from the source directory
+        let mut entries = tokio::fs::read_dir(dashboards_source)
+            .await
+            .context("Failed to read dashboards source directory")?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "json") {
+                let file_name = path.file_name().unwrap();
+                let dest_path = dashboards_dest.join(file_name);
+                tokio::fs::copy(&path, &dest_path)
+                    .await
+                    .context(format!("Failed to copy dashboard: {:?}", file_name))?;
+                tracing::debug!(src = ?path, dest = ?dest_path, "Dashboard copied");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Start Prometheus container.
+    async fn start_prometheus(
+        &self,
+        docker: &mut KupDocker,
+        host_config_path: &PathBuf,
+    ) -> Result<PrometheusHandler, anyhow::Error> {
+        let container_config_path = PathBuf::from("/etc/prometheus");
+
+        // Build the Prometheus command
+        let cmd = vec![
+            "--config.file=/etc/prometheus/prometheus.yml".to_string(),
+            "--storage.tsdb.path=/prometheus".to_string(),
+            format!("--web.listen-address=0.0.0.0:{}", self.prometheus.port),
+            "--web.enable-lifecycle".to_string(),
+        ];
+
+        // Configure port bindings
+        let port_bindings = HashMap::from([(
+            format!("{}/tcp", self.prometheus.port),
+            Some(vec![PortBinding {
+                host_ip: Some("0.0.0.0".to_string()),
+                host_port: Some(self.prometheus.port.to_string()),
+            }]),
+        )]);
+
+        let host_config = HostConfig {
+            port_bindings: Some(port_bindings),
+            binds: Some(vec![format!(
+                "{}:{}:ro",
+                host_config_path.join("prometheus.yml").display(),
+                container_config_path.join("prometheus.yml").display()
+            )]),
+            network_mode: Some(docker.network_id.clone()),
+            ..Default::default()
+        };
+
+        let config = Config {
+            image: Some(format!(
+                "{}:{}",
+                docker.config.prometheus_docker_image, docker.config.prometheus_docker_tag
+            )),
+            cmd: Some(cmd),
+            host_config: Some(host_config),
+            ..Default::default()
+        };
+
+        let container_id = docker
+            .create_and_start_container(
+                &self.prometheus.container_name,
+                config,
+                CreateAndStartContainerOptions {
+                    stream_logs: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("Failed to start Prometheus container")?;
+
+        tracing::info!(
+            container_id = %container_id,
+            container_name = %self.prometheus.container_name,
+            "Prometheus container started"
+        );
+
+        let url = Url::parse(&format!("http://localhost:{}", self.prometheus.port))
+            .context("Failed to parse Prometheus URL")?;
+
+        Ok(PrometheusHandler {
+            container_id,
+            container_name: self.prometheus.container_name.clone(),
+            url,
+        })
+    }
+
+    /// Start Grafana container.
+    async fn start_grafana(
+        &self,
+        docker: &mut KupDocker,
+        host_config_path: &PathBuf,
+    ) -> Result<GrafanaHandler, anyhow::Error> {
+        // Grafana listens on port 3000 inside the container by default
+        const GRAFANA_INTERNAL_PORT: u16 = 3000;
+
+        // Configure port bindings (map container port 3000 to host port)
+        let port_bindings = HashMap::from([(
+            format!("{}/tcp", GRAFANA_INTERNAL_PORT),
+            Some(vec![PortBinding {
+                host_ip: Some("0.0.0.0".to_string()),
+                host_port: Some(self.grafana.port.to_string()),
+            }]),
+        )]);
+
+        let grafana_provisioning_path = host_config_path.join("grafana/provisioning");
+
+        let host_config = HostConfig {
+            port_bindings: Some(port_bindings),
+            binds: Some(vec![format!(
+                "{}:/etc/grafana/provisioning:ro",
+                grafana_provisioning_path.display()
+            )]),
+            network_mode: Some(docker.network_id.clone()),
+            ..Default::default()
+        };
+
+        let env = vec![
+            format!("GF_SECURITY_ADMIN_USER={}", self.grafana.admin_user),
+            format!("GF_SECURITY_ADMIN_PASSWORD={}", self.grafana.admin_password),
+            "GF_USERS_ALLOW_SIGN_UP=false".to_string(),
+            "GF_AUTH_ANONYMOUS_ENABLED=true".to_string(),
+            "GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer".to_string(),
+        ];
+
+        let config = Config {
+            image: Some(format!(
+                "{}:{}",
+                docker.config.grafana_docker_image, docker.config.grafana_docker_tag
+            )),
+            env: Some(env),
+            host_config: Some(host_config),
+            ..Default::default()
+        };
+
+        let container_id = docker
+            .create_and_start_container(
+                &self.grafana.container_name,
+                config,
+                CreateAndStartContainerOptions {
+                    stream_logs: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("Failed to start Grafana container")?;
+
+        tracing::info!(
+            container_id = %container_id,
+            container_name = %self.grafana.container_name,
+            "Grafana container started"
+        );
+
+        let url = Url::parse(&format!("http://localhost:{}", self.grafana.port))
+            .context("Failed to parse Grafana URL")?;
+
+        Ok(GrafanaHandler {
+            container_id,
+            container_name: self.grafana.container_name.clone(),
+            url,
+        })
+    }
+
+    /// Start the complete monitoring stack (Prometheus + Grafana).
+    pub async fn start(
+        &self,
+        docker: &mut KupDocker,
+        host_config_path: PathBuf,
+        l2_nodes: &L2NodesHandler,
+        dashboards_source: Option<PathBuf>,
+    ) -> Result<MonitoringHandler, anyhow::Error> {
+        if !self.enabled {
+            anyhow::bail!("Monitoring is disabled");
+        }
+
+        if !host_config_path.exists() {
+            FsHandler::create_host_config_directory(&host_config_path)?;
+        }
+
+        // Generate Prometheus configuration
+        self.generate_prometheus_config(&host_config_path, l2_nodes)
+            .await?;
+
+        // Generate Grafana configurations
+        self.generate_grafana_datasource(&host_config_path).await?;
+        self.generate_grafana_dashboard_provisioning(&host_config_path)
+            .await?;
+
+        // Copy dashboards if source is provided
+        if let Some(dashboards_path) = dashboards_source {
+            if dashboards_path.exists() {
+                self.copy_dashboards(&host_config_path, &dashboards_path)
+                    .await?;
+            }
+        }
+
+        tracing::info!("Starting Prometheus...");
+        let prometheus_handler = self.start_prometheus(docker, &host_config_path).await?;
+
+        // Give Prometheus a moment to start
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        tracing::info!("Starting Grafana...");
+        let grafana_handler = self.start_grafana(docker, &host_config_path).await?;
+
+        tracing::info!(
+            prometheus_url = %prometheus_handler.url,
+            grafana_url = %grafana_handler.url,
+            "Monitoring stack started successfully"
+        );
+
+        Ok(MonitoringHandler {
+            prometheus: prometheus_handler,
+            grafana: grafana_handler,
+        })
+    }
+}
