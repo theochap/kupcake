@@ -84,6 +84,8 @@ impl PortMapping {
 pub struct ServiceConfig {
     /// The Docker image (with tag) to use.
     pub image: String,
+    /// The entrypoint for the container.
+    pub entrypoint: Option<Vec<String>>,
     /// The command to run in the container.
     pub cmd: Option<Vec<String>>,
     /// Port mappings from container to host.
@@ -99,11 +101,18 @@ impl ServiceConfig {
     pub fn new(image: impl Into<String>) -> Self {
         Self {
             image: image.into(),
+            entrypoint: None,
             cmd: None,
             port_mappings: Vec::new(),
             binds: Vec::new(),
             env: None,
         }
+    }
+
+    /// Set the entrypoint.
+    pub fn entrypoint(mut self, entrypoint: Vec<String>) -> Self {
+        self.entrypoint = Some(entrypoint);
+        self
     }
 
     /// Set the command.
@@ -658,6 +667,7 @@ impl KupDocker {
 
         let container_config = Config {
             image: Some(config.image),
+            entrypoint: config.entrypoint,
             cmd: config.cmd,
             env: config.env,
             host_config: Some(host_config),

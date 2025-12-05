@@ -2,20 +2,23 @@
 
 mod cmd;
 
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 use alloy_core::primitives::Bytes;
 use anyhow::Context;
-use bollard::{
-    container::Config,
-    secret::{HostConfig, PortBinding},
-};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 pub use cmd::AnvilCmdBuilder;
 
-use crate::{AccountInfo, docker::KupDocker, fs::FsHandler};
+use crate::{
+    AccountInfo,
+    docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig},
+    fs::FsHandler,
+};
+
+/// Default port for Anvil.
+pub const DEFAULT_PORT: u16 = 8545;
 
 /// Configuration for Anvil.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -74,49 +77,40 @@ impl AnvilConfig {
         // Container path where anvil will write the config
         let container_config_path = PathBuf::from("/data");
 
+        // Anvil listens on port 8545 inside the container
+        const ANVIL_INTERNAL_PORT: u16 = 8545;
+
         let cmd = AnvilCmdBuilder::new(chain_id)
             .host("0.0.0.0")
-            .port(8545)
+            .port(ANVIL_INTERNAL_PORT)
             .fork_url(&self.fork_url)
             .config_out(container_config_path.join("anvil.json"))
             .extra_args(self.extra_args.clone())
             .build();
 
-        // Configure port binding
-        let port_bindings = HashMap::from([(
-            "8545/tcp".to_string(),
-            Some(vec![PortBinding {
-                host_ip: Some("0.0.0.0".to_string()),
-                host_port: Some(self.port.to_string()),
-            }]),
-        )]);
+        let service_config = ServiceConfig::new(format!(
+            "{}:{}",
+            docker.config.foundry_docker_image, docker.config.foundry_docker_tag
+        ))
+        .entrypoint(vec!["anvil".to_string()])
+        .cmd(cmd)
+        .ports([PortMapping::tcp(ANVIL_INTERNAL_PORT, self.port)])
+        .bind(&host_config_path, &container_config_path, "rw");
 
-        let host_config = HostConfig {
-            port_bindings: Some(port_bindings),
-            binds: Some(vec![format!(
-                "{}:{}:rw",
-                host_config_path.display(),
-                container_config_path.to_string_lossy()
-            )]),
-            network_mode: Some(docker.network_id.clone()),
-            ..Default::default()
-        };
-
-        let config = Config {
-            entrypoint: Some(vec!["anvil".to_string()]),
-            image: Some(format!(
-                "{}:{}",
-                docker.config.foundry_docker_image, docker.config.foundry_docker_tag
-            )),
-            cmd: Some(cmd),
-            host_config: Some(host_config),
-            ..Default::default()
-        };
-
-        let container_id = docker
-            .create_and_start_container(&self.container_name, config, Default::default())
+        let handler = docker
+            .start_service(
+                &self.container_name,
+                service_config,
+                CreateAndStartContainerOptions::default(),
+            )
             .await
             .context("Failed to start Anvil container")?;
+
+        tracing::info!(
+            container_id = %handler.container_id,
+            container_name = %handler.container_name,
+            "Anvil container started"
+        );
 
         // Wait for the Anvil config file to be created
         let config_file_path = host_config_path.join("anvil.json");
@@ -146,12 +140,11 @@ impl AnvilConfig {
             })
             .collect();
 
-        let l1_rpc_url = Url::parse(&format!("http://{}:8545", self.container_name))
-            .context("Failed to parse Anvil RPC URL")?;
+        let l1_rpc_url = KupDocker::build_http_url(&handler.container_name, ANVIL_INTERNAL_PORT)?;
 
         Ok(AnvilHandler {
-            container_id,
-            container_name: self.container_name.clone(),
+            container_id: handler.container_id,
+            container_name: handler.container_name,
             account_infos,
             l1_rpc_url,
         })
