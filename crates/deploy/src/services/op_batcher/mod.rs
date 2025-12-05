@@ -10,10 +10,9 @@ use url::Url;
 
 pub use cmd::OpBatcherCmdBuilder;
 
-use crate::deploy::{
-    docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig},
-    services::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethHandler},
-};
+use crate::docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig};
+
+use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethHandler};
 
 /// Default ports for op-batcher.
 pub const DEFAULT_RPC_PORT: u16 = 8548;

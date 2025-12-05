@@ -1,0 +1,21 @@
+[package]
+name = "kupcake"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "kupcake"
+path = "src/main.rs"
+
+[dependencies]
+kupcake-deploy.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+strum.workspace = true
+rand.workspace = true
+tempdir.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+names.workspace = true
+

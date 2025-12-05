@@ -1,4 +1,4 @@
-//! op-proposer service.
+//! op-challenger service.
 
 mod cmd;
 
@@ -8,70 +8,67 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-pub use cmd::OpProposerCmdBuilder;
+pub use cmd::OpChallengerCmdBuilder;
 
-use crate::deploy::{
-    docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig},
-    services::{anvil::AnvilHandler, kona_node::KonaNodeHandler},
-};
+use crate::docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig};
 
-/// Default ports for op-proposer.
-pub const DEFAULT_RPC_PORT: u16 = 8560;
-pub const DEFAULT_METRICS_PORT: u16 = 7302;
+use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethConfig};
 
-/// Configuration for the op-proposer component.
+/// Default ports for op-challenger.
+pub const DEFAULT_RPC_PORT: u16 = 8561;
+pub const DEFAULT_METRICS_PORT: u16 = 7303;
+
+/// Configuration for the op-challenger component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct OpProposerConfig {
-    /// Container name for op-proposer.
+pub struct OpChallengerConfig {
+    /// Container name for op-challenger.
     pub container_name: String,
     /// Host for the RPC endpoint.
     pub host: String,
-    /// Port for the op-proposer RPC server.
+    /// Port for the op-challenger RPC server.
     pub rpc_port: u16,
     /// Port for metrics.
     pub metrics_port: u16,
-    /// Proposal interval.
-    pub proposal_interval: String,
-    /// Extra arguments to pass to op-proposer.
+    /// Extra arguments to pass to op-challenger.
     pub extra_args: Vec<String>,
 }
 
-impl Default for OpProposerConfig {
+impl Default for OpChallengerConfig {
     fn default() -> Self {
         Self {
-            container_name: "kupcake-op-proposer".to_string(),
+            container_name: "kupcake-op-challenger".to_string(),
             host: "0.0.0.0".to_string(),
             rpc_port: DEFAULT_RPC_PORT,
             metrics_port: DEFAULT_METRICS_PORT,
-            proposal_interval: "12s".to_string(),
             extra_args: Vec::new(),
         }
     }
 }
 
-/// Handler for a running op-proposer instance.
-pub struct OpProposerHandler {
+/// Handler for a running op-challenger instance.
+pub struct OpChallengerHandler {
     /// Docker container ID.
     pub container_id: String,
     /// Docker container name.
     pub container_name: String,
-    /// The RPC URL for the op-proposer.
+    /// The RPC URL for the op-challenger.
     pub rpc_url: Url,
 }
 
-impl OpProposerConfig {
-    /// Start the op-proposer.
+impl OpChallengerConfig {
+    /// Start the op-challenger.
     pub async fn start(
         &self,
         docker: &mut KupDocker,
         host_config_path: &PathBuf,
         anvil_handler: &AnvilHandler,
         kona_node_handler: &KonaNodeHandler,
-    ) -> Result<OpProposerHandler, anyhow::Error> {
+        op_reth_config: &OpRethConfig,
+    ) -> Result<OpChallengerHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
-        // The proposer account is at index 8 in the Anvil accounts
-        let proposer_private_key = &anvil_handler.account_infos[8].private_key;
+        // The challenger account is at index 9 in the Anvil accounts
+        let challenger_private_key = &anvil_handler.account_infos[9].private_key;
 
         // Read the DisputeGameFactory address from state.json
         let state_file_path = host_config_path.join("state.json");
@@ -86,14 +83,18 @@ impl OpProposerConfig {
             .as_str()
             .context("DisputeGameFactory address not found in state.json")?;
 
-        let cmd = OpProposerCmdBuilder::new(
+        let cmd = OpChallengerCmdBuilder::new(
             anvil_handler.l1_rpc_url.to_string(),
+            format!(
+                "http://{}:{}",
+                op_reth_config.container_name, op_reth_config.http_port
+            ),
             kona_node_handler.rpc_url.to_string(),
-            proposer_private_key.to_string(),
+            challenger_private_key.to_string(),
             dgf_address,
         )
-        .game_type(254) // Permissioned game type
-        .proposal_interval(&self.proposal_interval)
+        .trace_type("permissioned")
+        .game_allowlist([254]) // Permissioned game type
         .rpc_port(self.rpc_port)
         .metrics(true, "0.0.0.0", self.metrics_port)
         .extra_args(self.extra_args.clone())
@@ -101,7 +102,7 @@ impl OpProposerConfig {
 
         let service_config = ServiceConfig::new(format!(
             "{}:{}",
-            docker.config.op_proposer_docker_image, docker.config.op_proposer_docker_tag
+            docker.config.op_challenger_docker_image, docker.config.op_challenger_docker_tag
         ))
         .cmd(cmd)
         .ports([
@@ -120,21 +121,20 @@ impl OpProposerConfig {
                 },
             )
             .await
-            .context("Failed to start op-proposer container")?;
+            .context("Failed to start op-challenger container")?;
 
         tracing::info!(
             container_id = %handler.container_id,
             container_name = %handler.container_name,
-            "op-proposer container started"
+            "op-challenger container started"
         );
 
         let rpc_url = KupDocker::build_http_url(&handler.container_name, self.rpc_port)?;
 
-        Ok(OpProposerHandler {
+        Ok(OpChallengerHandler {
             container_id: handler.container_id,
             container_name: handler.container_name,
             rpc_url,
         })
     }
 }
-

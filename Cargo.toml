@@ -1,13 +1,16 @@
-[package]
-name = "kupcake"
+[workspace]
+resolver = "2"
+members = ["crates/*", "bin/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[[bin]]
-name = "kupcake"
-path = "src/main.rs"
+[workspace.dependencies]
+# Internal crates
+kupcake-deploy = { path = "crates/deploy" }
 
-[dependencies]
+# External dependencies
 clap = { version = "4.5", features = ["derive", "env"] }
 anyhow = "1.0"
 tokio = { version = "1.0", features = ["full"] }

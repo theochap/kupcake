@@ -15,7 +15,7 @@ use url::Url;
 
 pub use cmd::AnvilCmdBuilder;
 
-use crate::deploy::{AccountInfo, docker::KupDocker, fs::FsHandler};
+use crate::{AccountInfo, docker::KupDocker, fs::FsHandler};
 
 /// Configuration for Anvil.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

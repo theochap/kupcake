@@ -121,3 +121,4 @@ pub struct Cli {
     #[arg(long, env = "KUP_NO_CLEANUP")]
     pub no_cleanup: bool,
 }
+

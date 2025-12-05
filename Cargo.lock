@@ -1592,24 +1592,35 @@ dependencies = [
 name = "kupcake"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "clap",
+ "kupcake-deploy",
+ "names",
+ "rand 0.9.2",
+ "strum",
+ "tempdir",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "kupcake-deploy"
+version = "0.1.0"
+dependencies = [
  "alloy-core",
  "anyhow",
  "bollard",
- "clap",
  "derive_more",
  "futures",
  "hex",
- "names",
  "notify",
  "rand 0.9.2",
  "serde",
  "serde_json",
- "strum",
- "tempdir",
  "tokio",
  "toml",
  "tracing",
- "tracing-subscriber",
  "url",
 ]
 

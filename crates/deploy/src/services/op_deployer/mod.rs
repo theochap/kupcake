@@ -6,7 +6,7 @@ use anyhow::Context;
 use bollard::{container::Config, secret::HostConfig};
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::{AccountInfo, docker::KupDocker, fs::FsHandler};
+use crate::{AccountInfo, docker::KupDocker, fs::FsHandler};
 
 use super::anvil::AnvilHandler;
 
@@ -112,7 +112,7 @@ impl OpDeployerConfig {
             ..Default::default()
         };
 
-        use crate::deploy::docker::CreateAndStartContainerOptions;
+        use crate::docker::CreateAndStartContainerOptions;
 
         // Start the container
         let container_id = docker

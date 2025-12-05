@@ -10,10 +10,9 @@ use url::Url;
 
 pub use cmd::KonaNodeCmdBuilder;
 
-use crate::deploy::{
-    docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig},
-    services::{anvil::AnvilHandler, op_reth::OpRethHandler},
-};
+use crate::docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig};
+
+use super::{anvil::AnvilHandler, op_reth::OpRethHandler};
 
 /// Default ports for kona-node.
 pub const DEFAULT_RPC_PORT: u16 = 7545;

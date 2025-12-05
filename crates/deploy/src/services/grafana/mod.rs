@@ -6,7 +6,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::deploy::{
+use crate::{
     docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig},
     fs::FsHandler,
 };

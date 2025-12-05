@@ -1,4 +1,7 @@
-//! This module deploys the network once the CLI inputs have been parsed and validated.
+//! kupcake-deploy - Deployment library for the OP Stack.
+//!
+//! This crate provides the deployment functionality for bootstrapping a rust-based
+//! OP Stack chain.
 
 use alloy_core::primitives::Bytes;
 use anyhow::{Context, Result};
@@ -334,3 +337,4 @@ impl Deployer {
         Ok(())
     }
 }
+

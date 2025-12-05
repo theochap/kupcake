@@ -1,0 +1,21 @@
+[package]
+name = "kupcake-deploy"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+serde.workspace = true
+rand.workspace = true
+tracing.workspace = true
+bollard.workspace = true
+futures.workspace = true
+derive_more.workspace = true
+notify.workspace = true
+alloy-core.workspace = true
+url.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+hex.workspace = true
+

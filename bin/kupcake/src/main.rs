@@ -1,18 +1,18 @@
 //! kupcake is a CLI tool to help you bootstrap a rust-based op-stack chain in a few clicks.
 
+mod cli;
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use rand::Rng;
 
-use kupcake::{
-    cli::{Cli, OutData},
-    deploy::{
-        AnvilConfig, Deployer, GrafanaConfig, KonaNodeConfig, KupDockerConfig, L2NodesConfig,
-        MonitoringConfig, OpBatcherConfig, OpChallengerConfig, OpDeployerConfig, OpProposerConfig,
-        OpRethConfig, PrometheusConfig,
-    },
+use cli::{Cli, OutData};
+use kupcake_deploy::{
+    AnvilConfig, Deployer, GrafanaConfig, KonaNodeConfig, KupDockerConfig, L2NodesConfig,
+    MonitoringConfig, OpBatcherConfig, OpChallengerConfig, OpDeployerConfig, OpProposerConfig,
+    OpRethConfig, PrometheusConfig,
 };
 
 const FOUNDRY_DOCKER_IMAGE: &str = "ghcr.io/foundry-rs/foundry";
@@ -189,3 +189,4 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+

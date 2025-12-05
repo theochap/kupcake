@@ -10,9 +10,7 @@ use url::Url;
 
 pub use cmd::OpRethCmdBuilder;
 
-use crate::deploy::docker::{
-    CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig,
-};
+use crate::docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig};
 
 /// Default ports for op-reth.
 pub const DEFAULT_HTTP_PORT: u16 = 9545;
