@@ -32,6 +32,9 @@ pub struct KupDockerConfig {
     pub op_reth_docker_image: String,
     pub op_reth_docker_tag: String,
 
+    pub op_batcher_docker_image: String,
+    pub op_batcher_docker_tag: String,
+
     pub net_name: String,
 
     pub no_cleanup: bool,
@@ -190,6 +193,19 @@ impl KupDocker {
             .pull_image(
                 &docker.config.op_reth_docker_image,
                 &docker.config.op_reth_docker_tag,
+            )
+            .await?;
+
+        tracing::debug!(
+            image = docker.config.op_batcher_docker_image,
+            tag = docker.config.op_batcher_docker_tag,
+            "Pulling op-batcher from docker..."
+        );
+
+        docker
+            .pull_image(
+                &docker.config.op_batcher_docker_image,
+                &docker.config.op_batcher_docker_tag,
             )
             .await?;
 

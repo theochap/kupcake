@@ -26,6 +26,9 @@ pub const DEFAULT_OP_RETH_METRICS_PORT: u16 = 9001;
 pub const DEFAULT_KONA_NODE_RPC_PORT: u16 = 7545;
 pub const DEFAULT_KONA_NODE_METRICS_PORT: u16 = 7300;
 
+pub const DEFAULT_OP_BATCHER_RPC_PORT: u16 = 8548;
+pub const DEFAULT_OP_BATCHER_METRICS_PORT: u16 = 7301;
+
 /// Configuration for the op-reth execution client.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpRethConfig {
@@ -100,6 +103,53 @@ impl Default for KonaNodeConfig {
     }
 }
 
+/// Configuration for the op-batcher component.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct OpBatcherConfig {
+    /// Container name for op-batcher.
+    pub container_name: String,
+
+    /// Host for the RPC endpoint.
+    pub host: String,
+
+    /// Port for the op-batcher RPC server.
+    pub rpc_port: u16,
+
+    /// Port for metrics.
+    pub metrics_port: u16,
+
+    /// Max L1 tx size in bytes (default 120000).
+    pub max_l1_tx_size_bytes: u64,
+
+    /// Target number of frames per channel.
+    pub target_num_frames: u64,
+
+    /// Sub-safety margin (number of L1 blocks).
+    pub sub_safety_margin: u64,
+
+    /// Batch submission interval.
+    pub poll_interval: String,
+
+    /// Extra arguments to pass to op-batcher.
+    pub extra_args: Vec<String>,
+}
+
+impl Default for OpBatcherConfig {
+    fn default() -> Self {
+        Self {
+            container_name: "kupcake-op-batcher".to_string(),
+            host: "0.0.0.0".to_string(),
+            rpc_port: DEFAULT_OP_BATCHER_RPC_PORT,
+            metrics_port: DEFAULT_OP_BATCHER_METRICS_PORT,
+            max_l1_tx_size_bytes: 120000,
+            target_num_frames: 1,
+            sub_safety_margin: 10,
+            poll_interval: "1s".to_string(),
+            extra_args: Vec::new(),
+        }
+    }
+}
+
 /// Combined configuration for all L2 node components.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct L2NodesConfig {
@@ -108,6 +158,9 @@ pub struct L2NodesConfig {
 
     /// Configuration for kona-node consensus client.
     pub kona_node: KonaNodeConfig,
+
+    /// Configuration for op-batcher.
+    pub op_batcher: OpBatcherConfig,
 }
 
 impl Default for L2NodesConfig {
@@ -115,6 +168,7 @@ impl Default for L2NodesConfig {
         Self {
             op_reth: OpRethConfig::default(),
             kona_node: KonaNodeConfig::default(),
+            op_batcher: OpBatcherConfig::default(),
         }
     }
 }
@@ -143,10 +197,20 @@ pub struct KonaNodeHandler {
     pub rpc_url: Url,
 }
 
+/// Handler for the op-batcher.
+pub struct OpBatcherHandler {
+    pub container_id: String,
+    pub container_name: String,
+
+    /// The RPC URL for the op-batcher.
+    pub rpc_url: Url,
+}
+
 /// Handler for the complete L2 node setup.
 pub struct L2NodesHandler {
     pub op_reth: OpRethHandler,
     pub kona_node: KonaNodeHandler,
+    pub op_batcher: OpBatcherHandler,
 }
 
 impl L2NodesConfig {
@@ -461,9 +525,128 @@ impl L2NodesConfig {
         })
     }
 
+    /// Start the op-batcher.
+    async fn start_op_batcher(
+        &self,
+        docker: &mut KupDocker,
+        host_config_path: &PathBuf,
+        anvil_handler: &AnvilHandler,
+        op_reth_handler: &OpRethHandler,
+        kona_node_handler: &KonaNodeHandler,
+    ) -> Result<OpBatcherHandler, anyhow::Error> {
+        let container_config_path = PathBuf::from("/data");
+
+        // The batcher account is at index 7 in the Anvil accounts
+        let batcher_private_key = &anvil_handler.account_infos[7].private_key;
+
+        // Build the op-batcher command
+        let mut cmd = vec![
+            "op-batcher".to_string(),
+            "--l1-eth-rpc".to_string(),
+            anvil_handler.l1_rpc_url.to_string(),
+            "--l2-eth-rpc".to_string(),
+            op_reth_handler.http_rpc_url.to_string(),
+            "--rollup-rpc".to_string(),
+            kona_node_handler.rpc_url.to_string(),
+            "--private-key".to_string(),
+            batcher_private_key.to_string(),
+            // RPC configuration
+            "--rpc.addr".to_string(),
+            "0.0.0.0".to_string(),
+            "--rpc.port".to_string(),
+            self.op_batcher.rpc_port.to_string(),
+            "--rpc.enable-admin".to_string(),
+            // Metrics
+            "--metrics.enabled".to_string(),
+            "--metrics.addr".to_string(),
+            "0.0.0.0".to_string(),
+            "--metrics.port".to_string(),
+            self.op_batcher.metrics_port.to_string(),
+            // Batcher configuration
+            "--data-availability-type".to_string(),
+            "blobs".to_string(),
+            "--throttle.unsafe-da-bytes-lower-threshold".to_string(),
+            "0".to_string(),
+        ];
+
+        // Add extra arguments
+        cmd.extend(self.op_batcher.extra_args.clone());
+
+        // Configure port bindings
+        let port_bindings = HashMap::from([
+            (
+                format!("{}/tcp", self.op_batcher.rpc_port),
+                Some(vec![PortBinding {
+                    host_ip: Some("0.0.0.0".to_string()),
+                    host_port: Some(self.op_batcher.rpc_port.to_string()),
+                }]),
+            ),
+            (
+                format!("{}/tcp", self.op_batcher.metrics_port),
+                Some(vec![PortBinding {
+                    host_ip: Some("0.0.0.0".to_string()),
+                    host_port: Some(self.op_batcher.metrics_port.to_string()),
+                }]),
+            ),
+        ]);
+
+        let host_config = HostConfig {
+            port_bindings: Some(port_bindings),
+            binds: Some(vec![format!(
+                "{}:{}:rw",
+                host_config_path.display(),
+                container_config_path.to_string_lossy()
+            )]),
+            network_mode: Some(docker.network_id.clone()),
+            ..Default::default()
+        };
+
+        let config = Config {
+            image: Some(format!(
+                "{}:{}",
+                docker.config.op_batcher_docker_image, docker.config.op_batcher_docker_tag
+            )),
+            cmd: Some(cmd),
+            host_config: Some(host_config),
+            ..Default::default()
+        };
+
+        let container_id = docker
+            .create_and_start_container(
+                &self.op_batcher.container_name,
+                config,
+                CreateAndStartContainerOptions {
+                    stream_logs: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .context("Failed to start op-batcher container")?;
+
+        tracing::info!(
+            container_id = %container_id,
+            container_name = %self.op_batcher.container_name,
+            "op-batcher container started"
+        );
+
+        // Determine RPC URL based on Docker network mode
+        let rpc_url = Url::parse(&format!(
+            "http://{}:{}",
+            self.op_batcher.container_name, self.op_batcher.rpc_port
+        ))
+        .context("Failed to parse op-batcher RPC URL")?;
+
+        Ok(OpBatcherHandler {
+            container_id,
+            container_name: self.op_batcher.container_name.clone(),
+            rpc_url,
+        })
+    }
+
     /// Start all L2 node components.
     ///
-    /// This starts op-reth first (execution client), then kona-node (consensus client).
+    /// This starts op-reth first (execution client), then kona-node (consensus client),
+    /// and finally op-batcher (batch submitter).
     /// The components communicate via the Engine API using JWT authentication.
     pub async fn start(
         self,
@@ -493,16 +676,34 @@ impl L2NodesConfig {
             .start_kona_node(docker, &host_config_path, anvil_handler, &op_reth_handler)
             .await?;
 
+        // Give kona-node a moment to initialize before starting op-batcher
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        tracing::info!("Starting op-batcher...");
+
+        // Start op-batcher
+        let op_batcher_handler = self
+            .start_op_batcher(
+                docker,
+                &host_config_path,
+                anvil_handler,
+                &op_reth_handler,
+                &kona_node_handler,
+            )
+            .await?;
+
         tracing::info!(
             l2_http_rpc = %op_reth_handler.http_rpc_url,
             l2_ws_rpc = %op_reth_handler.ws_rpc_url,
             kona_node_rpc = %kona_node_handler.rpc_url,
+            op_batcher_rpc = %op_batcher_handler.rpc_url,
             "L2 nodes started successfully"
         );
 
         Ok(L2NodesHandler {
             op_reth: op_reth_handler,
             kona_node: kona_node_handler,
+            op_batcher: op_batcher_handler,
         })
     }
 }

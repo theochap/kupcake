@@ -9,8 +9,8 @@ use rand::Rng;
 use kupcake::{
     cli::{Cli, OutData},
     deploy::{
-        AnvilConfig, Deployer, KonaNodeConfig, KupDockerConfig, L2NodesConfig, OpDeployerConfig,
-        OpRethConfig,
+        AnvilConfig, Deployer, KonaNodeConfig, KupDockerConfig, L2NodesConfig, OpBatcherConfig,
+        OpDeployerConfig, OpRethConfig,
     },
 };
 
@@ -26,6 +26,9 @@ const KONA_NODE_DOCKER_TAG: &str = "test";
 
 const OP_RETH_DOCKER_IMAGE: &str = "ghcr.io/paradigmxyz/op-reth";
 const OP_RETH_DOCKER_TAG: &str = "latest";
+
+const OP_BATCHER_DOCKER_IMAGE: &str = "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-batcher";
+const OP_BATCHER_DOCKER_TAG: &str = "v1.16.2";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -110,6 +113,8 @@ async fn main() -> Result<()> {
             kona_node_docker_tag: KONA_NODE_DOCKER_TAG.to_string(),
             op_reth_docker_image: OP_RETH_DOCKER_IMAGE.to_string(),
             op_reth_docker_tag: OP_RETH_DOCKER_TAG.to_string(),
+            op_batcher_docker_image: OP_BATCHER_DOCKER_IMAGE.to_string(),
+            op_batcher_docker_tag: OP_BATCHER_DOCKER_TAG.to_string(),
             net_name: format!("{}-network", network_name),
             no_cleanup: cli.no_cleanup,
         },
@@ -125,6 +130,10 @@ async fn main() -> Result<()> {
             },
             kona_node: KonaNodeConfig {
                 container_name: format!("{}-kona-node", network_name),
+                ..Default::default()
+            },
+            op_batcher: OpBatcherConfig {
+                container_name: format!("{}-op-batcher", network_name),
                 ..Default::default()
             },
         },

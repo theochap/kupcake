@@ -12,7 +12,7 @@ mod op_deployer;
 
 pub use anvil::AnvilConfig;
 pub use docker::{KupDocker, KupDockerConfig};
-pub use l2_nodes::{KonaNodeConfig, L2NodesConfig, OpRethConfig};
+pub use l2_nodes::{KonaNodeConfig, L2NodesConfig, OpBatcherConfig, OpRethConfig};
 pub use op_deployer::OpDeployerConfig;
 
 pub struct AccountInfo {
@@ -66,7 +66,7 @@ impl Deployer {
             )
             .await?;
 
-        tracing::info!("Starting L2 nodes (kona-node + op-reth)...");
+        tracing::info!("Starting L2 nodes (op-reth + kona-node + op-batcher)...");
 
         let l2_nodes = self
             .l2_nodes_config
@@ -80,7 +80,9 @@ impl Deployer {
         tracing::info!("L2 (op-reth) HTTP:    {}", l2_nodes.op_reth.http_rpc_url);
         tracing::info!("L2 (op-reth) WS:      {}", l2_nodes.op_reth.ws_rpc_url);
         tracing::info!("Kona Node RPC:        {}", l2_nodes.kona_node.rpc_url);
+        tracing::info!("Op Batcher RPC:       {}", l2_nodes.op_batcher.rpc_url);
         tracing::info!("");
+
         tracing::info!("Press Ctrl+C to stop all nodes and cleanup.");
 
         tokio::signal::ctrl_c().await?;
