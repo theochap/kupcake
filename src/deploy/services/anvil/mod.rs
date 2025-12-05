@@ -1,3 +1,7 @@
+//! Anvil service for local L1 chain.
+
+mod cmd;
+
 use std::{collections::HashMap, path::PathBuf};
 
 use alloy_core::primitives::Bytes;
@@ -9,32 +13,41 @@ use bollard::{
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::deploy::{AccountInfo, cmd_builders::AnvilCmdBuilder, docker::KupDocker, fs::FsHandler};
+pub use cmd::AnvilCmdBuilder;
 
+use crate::deploy::{AccountInfo, docker::KupDocker, fs::FsHandler};
+
+/// Configuration for Anvil.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AnvilConfig {
+    /// Host address for Anvil.
     pub host: String,
+    /// Port for Anvil RPC.
     pub port: u16,
+    /// URL to fork from.
     pub fork_url: String,
-
+    /// Extra arguments to pass to Anvil.
     pub extra_args: Vec<String>,
-
+    /// Container name for Anvil.
     pub container_name: String,
 }
 
+/// Parsed Anvil configuration data.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct L1AnvilData {
+struct L1AnvilData {
     available_accounts: Vec<Bytes>,
     private_keys: Vec<Bytes>,
 }
 
+/// Handler for a running Anvil instance.
 pub struct AnvilHandler {
+    /// Docker container ID.
     pub container_id: String,
+    /// Docker container name.
     pub container_name: String,
-
     /// The RPC URL for the L1 chain behind Anvil.
     pub l1_rpc_url: Url,
-
+    /// Account information from Anvil.
     pub account_infos: Vec<AccountInfo>,
 }
 
@@ -42,13 +55,12 @@ impl AnvilConfig {
     /// Start an Anvil container.
     ///
     /// # Arguments
-    /// * `container_name` - Name for the container
-    /// * `port` - Host port to bind to (default: 8545)
+    /// * `docker` - Docker client
+    /// * `host_config_path` - Path on host to store Anvil data
     /// * `chain_id` - Chain ID for Anvil
-    /// * `extra_args` - Additional arguments to pass to Anvil
     ///
     /// # Returns
-    /// The container ID
+    /// An `AnvilHandler` with the running container information.
     pub async fn start(
         self,
         docker: &mut KupDocker,
@@ -59,13 +71,12 @@ impl AnvilConfig {
             FsHandler::create_host_config_directory(&host_config_path)?;
         }
 
-        // Build the command using the builder
         // Container path where anvil will write the config
         let container_config_path = PathBuf::from("/data");
 
         let cmd = AnvilCmdBuilder::new(chain_id)
             .host("0.0.0.0")
-            .port(8545) // Internal port, mapped to self.port on host
+            .port(8545)
             .fork_url(&self.fork_url)
             .config_out(container_config_path.join("anvil.json"))
             .extra_args(self.extra_args.clone())
@@ -80,8 +91,6 @@ impl AnvilConfig {
             }]),
         )]);
 
-        // Bind mount: host_path:container_path
-        // This maps the host file to the container file so data persists on the host
         let host_config = HostConfig {
             port_bindings: Some(port_bindings),
             binds: Some(vec![format!(
@@ -93,7 +102,6 @@ impl AnvilConfig {
             ..Default::default()
         };
 
-        // Create container configuration
         let config = Config {
             entrypoint: Some(vec!["anvil".to_string()]),
             image: Some(format!(
@@ -105,7 +113,6 @@ impl AnvilConfig {
             ..Default::default()
         };
 
-        // Start the container
         let container_id = docker
             .create_and_start_container(&self.container_name, config, Default::default())
             .await
@@ -129,7 +136,6 @@ impl AnvilConfig {
         )
         .context("Failed to parse Anvil config")?;
 
-        // Get the account infos from the Anvil config
         let account_infos = l1_config
             .available_accounts
             .iter()
@@ -140,7 +146,6 @@ impl AnvilConfig {
             })
             .collect();
 
-        // When using Docker network, containers can communicate using container names
         let l1_rpc_url = Url::parse(&format!("http://{}:8545", self.container_name))
             .context("Failed to parse Anvil RPC URL")?;
 

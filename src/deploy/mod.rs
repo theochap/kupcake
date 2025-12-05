@@ -4,30 +4,32 @@ use alloy_core::primitives::Bytes;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
-mod anvil;
-pub mod cmd_builders;
 mod docker;
 mod fs;
 mod grafana;
 mod l2_nodes;
 mod op_deployer;
+pub mod services;
 
-pub use anvil::AnvilConfig;
 pub use docker::{
     KupDocker, KupDockerConfig, PortMapping, PortProtocol, ServiceConfig, ServiceHandler,
 };
 pub use grafana::{GrafanaConfig, MonitoringConfig, PrometheusConfig};
-pub use l2_nodes::{
-    KonaNodeConfig, L2NodesConfig, OpBatcherConfig, OpChallengerConfig, OpProposerConfig,
-    OpRethConfig,
-};
+pub use l2_nodes::{L2NodesConfig, L2NodesHandler};
 pub use op_deployer::OpDeployerConfig;
+pub use services::{
+    AnvilConfig, AnvilHandler, KonaNodeConfig, KonaNodeHandler, OpBatcherConfig, OpBatcherHandler,
+    OpChallengerConfig, OpChallengerHandler, OpProposerConfig, OpProposerHandler, OpRethConfig,
+    OpRethHandler,
+};
 
+/// Account information from Anvil.
 pub struct AccountInfo {
     pub address: Bytes,
     pub private_key: Bytes,
 }
 
+/// Main deployer that orchestrates the entire OP Stack deployment.
 pub struct Deployer {
     pub l1_chain_id: u64,
     pub l2_chain_id: u64,
@@ -84,12 +86,7 @@ impl Deployer {
 
         let l2_nodes = self
             .l2_nodes_config
-            .start(
-                &mut docker,
-                l2_nodes_data_path.clone(),
-                &anvil,
-                self.l2_chain_id,
-            )
+            .start(&mut docker, l2_nodes_data_path.clone(), &anvil)
             .await
             .context("Failed to start L2 nodes")?;
 

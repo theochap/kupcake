@@ -5,8 +5,8 @@ use bollard::{container::Config, secret::HostConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::deploy::{
-    AccountInfo, KupDocker, anvil::AnvilHandler, docker::CreateAndStartContainerOptions,
-    fs::FsHandler,
+    AccountInfo, KupDocker, docker::CreateAndStartContainerOptions, fs::FsHandler,
+    services::anvil::AnvilHandler,
 };
 
 /// The minimum number of accounts required for the intent file. Those are:

@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::deploy::{
+    L2NodesHandler,
     docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig},
     fs::FsHandler,
-    l2_nodes::L2NodesHandler,
 };
 
 /// Default ports for monitoring components.
