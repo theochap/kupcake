@@ -12,7 +12,7 @@ mod l2_nodes;
 mod op_deployer;
 
 pub use anvil::AnvilConfig;
-pub use docker::{KupDocker, KupDockerConfig};
+pub use docker::{KupDocker, KupDockerConfig, PortMapping, PortProtocol, ServiceConfig, ServiceHandler};
 pub use grafana::{GrafanaConfig, MonitoringConfig, PrometheusConfig};
 pub use l2_nodes::{
     KonaNodeConfig, L2NodesConfig, OpBatcherConfig, OpChallengerConfig, OpProposerConfig,

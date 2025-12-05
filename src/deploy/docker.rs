@@ -1,6 +1,6 @@
 //! Docker client for managing containers.
 
-use std::{collections::HashSet, mem, time::Duration};
+use std::{collections::HashMap, collections::HashSet, mem, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
 use bollard::{
@@ -11,13 +11,151 @@ use bollard::{
     },
     image::CreateImageOptions,
     network::CreateNetworkOptions,
+    secret::{HostConfig, PortBinding},
 };
 use derive_more::Deref;
 use futures::{StreamExt, executor::block_on, future::join_all};
 use tokio::{task::JoinHandle, time::timeout};
+use url::Url;
 
 /// Timeout for shutting down docker and cleaning up containers.
 const DOCKER_DROP_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Protocol for port mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PortProtocol {
+    #[default]
+    Tcp,
+    Udp,
+}
+
+impl PortProtocol {
+    fn as_str(&self) -> &'static str {
+        match self {
+            PortProtocol::Tcp => "tcp",
+            PortProtocol::Udp => "udp",
+        }
+    }
+}
+
+/// A port mapping from container port to host port.
+#[derive(Debug, Clone)]
+pub struct PortMapping {
+    /// The port inside the container.
+    pub container_port: u16,
+    /// The port on the host.
+    pub host_port: u16,
+    /// The protocol (tcp or udp).
+    pub protocol: PortProtocol,
+}
+
+impl PortMapping {
+    /// Create a new TCP port mapping.
+    pub fn tcp(container_port: u16, host_port: u16) -> Self {
+        Self {
+            container_port,
+            host_port,
+            protocol: PortProtocol::Tcp,
+        }
+    }
+
+    /// Create a new UDP port mapping.
+    pub fn udp(container_port: u16, host_port: u16) -> Self {
+        Self {
+            container_port,
+            host_port,
+            protocol: PortProtocol::Udp,
+        }
+    }
+
+    /// Create a TCP port mapping where container and host ports are the same.
+    pub fn tcp_same(port: u16) -> Self {
+        Self::tcp(port, port)
+    }
+
+    /// Create a UDP port mapping where container and host ports are the same.
+    pub fn udp_same(port: u16) -> Self {
+        Self::udp(port, port)
+    }
+}
+
+/// Configuration for starting a service container.
+#[derive(Debug, Clone)]
+pub struct ServiceConfig {
+    /// The Docker image (with tag) to use.
+    pub image: String,
+    /// The command to run in the container.
+    pub cmd: Option<Vec<String>>,
+    /// Port mappings from container to host.
+    pub port_mappings: Vec<PortMapping>,
+    /// Volume binds (host:container:mode format).
+    pub binds: Vec<String>,
+    /// Environment variables.
+    pub env: Option<Vec<String>>,
+}
+
+impl ServiceConfig {
+    /// Create a new service config with the given image.
+    pub fn new(image: impl Into<String>) -> Self {
+        Self {
+            image: image.into(),
+            cmd: None,
+            port_mappings: Vec::new(),
+            binds: Vec::new(),
+            env: None,
+        }
+    }
+
+    /// Set the command.
+    pub fn cmd(mut self, cmd: Vec<String>) -> Self {
+        self.cmd = Some(cmd);
+        self
+    }
+
+    /// Add a port mapping.
+    pub fn port(mut self, mapping: PortMapping) -> Self {
+        self.port_mappings.push(mapping);
+        self
+    }
+
+    /// Add multiple port mappings.
+    pub fn ports(mut self, mappings: impl IntoIterator<Item = PortMapping>) -> Self {
+        self.port_mappings.extend(mappings);
+        self
+    }
+
+    /// Add a volume bind.
+    pub fn bind(mut self, host_path: &PathBuf, container_path: &PathBuf, mode: &str) -> Self {
+        self.binds.push(format!(
+            "{}:{}:{}",
+            host_path.display(),
+            container_path.display(),
+            mode
+        ));
+        self
+    }
+
+    /// Add a volume bind from a string.
+    pub fn bind_str(mut self, bind: impl Into<String>) -> Self {
+        self.binds.push(bind.into());
+        self
+    }
+
+    /// Set environment variables.
+    pub fn env(mut self, env: Vec<String>) -> Self {
+        self.env = Some(env);
+        self
+    }
+}
+
+/// Handler returned after starting a service.
+#[derive(Debug, Clone)]
+pub struct ServiceHandler {
+    /// The container ID.
+    pub container_id: String,
+    /// The container name.
+    pub container_name: String,
+}
 
 pub struct KupDockerConfig {
     pub foundry_docker_image: String,
@@ -478,6 +616,76 @@ impl KupDocker {
             }
             Err(_) => Ok(false),
         }
+    }
+
+    /// Start a service container with the given configuration.
+    ///
+    /// This method handles:
+    /// - Building port bindings from the port mappings
+    /// - Creating the host config with network mode and binds
+    /// - Creating and starting the container
+    pub async fn start_service(
+        &mut self,
+        container_name: &str,
+        config: ServiceConfig,
+        options: CreateAndStartContainerOptions,
+    ) -> Result<ServiceHandler> {
+        // Build port bindings from the port mappings
+        let port_bindings: HashMap<String, Option<Vec<PortBinding>>> = config
+            .port_mappings
+            .iter()
+            .map(|pm| {
+                (
+                    format!("{}/{}", pm.container_port, pm.protocol.as_str()),
+                    Some(vec![PortBinding {
+                        host_ip: Some("0.0.0.0".to_string()),
+                        host_port: Some(pm.host_port.to_string()),
+                    }]),
+                )
+            })
+            .collect();
+
+        let host_config = HostConfig {
+            port_bindings: Some(port_bindings),
+            binds: if config.binds.is_empty() {
+                None
+            } else {
+                Some(config.binds)
+            },
+            network_mode: Some(self.network_id.clone()),
+            ..Default::default()
+        };
+
+        let container_config = Config {
+            image: Some(config.image),
+            cmd: config.cmd,
+            env: config.env,
+            host_config: Some(host_config),
+            ..Default::default()
+        };
+
+        let container_id = self
+            .create_and_start_container(container_name, container_config, options)
+            .await?;
+
+        Ok(ServiceHandler {
+            container_id,
+            container_name: container_name.to_string(),
+        })
+    }
+
+    /// Build an HTTP RPC URL for a container.
+    ///
+    /// The URL uses the container name as the hostname (for Docker network communication).
+    pub fn build_http_url(container_name: &str, port: u16) -> Result<Url> {
+        Url::parse(&format!("http://{}:{}/", container_name, port))
+            .context("Failed to parse HTTP URL")
+    }
+
+    /// Build a WebSocket RPC URL for a container.
+    pub fn build_ws_url(container_name: &str, port: u16) -> Result<Url> {
+        Url::parse(&format!("ws://{}:{}/", container_name, port))
+            .context("Failed to parse WebSocket URL")
     }
 }
 

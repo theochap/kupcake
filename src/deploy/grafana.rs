@@ -1,17 +1,13 @@
 //! Grafana and Prometheus deployment for metrics collection and visualization.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Context;
-use bollard::{
-    container::Config,
-    secret::{HostConfig, PortBinding},
-};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::deploy::{
-    docker::{CreateAndStartContainerOptions, KupDocker},
+    docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig},
     fs::FsHandler,
     l2_nodes::L2NodesHandler,
 };
@@ -349,40 +345,22 @@ providers:
             "--web.enable-lifecycle".to_string(),
         ];
 
-        // Configure port bindings
-        let port_bindings = HashMap::from([(
-            format!("{}/tcp", self.prometheus.port),
-            Some(vec![PortBinding {
-                host_ip: Some("0.0.0.0".to_string()),
-                host_port: Some(self.prometheus.port.to_string()),
-            }]),
-        )]);
+        let service_config = ServiceConfig::new(format!(
+            "{}:{}",
+            docker.config.prometheus_docker_image, docker.config.prometheus_docker_tag
+        ))
+        .cmd(cmd)
+        .ports([PortMapping::tcp_same(self.prometheus.port)])
+        .bind_str(format!(
+            "{}:{}:ro",
+            host_config_path.join("prometheus.yml").display(),
+            container_config_path.join("prometheus.yml").display()
+        ));
 
-        let host_config = HostConfig {
-            port_bindings: Some(port_bindings),
-            binds: Some(vec![format!(
-                "{}:{}:ro",
-                host_config_path.join("prometheus.yml").display(),
-                container_config_path.join("prometheus.yml").display()
-            )]),
-            network_mode: Some(docker.network_id.clone()),
-            ..Default::default()
-        };
-
-        let config = Config {
-            image: Some(format!(
-                "{}:{}",
-                docker.config.prometheus_docker_image, docker.config.prometheus_docker_tag
-            )),
-            cmd: Some(cmd),
-            host_config: Some(host_config),
-            ..Default::default()
-        };
-
-        let container_id = docker
-            .create_and_start_container(
+        let handler = docker
+            .start_service(
                 &self.prometheus.container_name,
-                config,
+                service_config,
                 CreateAndStartContainerOptions {
                     stream_logs: true,
                     ..Default::default()
@@ -392,17 +370,17 @@ providers:
             .context("Failed to start Prometheus container")?;
 
         tracing::info!(
-            container_id = %container_id,
-            container_name = %self.prometheus.container_name,
+            container_id = %handler.container_id,
+            container_name = %handler.container_name,
             "Prometheus container started"
         );
 
-        let url = Url::parse(&format!("http://localhost:{}", self.prometheus.port))
+        let url = Url::parse(&format!("http://localhost:{}/", self.prometheus.port))
             .context("Failed to parse Prometheus URL")?;
 
         Ok(PrometheusHandler {
-            container_id,
-            container_name: self.prometheus.container_name.clone(),
+            container_id: handler.container_id,
+            container_name: handler.container_name,
             url,
         })
     }
@@ -416,26 +394,7 @@ providers:
         // Grafana listens on port 3000 inside the container by default
         const GRAFANA_INTERNAL_PORT: u16 = 3000;
 
-        // Configure port bindings (map container port 3000 to host port)
-        let port_bindings = HashMap::from([(
-            format!("{}/tcp", GRAFANA_INTERNAL_PORT),
-            Some(vec![PortBinding {
-                host_ip: Some("0.0.0.0".to_string()),
-                host_port: Some(self.grafana.port.to_string()),
-            }]),
-        )]);
-
         let grafana_provisioning_path = host_config_path.join("grafana/provisioning");
-
-        let host_config = HostConfig {
-            port_bindings: Some(port_bindings),
-            binds: Some(vec![format!(
-                "{}:/etc/grafana/provisioning:ro",
-                grafana_provisioning_path.display()
-            )]),
-            network_mode: Some(docker.network_id.clone()),
-            ..Default::default()
-        };
 
         let env = vec![
             format!("GF_SECURITY_ADMIN_USER={}", self.grafana.admin_user),
@@ -445,20 +404,21 @@ providers:
             "GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer".to_string(),
         ];
 
-        let config = Config {
-            image: Some(format!(
-                "{}:{}",
-                docker.config.grafana_docker_image, docker.config.grafana_docker_tag
-            )),
-            env: Some(env),
-            host_config: Some(host_config),
-            ..Default::default()
-        };
+        let service_config = ServiceConfig::new(format!(
+            "{}:{}",
+            docker.config.grafana_docker_image, docker.config.grafana_docker_tag
+        ))
+        .ports([PortMapping::tcp(GRAFANA_INTERNAL_PORT, self.grafana.port)])
+        .bind_str(format!(
+            "{}:/etc/grafana/provisioning:ro",
+            grafana_provisioning_path.display()
+        ))
+        .env(env);
 
-        let container_id = docker
-            .create_and_start_container(
+        let handler = docker
+            .start_service(
                 &self.grafana.container_name,
-                config,
+                service_config,
                 CreateAndStartContainerOptions {
                     stream_logs: true,
                     ..Default::default()
@@ -468,17 +428,17 @@ providers:
             .context("Failed to start Grafana container")?;
 
         tracing::info!(
-            container_id = %container_id,
-            container_name = %self.grafana.container_name,
+            container_id = %handler.container_id,
+            container_name = %handler.container_name,
             "Grafana container started"
         );
 
-        let url = Url::parse(&format!("http://localhost:{}", self.grafana.port))
+        let url = Url::parse(&format!("http://localhost:{}/", self.grafana.port))
             .context("Failed to parse Grafana URL")?;
 
         Ok(GrafanaHandler {
-            container_id,
-            container_name: self.grafana.container_name.clone(),
+            container_id: handler.container_id,
+            container_name: handler.container_name,
             url,
         })
     }

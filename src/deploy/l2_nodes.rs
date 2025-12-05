@@ -1,18 +1,14 @@
 //! L2 nodes deployment for the OP Stack using kona-node and op-reth.
 
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Context;
-use bollard::{
-    container::Config,
-    secret::{HostConfig, PortBinding},
-};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::deploy::{
     anvil::AnvilHandler,
-    docker::{CreateAndStartContainerOptions, KupDocker},
+    docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig},
     fs::FsHandler,
 };
 
@@ -398,77 +394,25 @@ impl L2NodesConfig {
         // Add extra arguments
         cmd.extend(self.op_reth.extra_args.clone());
 
-        // Configure port bindings
-        let port_bindings = HashMap::from([
-            (
-                format!("{}/tcp", self.op_reth.http_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.op_reth.http_port.to_string()),
-                }]),
-            ),
-            (
-                format!("{}/tcp", self.op_reth.ws_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.op_reth.ws_port.to_string()),
-                }]),
-            ),
-            (
-                format!("{}/tcp", self.op_reth.authrpc_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.op_reth.authrpc_port.to_string()),
-                }]),
-            ),
-            (
-                format!("{}/tcp", self.op_reth.metrics_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.op_reth.metrics_port.to_string()),
-                }]),
-            ),
-            (
-                format!("{}/udp", self.op_reth.discovery_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.op_reth.discovery_port.to_string()),
-                }]),
-            ),
-            (
-                format!("{}/tcp", self.op_reth.discovery_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.op_reth.discovery_port.to_string()),
-                }]),
-            ),
-        ]);
+        let service_config = ServiceConfig::new(format!(
+            "{}:{}",
+            docker.config.op_reth_docker_image, docker.config.op_reth_docker_tag
+        ))
+        .cmd(cmd)
+        .ports([
+            PortMapping::tcp_same(self.op_reth.http_port),
+            PortMapping::tcp_same(self.op_reth.ws_port),
+            PortMapping::tcp_same(self.op_reth.authrpc_port),
+            PortMapping::tcp_same(self.op_reth.metrics_port),
+            PortMapping::tcp_same(self.op_reth.discovery_port),
+            PortMapping::udp_same(self.op_reth.discovery_port),
+        ])
+        .bind(host_config_path, &container_config_path, "rw");
 
-        let host_config = HostConfig {
-            port_bindings: Some(port_bindings),
-            binds: Some(vec![format!(
-                "{}:{}:rw",
-                host_config_path.display(),
-                container_config_path.to_string_lossy()
-            )]),
-            network_mode: Some(docker.network_id.clone()),
-            ..Default::default()
-        };
-
-        let config = Config {
-            image: Some(format!(
-                "{}:{}",
-                docker.config.op_reth_docker_image, docker.config.op_reth_docker_tag
-            )),
-            cmd: Some(cmd),
-            host_config: Some(host_config),
-            ..Default::default()
-        };
-
-        let container_id = docker
-            .create_and_start_container(
+        let handler = docker
+            .start_service(
                 &self.op_reth.container_name,
-                config,
+                service_config,
                 CreateAndStartContainerOptions {
                     stream_logs: true,
                     ..Default::default()
@@ -478,33 +422,21 @@ impl L2NodesConfig {
             .context("Failed to start op-reth container")?;
 
         tracing::info!(
-            container_id = %container_id,
-            container_name = %self.op_reth.container_name,
+            container_id = %handler.container_id,
+            container_name = %handler.container_name,
             "op-reth container started"
         );
 
-        // Determine RPC URLs based on Docker network mode
-        let (http_rpc_url, ws_rpc_url, authrpc_url) = (
-            Url::parse(&format!(
-                "http://{}:{}",
-                self.op_reth.container_name, self.op_reth.http_port
-            ))
-            .context("Failed to parse op-reth HTTP RPC URL")?,
-            Url::parse(&format!(
-                "ws://{}:{}",
-                self.op_reth.container_name, self.op_reth.ws_port
-            ))
-            .context("Failed to parse op-reth WebSocket RPC URL")?,
-            Url::parse(&format!(
-                "http://{}:{}",
-                self.op_reth.container_name, self.op_reth.authrpc_port
-            ))
-            .context("Failed to parse op-reth Auth RPC URL")?,
-        );
+        // Build RPC URLs
+        let http_rpc_url =
+            KupDocker::build_http_url(&handler.container_name, self.op_reth.http_port)?;
+        let ws_rpc_url = KupDocker::build_ws_url(&handler.container_name, self.op_reth.ws_port)?;
+        let authrpc_url =
+            KupDocker::build_http_url(&handler.container_name, self.op_reth.authrpc_port)?;
 
         Ok(OpRethHandler {
-            container_id,
-            container_name: self.op_reth.container_name.clone(),
+            container_id: handler.container_id,
+            container_name: handler.container_name,
             http_rpc_url,
             ws_rpc_url,
             authrpc_url,
@@ -554,49 +486,21 @@ impl L2NodesConfig {
         // Add extra arguments
         cmd.extend(self.kona_node.extra_args.clone());
 
-        // Configure port bindings
-        let port_bindings = HashMap::from([
-            (
-                format!("{}/tcp", self.kona_node.rpc_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.kona_node.rpc_port.to_string()),
-                }]),
-            ),
-            (
-                format!("{}/tcp", self.kona_node.metrics_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.kona_node.metrics_port.to_string()),
-                }]),
-            ),
-        ]);
+        let service_config = ServiceConfig::new(format!(
+            "{}:{}",
+            docker.config.kona_node_docker_image, docker.config.kona_node_docker_tag
+        ))
+        .cmd(cmd)
+        .ports([
+            PortMapping::tcp_same(self.kona_node.rpc_port),
+            PortMapping::tcp_same(self.kona_node.metrics_port),
+        ])
+        .bind(host_config_path, &container_config_path, "rw");
 
-        let host_config = HostConfig {
-            port_bindings: Some(port_bindings),
-            binds: Some(vec![format!(
-                "{}:{}:rw",
-                host_config_path.display(),
-                container_config_path.to_string_lossy()
-            )]),
-            network_mode: Some(docker.network_id.clone()),
-            ..Default::default()
-        };
-
-        let config = Config {
-            image: Some(format!(
-                "{}:{}",
-                docker.config.kona_node_docker_image, docker.config.kona_node_docker_tag
-            )),
-            cmd: Some(cmd),
-            host_config: Some(host_config),
-            ..Default::default()
-        };
-
-        let container_id = docker
-            .create_and_start_container(
+        let handler = docker
+            .start_service(
                 &self.kona_node.container_name,
-                config,
+                service_config,
                 CreateAndStartContainerOptions {
                     stream_logs: true,
                     ..Default::default()
@@ -606,21 +510,16 @@ impl L2NodesConfig {
             .context("Failed to start kona-node container")?;
 
         tracing::info!(
-            container_id = %container_id,
-            container_name = %self.kona_node.container_name,
+            container_id = %handler.container_id,
+            container_name = %handler.container_name,
             "kona-node container started"
         );
 
-        // Determine RPC URL based on Docker network mode
-        let rpc_url = Url::parse(&format!(
-            "http://{}:{}",
-            self.kona_node.container_name, self.kona_node.rpc_port
-        ))
-        .context("Failed to parse kona-node RPC URL")?;
+        let rpc_url = KupDocker::build_http_url(&handler.container_name, self.kona_node.rpc_port)?;
 
         Ok(KonaNodeHandler {
-            container_id,
-            container_name: self.kona_node.container_name.clone(),
+            container_id: handler.container_id,
+            container_name: handler.container_name,
             rpc_url,
         })
     }
@@ -672,49 +571,21 @@ impl L2NodesConfig {
         // Add extra arguments
         cmd.extend(self.op_batcher.extra_args.clone());
 
-        // Configure port bindings
-        let port_bindings = HashMap::from([
-            (
-                format!("{}/tcp", self.op_batcher.rpc_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.op_batcher.rpc_port.to_string()),
-                }]),
-            ),
-            (
-                format!("{}/tcp", self.op_batcher.metrics_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.op_batcher.metrics_port.to_string()),
-                }]),
-            ),
-        ]);
+        let service_config = ServiceConfig::new(format!(
+            "{}:{}",
+            docker.config.op_batcher_docker_image, docker.config.op_batcher_docker_tag
+        ))
+        .cmd(cmd)
+        .ports([
+            PortMapping::tcp_same(self.op_batcher.rpc_port),
+            PortMapping::tcp_same(self.op_batcher.metrics_port),
+        ])
+        .bind(host_config_path, &container_config_path, "rw");
 
-        let host_config = HostConfig {
-            port_bindings: Some(port_bindings),
-            binds: Some(vec![format!(
-                "{}:{}:rw",
-                host_config_path.display(),
-                container_config_path.to_string_lossy()
-            )]),
-            network_mode: Some(docker.network_id.clone()),
-            ..Default::default()
-        };
-
-        let config = Config {
-            image: Some(format!(
-                "{}:{}",
-                docker.config.op_batcher_docker_image, docker.config.op_batcher_docker_tag
-            )),
-            cmd: Some(cmd),
-            host_config: Some(host_config),
-            ..Default::default()
-        };
-
-        let container_id = docker
-            .create_and_start_container(
+        let handler = docker
+            .start_service(
                 &self.op_batcher.container_name,
-                config,
+                service_config,
                 CreateAndStartContainerOptions {
                     stream_logs: true,
                     ..Default::default()
@@ -724,21 +595,16 @@ impl L2NodesConfig {
             .context("Failed to start op-batcher container")?;
 
         tracing::info!(
-            container_id = %container_id,
-            container_name = %self.op_batcher.container_name,
+            container_id = %handler.container_id,
+            container_name = %handler.container_name,
             "op-batcher container started"
         );
 
-        // Determine RPC URL based on Docker network mode
-        let rpc_url = Url::parse(&format!(
-            "http://{}:{}",
-            self.op_batcher.container_name, self.op_batcher.rpc_port
-        ))
-        .context("Failed to parse op-batcher RPC URL")?;
+        let rpc_url = KupDocker::build_http_url(&handler.container_name, self.op_batcher.rpc_port)?;
 
         Ok(OpBatcherHandler {
-            container_id,
-            container_name: self.op_batcher.container_name.clone(),
+            container_id: handler.container_id,
+            container_name: handler.container_name,
             rpc_url,
         })
     }
@@ -802,49 +668,21 @@ impl L2NodesConfig {
         // Add extra arguments
         cmd.extend(self.op_proposer.extra_args.clone());
 
-        // Configure port bindings
-        let port_bindings = HashMap::from([
-            (
-                format!("{}/tcp", self.op_proposer.rpc_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.op_proposer.rpc_port.to_string()),
-                }]),
-            ),
-            (
-                format!("{}/tcp", self.op_proposer.metrics_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.op_proposer.metrics_port.to_string()),
-                }]),
-            ),
-        ]);
+        let service_config = ServiceConfig::new(format!(
+            "{}:{}",
+            docker.config.op_proposer_docker_image, docker.config.op_proposer_docker_tag
+        ))
+        .cmd(cmd)
+        .ports([
+            PortMapping::tcp_same(self.op_proposer.rpc_port),
+            PortMapping::tcp_same(self.op_proposer.metrics_port),
+        ])
+        .bind(host_config_path, &container_config_path, "rw");
 
-        let host_config = HostConfig {
-            port_bindings: Some(port_bindings),
-            binds: Some(vec![format!(
-                "{}:{}:rw",
-                host_config_path.display(),
-                container_config_path.to_string_lossy()
-            )]),
-            network_mode: Some(docker.network_id.clone()),
-            ..Default::default()
-        };
-
-        let config = Config {
-            image: Some(format!(
-                "{}:{}",
-                docker.config.op_proposer_docker_image, docker.config.op_proposer_docker_tag
-            )),
-            cmd: Some(cmd),
-            host_config: Some(host_config),
-            ..Default::default()
-        };
-
-        let container_id = docker
-            .create_and_start_container(
+        let handler = docker
+            .start_service(
                 &self.op_proposer.container_name,
-                config,
+                service_config,
                 CreateAndStartContainerOptions {
                     stream_logs: true,
                     ..Default::default()
@@ -854,21 +692,17 @@ impl L2NodesConfig {
             .context("Failed to start op-proposer container")?;
 
         tracing::info!(
-            container_id = %container_id,
-            container_name = %self.op_proposer.container_name,
+            container_id = %handler.container_id,
+            container_name = %handler.container_name,
             "op-proposer container started"
         );
 
-        // Determine RPC URL based on Docker network mode
-        let rpc_url = Url::parse(&format!(
-            "http://{}:{}",
-            self.op_proposer.container_name, self.op_proposer.rpc_port
-        ))
-        .context("Failed to parse op-proposer RPC URL")?;
+        let rpc_url =
+            KupDocker::build_http_url(&handler.container_name, self.op_proposer.rpc_port)?;
 
         Ok(OpProposerHandler {
-            container_id,
-            container_name: self.op_proposer.container_name.clone(),
+            container_id: handler.container_id,
+            container_name: handler.container_name,
             rpc_url,
         })
     }
@@ -936,49 +770,21 @@ impl L2NodesConfig {
         // Add extra arguments
         cmd.extend(self.op_challenger.extra_args.clone());
 
-        // Configure port bindings
-        let port_bindings = HashMap::from([
-            (
-                format!("{}/tcp", self.op_challenger.rpc_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.op_challenger.rpc_port.to_string()),
-                }]),
-            ),
-            (
-                format!("{}/tcp", self.op_challenger.metrics_port),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_string()),
-                    host_port: Some(self.op_challenger.metrics_port.to_string()),
-                }]),
-            ),
-        ]);
+        let service_config = ServiceConfig::new(format!(
+            "{}:{}",
+            docker.config.op_challenger_docker_image, docker.config.op_challenger_docker_tag
+        ))
+        .cmd(cmd)
+        .ports([
+            PortMapping::tcp_same(self.op_challenger.rpc_port),
+            PortMapping::tcp_same(self.op_challenger.metrics_port),
+        ])
+        .bind(host_config_path, &container_config_path, "rw");
 
-        let host_config = HostConfig {
-            port_bindings: Some(port_bindings),
-            binds: Some(vec![format!(
-                "{}:{}:rw",
-                host_config_path.display(),
-                container_config_path.to_string_lossy()
-            )]),
-            network_mode: Some(docker.network_id.clone()),
-            ..Default::default()
-        };
-
-        let config = Config {
-            image: Some(format!(
-                "{}:{}",
-                docker.config.op_challenger_docker_image, docker.config.op_challenger_docker_tag
-            )),
-            cmd: Some(cmd),
-            host_config: Some(host_config),
-            ..Default::default()
-        };
-
-        let container_id = docker
-            .create_and_start_container(
+        let handler = docker
+            .start_service(
                 &self.op_challenger.container_name,
-                config,
+                service_config,
                 CreateAndStartContainerOptions {
                     stream_logs: true,
                     ..Default::default()
@@ -988,21 +794,17 @@ impl L2NodesConfig {
             .context("Failed to start op-challenger container")?;
 
         tracing::info!(
-            container_id = %container_id,
-            container_name = %self.op_challenger.container_name,
+            container_id = %handler.container_id,
+            container_name = %handler.container_name,
             "op-challenger container started"
         );
 
-        // Determine RPC URL based on Docker network mode
-        let rpc_url = Url::parse(&format!(
-            "http://{}:{}",
-            self.op_challenger.container_name, self.op_challenger.rpc_port
-        ))
-        .context("Failed to parse op-challenger RPC URL")?;
+        let rpc_url =
+            KupDocker::build_http_url(&handler.container_name, self.op_challenger.rpc_port)?;
 
         Ok(OpChallengerHandler {
-            container_id,
-            container_name: self.op_challenger.container_name.clone(),
+            container_id: handler.container_id,
+            container_name: handler.container_name,
             rpc_url,
         })
     }
