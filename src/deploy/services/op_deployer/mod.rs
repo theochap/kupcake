@@ -1,13 +1,14 @@
+//! OP Deployer service for deploying L1 contracts.
+
 use std::path::PathBuf;
 
 use anyhow::Context;
 use bollard::{container::Config, secret::HostConfig};
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::{
-    AccountInfo, KupDocker, docker::CreateAndStartContainerOptions, fs::FsHandler,
-    services::anvil::AnvilHandler,
-};
+use crate::deploy::{AccountInfo, docker::KupDocker, fs::FsHandler};
+
+use super::anvil::AnvilHandler;
 
 /// The minimum number of accounts required for the intent file. Those are:
 /// [`ChainConfig::base_fee_vault_recipient`], [`ChainConfig::l1_fee_vault_recipient`], [`ChainConfig::sequencer_fee_vault_recipient`], [`ChainRoles::l1_proxy_admin_owner`],
@@ -57,6 +58,7 @@ struct ChainRoles {
     challenger: String,
 }
 
+/// Configuration for the OP Deployer service.
 pub struct OpDeployerConfig {
     pub container_name: String,
 }
@@ -109,6 +111,8 @@ impl OpDeployerConfig {
             attach_stderr: Some(true),
             ..Default::default()
         };
+
+        use crate::deploy::docker::CreateAndStartContainerOptions;
 
         // Start the container
         let container_id = docker

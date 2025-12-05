@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::deploy::{
-    L2NodesHandler,
     docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig},
     fs::FsHandler,
 };
@@ -122,12 +121,12 @@ pub struct MonitoringHandler {
 }
 
 /// Metrics target for Prometheus scraping.
-struct MetricsTarget {
-    job_name: &'static str,
-    container_name: String,
-    port: u16,
-    service_label: &'static str,
-    layer_label: &'static str,
+pub struct MetricsTarget {
+    pub job_name: &'static str,
+    pub container_name: String,
+    pub port: u16,
+    pub service_label: &'static str,
+    pub layer_label: &'static str,
 }
 
 impl MonitoringConfig {
@@ -135,48 +134,10 @@ impl MonitoringConfig {
     async fn generate_prometheus_config(
         &self,
         host_config_path: &PathBuf,
-        l2_nodes: &L2NodesHandler,
+        targets: &[MetricsTarget],
     ) -> Result<PathBuf, anyhow::Error> {
-        let targets = vec![
-            MetricsTarget {
-                job_name: "op-reth",
-                container_name: l2_nodes.op_reth.container_name.clone(),
-                port: 9001, // DEFAULT_OP_RETH_METRICS_PORT
-                service_label: "op-reth",
-                layer_label: "execution",
-            },
-            MetricsTarget {
-                job_name: "kona-node",
-                container_name: l2_nodes.kona_node.container_name.clone(),
-                port: 7300, // DEFAULT_KONA_NODE_METRICS_PORT
-                service_label: "kona-node",
-                layer_label: "consensus",
-            },
-            MetricsTarget {
-                job_name: "op-batcher",
-                container_name: l2_nodes.op_batcher.container_name.clone(),
-                port: 7301, // DEFAULT_OP_BATCHER_METRICS_PORT
-                service_label: "op-batcher",
-                layer_label: "batcher",
-            },
-            MetricsTarget {
-                job_name: "op-proposer",
-                container_name: l2_nodes.op_proposer.container_name.clone(),
-                port: 7302, // DEFAULT_OP_PROPOSER_METRICS_PORT
-                service_label: "op-proposer",
-                layer_label: "proposer",
-            },
-            MetricsTarget {
-                job_name: "op-challenger",
-                container_name: l2_nodes.op_challenger.container_name.clone(),
-                port: 7303, // DEFAULT_OP_CHALLENGER_METRICS_PORT
-                service_label: "op-challenger",
-                layer_label: "challenger",
-            },
-        ];
-
         let mut scrape_configs = String::new();
-        for target in &targets {
+        for target in targets {
             scrape_configs.push_str(&format!(
                 r#"
   - job_name: '{}'
@@ -448,7 +409,7 @@ providers:
         &self,
         docker: &mut KupDocker,
         host_config_path: PathBuf,
-        l2_nodes: &L2NodesHandler,
+        metrics_targets: Vec<MetricsTarget>,
         dashboards_source: Option<PathBuf>,
     ) -> Result<MonitoringHandler, anyhow::Error> {
         if !self.enabled {
@@ -460,7 +421,7 @@ providers:
         }
 
         // Generate Prometheus configuration
-        self.generate_prometheus_config(&host_config_path, l2_nodes)
+        self.generate_prometheus_config(&host_config_path, &metrics_targets)
             .await?;
 
         // Generate Grafana configurations
