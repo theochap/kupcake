@@ -120,5 +120,11 @@ pub struct Cli {
     /// Skips the cleanup of docker containers when the program exits.
     #[arg(long, env = "KUP_NO_CLEANUP")]
     pub no_cleanup: bool,
-}
 
+    /// Path to an existing kupconf.toml configuration file to load.
+    ///
+    /// When provided, the deployment will use the configuration from this file
+    /// instead of generating a new one from CLI arguments.
+    #[arg(long, alias = "conf", env = "KUP_CONFIG")]
+    pub config: Option<String>,
+}

@@ -247,9 +247,12 @@ impl DockerImageBuilder {
     }
 }
 
+/// Configuration for the Docker client.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct KupDockerConfig {
+    /// The name of the Docker network to create.
     pub net_name: String,
-
+    /// Whether to skip cleanup of containers on exit.
     pub no_cleanup: bool,
 }
 

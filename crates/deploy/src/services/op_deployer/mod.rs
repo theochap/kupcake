@@ -69,6 +69,7 @@ struct ChainRoles {
 }
 
 /// Configuration for the OP Deployer service.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpDeployerConfig {
     /// Docker image configuration for op-deployer.
     pub docker_image: DockerImageBuilder,

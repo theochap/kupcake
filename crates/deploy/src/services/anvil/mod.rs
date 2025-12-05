@@ -28,7 +28,7 @@ pub const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/foundry-rs/foundry";
 pub const DEFAULT_DOCKER_TAG: &str = "latest";
 
 /// Configuration for Anvil.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AnvilConfig {
     /// Docker image configuration for Anvil.
     pub docker_image: DockerImageBuilder,

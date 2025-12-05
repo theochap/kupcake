@@ -24,6 +24,25 @@ async fn main() -> Result<()> {
         .with_max_level(cli.verbosity)
         .init();
 
+    // If a config file is provided, load it and deploy
+    if let Some(config_path) = &cli.config {
+        let config_path = PathBuf::from(config_path);
+        let deployer = Deployer::load_from_file(&config_path)?;
+
+        tracing::info!(
+            config_path = %config_path.display(),
+            outdata_path = %deployer.outdata.display(),
+            l1_chain_id = deployer.l1_chain_id,
+            l2_chain_id = deployer.l2_chain_id,
+            "Loading deployment from config file..."
+        );
+
+        deployer.deploy().await?;
+
+        return Ok(());
+    }
+
+    // Otherwise, create a new deployment from CLI arguments
     let l2_chain_id = cli
         .l2_chain
         .map(|l2_chain| l2_chain.to_chain_id())
@@ -81,23 +100,23 @@ async fn main() -> Result<()> {
         l2_chain_id,
         outdata: outdata_path.clone(),
 
-        anvil_config: AnvilConfig {
+        anvil: AnvilConfig {
             container_name: format!("{}-anvil", network_name),
             fork_url: cli.l1_rpc_provider.to_rpc_url(cli.l1_chain)?,
             ..Default::default()
         },
 
-        docker_config: KupDockerConfig {
+        docker: KupDockerConfig {
             net_name: format!("{}-network", network_name),
             no_cleanup: cli.no_cleanup,
         },
 
-        op_deployer_config: OpDeployerConfig {
+        op_deployer: OpDeployerConfig {
             container_name: format!("{}-op-deployer", network_name),
             ..Default::default()
         },
 
-        l2_nodes_config: L2NodesConfig {
+        l2_nodes: L2NodesConfig {
             op_reth: OpRethConfig {
                 container_name: format!("{}-op-reth", network_name),
                 ..Default::default()
@@ -120,7 +139,7 @@ async fn main() -> Result<()> {
             },
         },
 
-        monitoring_config: MonitoringConfig {
+        monitoring: MonitoringConfig {
             prometheus: PrometheusConfig {
                 container_name: format!("{}-prometheus", network_name),
                 ..Default::default()
@@ -135,6 +154,9 @@ async fn main() -> Result<()> {
         // Use the dashboards from the project's grafana/dashboards directory
         dashboards_path: Some(PathBuf::from("grafana/dashboards")),
     };
+
+    // Save the configuration to kupconf.toml before deploying
+    deployer.save_config()?;
 
     deployer.deploy().await?;
 

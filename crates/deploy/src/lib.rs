@@ -65,20 +65,64 @@ pub struct L2NodesHandler {
     pub op_challenger: OpChallengerHandler,
 }
 
+/// The default name for the kupcake configuration file.
+pub const KUPCONF_FILENAME: &str = "kupconf.toml";
+
 /// Main deployer that orchestrates the entire OP Stack deployment.
+///
+/// This struct contains all the configuration needed to deploy an OP Stack chain
+/// and can be serialized to/from TOML format.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Deployer {
+    /// The L1 chain ID.
     pub l1_chain_id: u64,
+    /// The L2 chain ID.
     pub l2_chain_id: u64,
+    /// Path to the output data directory.
     pub outdata: PathBuf,
 
-    pub anvil_config: AnvilConfig,
-    pub op_deployer_config: OpDeployerConfig,
-    pub docker_config: KupDockerConfig,
-    pub l2_nodes_config: L2NodesConfig,
-    pub monitoring_config: MonitoringConfig,
+    /// Configuration for the Anvil L1 fork.
+    pub anvil: AnvilConfig,
+    /// Configuration for the OP Deployer.
+    pub op_deployer: OpDeployerConfig,
+    /// Configuration for the Docker client.
+    pub docker: KupDockerConfig,
+    /// Configuration for all L2 node components.
+    pub l2_nodes: L2NodesConfig,
+    /// Configuration for the monitoring stack.
+    pub monitoring: MonitoringConfig,
 
     /// Path to the dashboards directory (optional).
     pub dashboards_path: Option<PathBuf>,
+}
+
+impl Deployer {
+    /// Save the configuration to a TOML file.
+    pub fn save_to_file(&self, path: &PathBuf) -> Result<()> {
+        let content =
+            toml::to_string_pretty(self).context("Failed to serialize deployer config to TOML")?;
+        std::fs::write(path, content)
+            .context(format!("Failed to write config to {}", path.display()))?;
+        tracing::info!(path = %path.display(), "Configuration saved");
+        Ok(())
+    }
+
+    /// Load the configuration from a TOML file.
+    pub fn load_from_file(path: &PathBuf) -> Result<Self> {
+        let content = std::fs::read_to_string(path)
+            .context(format!("Failed to read config from {}", path.display()))?;
+        let config: Self =
+            toml::from_str(&content).context("Failed to parse config file as TOML")?;
+        tracing::info!(path = %path.display(), "Configuration loaded");
+        Ok(config)
+    }
+
+    /// Save the deployer's configuration to the default location (kupconf.toml in outdata).
+    pub fn save_config(&self) -> Result<PathBuf> {
+        let config_path = self.outdata.join(KUPCONF_FILENAME);
+        self.save_to_file(&config_path)?;
+        Ok(config_path)
+    }
 }
 
 impl Deployer {
@@ -249,17 +293,17 @@ impl Deployer {
         tracing::info!("Starting deployment process...");
 
         // Initialize Docker client
-        let mut docker = KupDocker::new(self.docker_config)
+        let mut docker = KupDocker::new(self.docker)
             .await
             .context("Failed to initialize Docker client")?;
 
         tracing::info!(
-            anvil_config = ?self.anvil_config,
+            anvil_config = ?self.anvil,
             "Starting Anvil..."
         );
 
         let anvil = self
-            .anvil_config
+            .anvil
             .start(&mut docker, self.outdata.join("anvil"), self.l1_chain_id)
             .await?;
 
@@ -269,7 +313,7 @@ impl Deployer {
         // that will be used for L2 nodes config (genesis.json, rollup.json)
         let l2_nodes_data_path = self.outdata.join("deployer");
 
-        self.op_deployer_config
+        self.op_deployer
             .deploy_contracts(
                 &mut docker,
                 l2_nodes_data_path.clone(),
@@ -284,7 +328,7 @@ impl Deployer {
         );
 
         let l2_nodes = Self::start_l2_nodes(
-            self.l2_nodes_config,
+            self.l2_nodes,
             &mut docker,
             l2_nodes_data_path.clone(),
             &anvil,
@@ -293,14 +337,14 @@ impl Deployer {
         .context("Failed to start L2 nodes")?;
 
         // Start monitoring stack if enabled
-        let monitoring = if self.monitoring_config.enabled {
+        let monitoring = if self.monitoring.enabled {
             tracing::info!("Starting monitoring stack (Prometheus + Grafana)...");
 
             let monitoring_data_path = self.outdata.join("monitoring");
             let metrics_targets = Self::build_metrics_targets(&l2_nodes);
 
             Some(
-                self.monitoring_config
+                self.monitoring
                     .start(
                         &mut docker,
                         monitoring_data_path,
