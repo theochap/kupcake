@@ -15,36 +15,6 @@ use kupcake_deploy::{
     OpRethConfig, PrometheusConfig,
 };
 
-const FOUNDRY_DOCKER_IMAGE: &str = "ghcr.io/foundry-rs/foundry";
-const FOUNDRY_DOCKER_TAG: &str = "latest";
-
-const OP_DEPLOYER_DOCKER_IMAGE: &str =
-    "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-deployer";
-const OP_DEPLOYER_DOCKER_TAG: &str = "v0.5.0-rc.2";
-
-const KONA_NODE_DOCKER_IMAGE: &str = "ghcr.io/theochap/kona-node";
-const KONA_NODE_DOCKER_TAG: &str = "test";
-
-const OP_RETH_DOCKER_IMAGE: &str = "ghcr.io/paradigmxyz/op-reth";
-const OP_RETH_DOCKER_TAG: &str = "latest";
-
-const OP_BATCHER_DOCKER_IMAGE: &str = "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-batcher";
-const OP_BATCHER_DOCKER_TAG: &str = "v1.16.2";
-
-const OP_PROPOSER_DOCKER_IMAGE: &str =
-    "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-proposer";
-const OP_PROPOSER_DOCKER_TAG: &str = "develop";
-
-const OP_CHALLENGER_DOCKER_IMAGE: &str =
-    "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-challenger";
-const OP_CHALLENGER_DOCKER_TAG: &str = "develop";
-
-const PROMETHEUS_DOCKER_IMAGE: &str = "prom/prometheus";
-const PROMETHEUS_DOCKER_TAG: &str = "latest";
-
-const GRAFANA_DOCKER_IMAGE: &str = "grafana/grafana";
-const GRAFANA_DOCKER_TAG: &str = "latest";
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -113,37 +83,18 @@ async fn main() -> Result<()> {
 
         anvil_config: AnvilConfig {
             container_name: format!("{}-anvil", network_name),
-            host: "0.0.0.0".to_string(),
-            port: 8545,
             fork_url: cli.l1_rpc_provider.to_rpc_url(cli.l1_chain)?,
-            extra_args: vec![],
+            ..Default::default()
         },
 
         docker_config: KupDockerConfig {
-            foundry_docker_image: FOUNDRY_DOCKER_IMAGE.to_string(),
-            foundry_docker_tag: FOUNDRY_DOCKER_TAG.to_string(),
-            op_deployer_docker_image: OP_DEPLOYER_DOCKER_IMAGE.to_string(),
-            op_deployer_docker_tag: OP_DEPLOYER_DOCKER_TAG.to_string(),
-            kona_node_docker_image: KONA_NODE_DOCKER_IMAGE.to_string(),
-            kona_node_docker_tag: KONA_NODE_DOCKER_TAG.to_string(),
-            op_reth_docker_image: OP_RETH_DOCKER_IMAGE.to_string(),
-            op_reth_docker_tag: OP_RETH_DOCKER_TAG.to_string(),
-            op_batcher_docker_image: OP_BATCHER_DOCKER_IMAGE.to_string(),
-            op_batcher_docker_tag: OP_BATCHER_DOCKER_TAG.to_string(),
-            op_proposer_docker_image: OP_PROPOSER_DOCKER_IMAGE.to_string(),
-            op_proposer_docker_tag: OP_PROPOSER_DOCKER_TAG.to_string(),
-            op_challenger_docker_image: OP_CHALLENGER_DOCKER_IMAGE.to_string(),
-            op_challenger_docker_tag: OP_CHALLENGER_DOCKER_TAG.to_string(),
-            prometheus_docker_image: PROMETHEUS_DOCKER_IMAGE.to_string(),
-            prometheus_docker_tag: PROMETHEUS_DOCKER_TAG.to_string(),
-            grafana_docker_image: GRAFANA_DOCKER_IMAGE.to_string(),
-            grafana_docker_tag: GRAFANA_DOCKER_TAG.to_string(),
             net_name: format!("{}-network", network_name),
             no_cleanup: cli.no_cleanup,
         },
 
         op_deployer_config: OpDeployerConfig {
             container_name: format!("{}-op-deployer", network_name),
+            ..Default::default()
         },
 
         l2_nodes_config: L2NodesConfig {
@@ -189,4 +140,3 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-

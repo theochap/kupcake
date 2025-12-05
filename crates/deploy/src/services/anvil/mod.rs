@@ -13,16 +13,25 @@ pub use cmd::AnvilCmdBuilder;
 
 use crate::{
     AccountInfo,
-    docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig},
+    docker::{
+        CreateAndStartContainerOptions, DockerImageBuilder, KupDocker, PortMapping, ServiceConfig,
+    },
     fs::FsHandler,
 };
 
 /// Default port for Anvil.
 pub const DEFAULT_PORT: u16 = 8545;
 
+/// Default Docker image for Anvil (Foundry).
+pub const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/foundry-rs/foundry";
+/// Default Docker tag for Anvil (Foundry).
+pub const DEFAULT_DOCKER_TAG: &str = "latest";
+
 /// Configuration for Anvil.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AnvilConfig {
+    /// Docker image configuration for Anvil.
+    pub docker_image: DockerImageBuilder,
     /// Host address for Anvil.
     pub host: String,
     /// Port for Anvil RPC.
@@ -88,14 +97,13 @@ impl AnvilConfig {
             .extra_args(self.extra_args.clone())
             .build();
 
-        let service_config = ServiceConfig::new(format!(
-            "{}:{}",
-            docker.config.foundry_docker_image, docker.config.foundry_docker_tag
-        ))
-        .entrypoint(vec!["anvil".to_string()])
-        .cmd(cmd)
-        .ports([PortMapping::tcp(ANVIL_INTERNAL_PORT, self.port)])
-        .bind(&host_config_path, &container_config_path, "rw");
+        let image = self.docker_image.build(docker).await?;
+
+        let service_config = ServiceConfig::new(image)
+            .entrypoint(vec!["anvil".to_string()])
+            .cmd(cmd)
+            .ports([PortMapping::tcp(ANVIL_INTERNAL_PORT, self.port)])
+            .bind(&host_config_path, &container_config_path, "rw");
 
         let handler = docker
             .start_service(
@@ -148,5 +156,18 @@ impl AnvilConfig {
             account_infos,
             l1_rpc_url,
         })
+    }
+}
+
+impl Default for AnvilConfig {
+    fn default() -> Self {
+        Self {
+            docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
+            container_name: "kupcake-anvil".to_string(),
+            host: "0.0.0.0".to_string(),
+            port: DEFAULT_PORT,
+            fork_url: String::new(),
+            extra_args: Vec::new(),
+        }
     }
 }

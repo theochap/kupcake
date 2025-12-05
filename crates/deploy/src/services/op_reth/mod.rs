@@ -10,7 +10,9 @@ use url::Url;
 
 pub use cmd::OpRethCmdBuilder;
 
-use crate::docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig};
+use crate::docker::{
+    CreateAndStartContainerOptions, DockerImageBuilder, KupDocker, PortMapping, ServiceConfig,
+};
 
 /// Default ports for op-reth.
 pub const DEFAULT_HTTP_PORT: u16 = 9545;
@@ -22,6 +24,8 @@ pub const DEFAULT_METRICS_PORT: u16 = 9001;
 /// Configuration for the op-reth execution client.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpRethConfig {
+    /// Docker image configuration for op-reth.
+    pub docker_image: DockerImageBuilder,
     /// Container name for op-reth.
     pub container_name: String,
     /// Host for the HTTP RPC endpoint.
@@ -40,9 +44,15 @@ pub struct OpRethConfig {
     pub extra_args: Vec<String>,
 }
 
+/// Default Docker image for op-reth.
+pub const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/paradigmxyz/op-reth";
+/// Default Docker tag for op-reth.
+pub const DEFAULT_DOCKER_TAG: &str = "latest";
+
 impl Default for OpRethConfig {
     fn default() -> Self {
         Self {
+            docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
             container_name: "kupcake-op-reth".to_string(),
             host: "0.0.0.0".to_string(),
             http_port: DEFAULT_HTTP_PORT,
@@ -92,20 +102,19 @@ impl OpRethConfig {
         .extra_args(self.extra_args.clone())
         .build();
 
-        let service_config = ServiceConfig::new(format!(
-            "{}:{}",
-            docker.config.op_reth_docker_image, docker.config.op_reth_docker_tag
-        ))
-        .cmd(cmd)
-        .ports([
-            PortMapping::tcp_same(self.http_port),
-            PortMapping::tcp_same(self.ws_port),
-            PortMapping::tcp_same(self.authrpc_port),
-            PortMapping::tcp_same(self.metrics_port),
-            PortMapping::tcp_same(self.discovery_port),
-            PortMapping::udp_same(self.discovery_port),
-        ])
-        .bind(host_config_path, &container_config_path, "rw");
+        let image = self.docker_image.build(docker).await?;
+
+        let service_config = ServiceConfig::new(image)
+            .cmd(cmd)
+            .ports([
+                PortMapping::tcp_same(self.http_port),
+                PortMapping::tcp_same(self.ws_port),
+                PortMapping::tcp_same(self.authrpc_port),
+                PortMapping::tcp_same(self.metrics_port),
+                PortMapping::tcp_same(self.discovery_port),
+                PortMapping::udp_same(self.discovery_port),
+            ])
+            .bind(host_config_path, &container_config_path, "rw");
 
         let handler = docker
             .start_service(

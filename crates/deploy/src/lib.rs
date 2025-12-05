@@ -13,7 +13,8 @@ mod fs;
 pub mod services;
 
 pub use docker::{
-    KupDocker, KupDockerConfig, PortMapping, PortProtocol, ServiceConfig, ServiceHandler,
+    DockerImage, DockerImageBuilder, KupDocker, KupDockerConfig, PortMapping, PortProtocol,
+    ServiceConfig, ServiceHandler,
 };
 pub use services::{
     AnvilConfig, AnvilHandler, GrafanaConfig, KonaNodeConfig, KonaNodeHandler, MetricsTarget,
@@ -337,4 +338,3 @@ impl Deployer {
         Ok(())
     }
 }
-

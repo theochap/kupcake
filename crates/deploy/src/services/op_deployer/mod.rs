@@ -6,9 +6,19 @@ use anyhow::Context;
 use bollard::{container::Config, secret::HostConfig};
 use serde::{Deserialize, Serialize};
 
-use crate::{AccountInfo, docker::KupDocker, fs::FsHandler};
+use crate::{
+    AccountInfo,
+    docker::{DockerImage, DockerImageBuilder, KupDocker},
+    fs::FsHandler,
+};
 
 use super::anvil::AnvilHandler;
+
+/// Default Docker image for op-deployer.
+pub const DEFAULT_DOCKER_IMAGE: &str =
+    "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-deployer";
+/// Default Docker tag for op-deployer.
+pub const DEFAULT_DOCKER_TAG: &str = "v0.5.0-rc.2";
 
 /// The minimum number of accounts required for the intent file. Those are:
 /// [`ChainConfig::base_fee_vault_recipient`], [`ChainConfig::l1_fee_vault_recipient`], [`ChainConfig::sequencer_fee_vault_recipient`], [`ChainRoles::l1_proxy_admin_owner`],
@@ -60,13 +70,26 @@ struct ChainRoles {
 
 /// Configuration for the OP Deployer service.
 pub struct OpDeployerConfig {
+    /// Docker image configuration for op-deployer.
+    pub docker_image: DockerImageBuilder,
+    /// Container name for op-deployer.
     pub container_name: String,
+}
+
+impl Default for OpDeployerConfig {
+    fn default() -> Self {
+        Self {
+            docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
+            container_name: "kupcake-op-deployer".to_string(),
+        }
+    }
 }
 
 impl OpDeployerConfig {
     pub async fn run_docker_container(
         &self,
         docker: &mut KupDocker,
+        image: &DockerImage,
         container_name: &str,
         host_config_path: &PathBuf,
         container_config_path: &PathBuf,
@@ -100,10 +123,7 @@ impl OpDeployerConfig {
 
         // Create container configuration
         let config = Config {
-            image: Some(format!(
-                "{}:{}",
-                docker.config.op_deployer_docker_image, docker.config.op_deployer_docker_tag
-            )),
+            image: Some(image.full_name()),
             cmd: Some(cmd),
             host_config: Some(host_config),
             user,
@@ -143,6 +163,7 @@ impl OpDeployerConfig {
     async fn generate_intent_file(
         &self,
         docker: &mut KupDocker,
+        image: &DockerImage,
         host_config_path: &PathBuf,
         container_config_path: &PathBuf,
         l1_chain_id: u64,
@@ -167,6 +188,7 @@ impl OpDeployerConfig {
 
         self.run_docker_container(
             docker,
+            image,
             &format!("{}-init", self.container_name),
             host_config_path,
             container_config_path,
@@ -188,6 +210,7 @@ impl OpDeployerConfig {
     async fn apply_contract_deployments(
         &self,
         docker: &mut KupDocker,
+        image: &DockerImage,
         host_config_path: &PathBuf,
         container_config_path: &PathBuf,
         anvil_handler: &AnvilHandler,
@@ -207,6 +230,7 @@ impl OpDeployerConfig {
 
         self.run_docker_container(
             docker,
+            image,
             &format!("{}-apply", self.container_name),
             host_config_path,
             container_config_path,
@@ -220,6 +244,7 @@ impl OpDeployerConfig {
     async fn generate_config_files(
         &self,
         docker: &mut KupDocker,
+        image: &DockerImage,
         host_config_path: &PathBuf,
         container_config_path: &PathBuf,
         l2_chain_id: u64,
@@ -237,6 +262,7 @@ impl OpDeployerConfig {
 
         self.run_docker_container(
             docker,
+            image,
             &format!("{}-inspect-genesis", self.container_name),
             host_config_path,
             container_config_path,
@@ -246,6 +272,7 @@ impl OpDeployerConfig {
 
         self.run_docker_container(
             docker,
+            image,
             &format!("{}-inspect-rollup", self.container_name),
             host_config_path,
             container_config_path,
@@ -290,9 +317,13 @@ impl OpDeployerConfig {
             FsHandler::create_host_config_directory(&host_config_path)?;
         }
 
+        // Pull the op-deployer image once and reuse it
+        let image = self.docker_image.build(docker).await?;
+
         let config_file_path = self
             .generate_intent_file(
                 docker,
+                &image,
                 &host_config_path,
                 &container_config_path,
                 l1_chain_id,
@@ -311,6 +342,7 @@ impl OpDeployerConfig {
         // Now apply the contract deployments.
         self.apply_contract_deployments(
             docker,
+            &image,
             &host_config_path,
             &container_config_path,
             anvil_handler,
@@ -321,6 +353,7 @@ impl OpDeployerConfig {
         // Now generate the config files to be used by the L2 nodes.
         self.generate_config_files(
             docker,
+            &image,
             &host_config_path,
             &container_config_path,
             l2_chain_id,

@@ -10,7 +10,9 @@ use url::Url;
 
 pub use cmd::OpBatcherCmdBuilder;
 
-use crate::docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig};
+use crate::docker::{
+    CreateAndStartContainerOptions, DockerImageBuilder, KupDocker, PortMapping, ServiceConfig,
+};
 
 use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethHandler};
 
@@ -21,6 +23,8 @@ pub const DEFAULT_METRICS_PORT: u16 = 7301;
 /// Configuration for the op-batcher component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpBatcherConfig {
+    /// Docker image configuration for op-batcher.
+    pub docker_image: DockerImageBuilder,
     /// Container name for op-batcher.
     pub container_name: String,
     /// Host for the RPC endpoint.
@@ -41,9 +45,15 @@ pub struct OpBatcherConfig {
     pub extra_args: Vec<String>,
 }
 
+/// Default Docker image for op-batcher.
+pub const DEFAULT_DOCKER_IMAGE: &str = "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-batcher";
+/// Default Docker tag for op-batcher.
+pub const DEFAULT_DOCKER_TAG: &str = "v1.16.2";
+
 impl Default for OpBatcherConfig {
     fn default() -> Self {
         Self {
+            docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
             container_name: "kupcake-op-batcher".to_string(),
             host: "0.0.0.0".to_string(),
             rpc_port: DEFAULT_RPC_PORT,
@@ -94,16 +104,15 @@ impl OpBatcherConfig {
         .extra_args(self.extra_args.clone())
         .build();
 
-        let service_config = ServiceConfig::new(format!(
-            "{}:{}",
-            docker.config.op_batcher_docker_image, docker.config.op_batcher_docker_tag
-        ))
-        .cmd(cmd)
-        .ports([
-            PortMapping::tcp_same(self.rpc_port),
-            PortMapping::tcp_same(self.metrics_port),
-        ])
-        .bind(host_config_path, &container_config_path, "rw");
+        let image = self.docker_image.build(docker).await?;
+
+        let service_config = ServiceConfig::new(image)
+            .cmd(cmd)
+            .ports([
+                PortMapping::tcp_same(self.rpc_port),
+                PortMapping::tcp_same(self.metrics_port),
+            ])
+            .bind(host_config_path, &container_config_path, "rw");
 
         let handler = docker
             .start_service(

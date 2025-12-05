@@ -82,8 +82,8 @@ impl PortMapping {
 /// Configuration for starting a service container.
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
-    /// The Docker image (with tag) to use.
-    pub image: String,
+    /// The Docker image to use.
+    pub image: DockerImage,
     /// The entrypoint for the container.
     pub entrypoint: Option<Vec<String>>,
     /// The command to run in the container.
@@ -98,9 +98,9 @@ pub struct ServiceConfig {
 
 impl ServiceConfig {
     /// Create a new service config with the given image.
-    pub fn new(image: impl Into<String>) -> Self {
+    pub fn new(image: DockerImage) -> Self {
         Self {
-            image: image.into(),
+            image,
             entrypoint: None,
             cmd: None,
             port_mappings: Vec::new(),
@@ -166,34 +166,88 @@ pub struct ServiceHandler {
     pub container_name: String,
 }
 
+/// A Docker image reference with image name and tag.
+///
+/// This newtype ensures that an image is pulled and available locally
+/// before it can be used to start a container.
+#[derive(Debug, Clone)]
+pub struct DockerImage {
+    /// The image name (e.g., "ghcr.io/foundry-rs/foundry").
+    image: String,
+    /// The image tag (e.g., "latest" or "v1.0.0").
+    tag: String,
+}
+
+impl DockerImage {
+    /// Create a new DockerImage, ensuring it is pulled and available locally.
+    ///
+    /// This constructor will check if the image exists locally and pull it
+    /// if necessary.
+    pub async fn new(
+        image: impl Into<String>,
+        tag: impl Into<String>,
+        docker: &KupDocker,
+    ) -> Result<Self> {
+        let image = image.into();
+        let tag = tag.into();
+
+        docker.pull_image(&image, &tag).await?;
+
+        Ok(Self { image, tag })
+    }
+
+    /// Get the image name.
+    pub fn image(&self) -> &str {
+        &self.image
+    }
+
+    /// Get the image tag.
+    pub fn tag(&self) -> &str {
+        &self.tag
+    }
+
+    /// Get the full image reference (image:tag).
+    pub fn full_name(&self) -> String {
+        format!("{}:{}", self.image, self.tag)
+    }
+}
+
+impl std::fmt::Display for DockerImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.image, self.tag)
+    }
+}
+
+/// A builder for creating Docker images.
+///
+/// This type holds the image name and tag, and provides a method to build
+/// a [`DockerImage`] by pulling it using the Docker client.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct DockerImageBuilder {
+    /// The image name (e.g., "ghcr.io/foundry-rs/foundry").
+    pub image: String,
+    /// The image tag (e.g., "latest" or "v1.0.0").
+    pub tag: String,
+}
+
+impl DockerImageBuilder {
+    /// Create a new DockerImageBuilder with the given image name and tag.
+    pub fn new(image: impl Into<String>, tag: impl Into<String>) -> Self {
+        Self {
+            image: image.into(),
+            tag: tag.into(),
+        }
+    }
+
+    /// Build a [`DockerImage`] by pulling it using the Docker client.
+    ///
+    /// This will check if the image exists locally and pull it if necessary.
+    pub async fn build(&self, docker: &KupDocker) -> Result<DockerImage> {
+        DockerImage::new(&self.image, &self.tag, docker).await
+    }
+}
+
 pub struct KupDockerConfig {
-    pub foundry_docker_image: String,
-    pub foundry_docker_tag: String,
-
-    pub op_deployer_docker_image: String,
-    pub op_deployer_docker_tag: String,
-
-    pub kona_node_docker_image: String,
-    pub kona_node_docker_tag: String,
-
-    pub op_reth_docker_image: String,
-    pub op_reth_docker_tag: String,
-
-    pub op_batcher_docker_image: String,
-    pub op_batcher_docker_tag: String,
-
-    pub op_proposer_docker_image: String,
-    pub op_proposer_docker_tag: String,
-
-    pub op_challenger_docker_image: String,
-    pub op_challenger_docker_tag: String,
-
-    pub prometheus_docker_image: String,
-    pub prometheus_docker_tag: String,
-
-    pub grafana_docker_image: String,
-    pub grafana_docker_tag: String,
-
     pub net_name: String,
 
     pub no_cleanup: bool,
@@ -268,6 +322,16 @@ impl Drop for KupDocker {
 
 impl KupDocker {
     pub async fn pull_image(&self, image: &str, tag: &str) -> Result<()> {
+        let full_image = format!("{}:{}", image, tag);
+
+        // Check if image is already available locally
+        if self.docker.inspect_image(&full_image).await.is_ok() {
+            tracing::debug!(image = %full_image, "Image already available locally, skipping pull");
+            return Ok(());
+        }
+
+        tracing::debug!(image = %full_image, "Image not found locally, pulling...");
+
         let mut stream = self.docker.create_image(
             Some(CreateImageOptions {
                 from_image: image.to_string(),
@@ -280,7 +344,7 @@ impl KupDocker {
 
         while let Some(result) = stream.next().await
             && let Some(status) = result
-                .map_err(|e| anyhow::anyhow!("Failed to pull Foundry image: {}", e))?
+                .map_err(|e| anyhow::anyhow!("Failed to pull image '{}:{}': {}", image, tag, e))?
                 .status
         {
             tracing::trace!(status, "Image pull");
@@ -296,133 +360,12 @@ impl KupDocker {
 
         let network_id = Self::create_network(&docker, &config.net_name).await?;
 
-        let docker = Self {
+        Ok(Self {
             docker,
             config,
             network_id,
             containers: HashSet::new(),
-        };
-
-        tracing::debug!(
-            image = docker.config.foundry_docker_image,
-            tag = docker.config.foundry_docker_tag,
-            "Pulling Foundry from docker..."
-        );
-
-        docker
-            .pull_image(
-                &docker.config.foundry_docker_image,
-                &docker.config.foundry_docker_tag,
-            )
-            .await?;
-
-        tracing::debug!(
-            image = docker.config.op_deployer_docker_image,
-            tag = docker.config.op_deployer_docker_tag,
-            "Pulling Op Deployer from docker..."
-        );
-
-        docker
-            .pull_image(
-                &docker.config.op_deployer_docker_image,
-                &docker.config.op_deployer_docker_tag,
-            )
-            .await?;
-
-        tracing::debug!(
-            image = docker.config.kona_node_docker_image,
-            tag = docker.config.kona_node_docker_tag,
-            "Pulling kona-node from docker..."
-        );
-
-        docker
-            .pull_image(
-                &docker.config.kona_node_docker_image,
-                &docker.config.kona_node_docker_tag,
-            )
-            .await?;
-
-        tracing::debug!(
-            image = docker.config.op_reth_docker_image,
-            tag = docker.config.op_reth_docker_tag,
-            "Pulling op-reth from docker..."
-        );
-
-        docker
-            .pull_image(
-                &docker.config.op_reth_docker_image,
-                &docker.config.op_reth_docker_tag,
-            )
-            .await?;
-
-        tracing::debug!(
-            image = docker.config.op_batcher_docker_image,
-            tag = docker.config.op_batcher_docker_tag,
-            "Pulling op-batcher from docker..."
-        );
-
-        docker
-            .pull_image(
-                &docker.config.op_batcher_docker_image,
-                &docker.config.op_batcher_docker_tag,
-            )
-            .await?;
-
-        tracing::debug!(
-            image = docker.config.op_proposer_docker_image,
-            tag = docker.config.op_proposer_docker_tag,
-            "Pulling op-proposer from docker..."
-        );
-
-        docker
-            .pull_image(
-                &docker.config.op_proposer_docker_image,
-                &docker.config.op_proposer_docker_tag,
-            )
-            .await?;
-
-        tracing::debug!(
-            image = docker.config.op_challenger_docker_image,
-            tag = docker.config.op_challenger_docker_tag,
-            "Pulling op-challenger from docker..."
-        );
-
-        docker
-            .pull_image(
-                &docker.config.op_challenger_docker_image,
-                &docker.config.op_challenger_docker_tag,
-            )
-            .await?;
-
-        tracing::debug!(
-            image = docker.config.prometheus_docker_image,
-            tag = docker.config.prometheus_docker_tag,
-            "Pulling Prometheus from docker..."
-        );
-
-        docker
-            .pull_image(
-                &docker.config.prometheus_docker_image,
-                &docker.config.prometheus_docker_tag,
-            )
-            .await?;
-
-        tracing::debug!(
-            image = docker.config.grafana_docker_image,
-            tag = docker.config.grafana_docker_tag,
-            "Pulling Grafana from docker..."
-        );
-
-        docker
-            .pull_image(
-                &docker.config.grafana_docker_image,
-                &docker.config.grafana_docker_tag,
-            )
-            .await?;
-
-        tracing::trace!("Images pulled successfully");
-
-        Ok(docker)
+        })
     }
 
     /// Create a Docker network for container communication.
@@ -666,7 +609,7 @@ impl KupDocker {
         };
 
         let container_config = Config {
-            image: Some(config.image),
+            image: Some(config.image.full_name()),
             entrypoint: config.entrypoint,
             cmd: config.cmd,
             env: config.env,

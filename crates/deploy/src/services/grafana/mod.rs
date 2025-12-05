@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig},
+    docker::{
+        CreateAndStartContainerOptions, DockerImageBuilder, KupDocker, PortMapping, ServiceConfig,
+    },
     fs::FsHandler,
 };
 
@@ -18,6 +20,9 @@ pub const DEFAULT_GRAFANA_PORT: u16 = 3019;
 /// Configuration for Prometheus.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PrometheusConfig {
+    /// Docker image configuration for Prometheus.
+    pub docker_image: DockerImageBuilder,
+
     /// Container name for Prometheus.
     pub container_name: String,
 
@@ -31,9 +36,18 @@ pub struct PrometheusConfig {
     pub scrape_interval: u64,
 }
 
+/// Default Docker image for Prometheus.
+pub const DEFAULT_PROMETHEUS_DOCKER_IMAGE: &str = "prom/prometheus";
+/// Default Docker tag for Prometheus.
+pub const DEFAULT_PROMETHEUS_DOCKER_TAG: &str = "latest";
+
 impl Default for PrometheusConfig {
     fn default() -> Self {
         Self {
+            docker_image: DockerImageBuilder::new(
+                DEFAULT_PROMETHEUS_DOCKER_IMAGE,
+                DEFAULT_PROMETHEUS_DOCKER_TAG,
+            ),
             container_name: "kupcake-prometheus".to_string(),
             host: "0.0.0.0".to_string(),
             port: DEFAULT_PROMETHEUS_PORT,
@@ -45,6 +59,9 @@ impl Default for PrometheusConfig {
 /// Configuration for Grafana.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GrafanaConfig {
+    /// Docker image configuration for Grafana.
+    pub docker_image: DockerImageBuilder,
+
     /// Container name for Grafana.
     pub container_name: String,
 
@@ -61,9 +78,18 @@ pub struct GrafanaConfig {
     pub admin_password: String,
 }
 
+/// Default Docker image for Grafana.
+pub const DEFAULT_GRAFANA_DOCKER_IMAGE: &str = "grafana/grafana";
+/// Default Docker tag for Grafana.
+pub const DEFAULT_GRAFANA_DOCKER_TAG: &str = "latest";
+
 impl Default for GrafanaConfig {
     fn default() -> Self {
         Self {
+            docker_image: DockerImageBuilder::new(
+                DEFAULT_GRAFANA_DOCKER_IMAGE,
+                DEFAULT_GRAFANA_DOCKER_TAG,
+            ),
             container_name: "kupcake-grafana".to_string(),
             host: "0.0.0.0".to_string(),
             port: DEFAULT_GRAFANA_PORT,
@@ -306,17 +332,16 @@ providers:
             "--web.enable-lifecycle".to_string(),
         ];
 
-        let service_config = ServiceConfig::new(format!(
-            "{}:{}",
-            docker.config.prometheus_docker_image, docker.config.prometheus_docker_tag
-        ))
-        .cmd(cmd)
-        .ports([PortMapping::tcp_same(self.prometheus.port)])
-        .bind_str(format!(
-            "{}:{}:ro",
-            host_config_path.join("prometheus.yml").display(),
-            container_config_path.join("prometheus.yml").display()
-        ));
+        let image = self.prometheus.docker_image.build(docker).await?;
+
+        let service_config = ServiceConfig::new(image)
+            .cmd(cmd)
+            .ports([PortMapping::tcp_same(self.prometheus.port)])
+            .bind_str(format!(
+                "{}:{}:ro",
+                host_config_path.join("prometheus.yml").display(),
+                container_config_path.join("prometheus.yml").display()
+            ));
 
         let handler = docker
             .start_service(
@@ -365,16 +390,15 @@ providers:
             "GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer".to_string(),
         ];
 
-        let service_config = ServiceConfig::new(format!(
-            "{}:{}",
-            docker.config.grafana_docker_image, docker.config.grafana_docker_tag
-        ))
-        .ports([PortMapping::tcp(GRAFANA_INTERNAL_PORT, self.grafana.port)])
-        .bind_str(format!(
-            "{}:/etc/grafana/provisioning:ro",
-            grafana_provisioning_path.display()
-        ))
-        .env(env);
+        let image = self.grafana.docker_image.build(docker).await?;
+
+        let service_config = ServiceConfig::new(image)
+            .ports([PortMapping::tcp(GRAFANA_INTERNAL_PORT, self.grafana.port)])
+            .bind_str(format!(
+                "{}:/etc/grafana/provisioning:ro",
+                grafana_provisioning_path.display()
+            ))
+            .env(env);
 
         let handler = docker
             .start_service(

@@ -10,7 +10,9 @@ use url::Url;
 
 pub use cmd::OpProposerCmdBuilder;
 
-use crate::docker::{CreateAndStartContainerOptions, KupDocker, PortMapping, ServiceConfig};
+use crate::docker::{
+    CreateAndStartContainerOptions, DockerImageBuilder, KupDocker, PortMapping, ServiceConfig,
+};
 
 use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler};
 
@@ -21,6 +23,8 @@ pub const DEFAULT_METRICS_PORT: u16 = 7302;
 /// Configuration for the op-proposer component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpProposerConfig {
+    /// Docker image configuration for op-proposer.
+    pub docker_image: DockerImageBuilder,
     /// Container name for op-proposer.
     pub container_name: String,
     /// Host for the RPC endpoint.
@@ -35,9 +39,16 @@ pub struct OpProposerConfig {
     pub extra_args: Vec<String>,
 }
 
+/// Default Docker image for op-proposer.
+pub const DEFAULT_DOCKER_IMAGE: &str =
+    "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-proposer";
+/// Default Docker tag for op-proposer.
+pub const DEFAULT_DOCKER_TAG: &str = "develop";
+
 impl Default for OpProposerConfig {
     fn default() -> Self {
         Self {
+            docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
             container_name: "kupcake-op-proposer".to_string(),
             host: "0.0.0.0".to_string(),
             rpc_port: DEFAULT_RPC_PORT,
@@ -98,16 +109,15 @@ impl OpProposerConfig {
         .extra_args(self.extra_args.clone())
         .build();
 
-        let service_config = ServiceConfig::new(format!(
-            "{}:{}",
-            docker.config.op_proposer_docker_image, docker.config.op_proposer_docker_tag
-        ))
-        .cmd(cmd)
-        .ports([
-            PortMapping::tcp_same(self.rpc_port),
-            PortMapping::tcp_same(self.metrics_port),
-        ])
-        .bind(host_config_path, &container_config_path, "rw");
+        let image = self.docker_image.build(docker).await?;
+
+        let service_config = ServiceConfig::new(image)
+            .cmd(cmd)
+            .ports([
+                PortMapping::tcp_same(self.rpc_port),
+                PortMapping::tcp_same(self.metrics_port),
+            ])
+            .bind(host_config_path, &container_config_path, "rw");
 
         let handler = docker
             .start_service(
