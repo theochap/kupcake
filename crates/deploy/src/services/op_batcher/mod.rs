@@ -22,7 +22,7 @@ pub const DEFAULT_METRICS_PORT: u16 = 7301;
 
 /// Configuration for the op-batcher component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct OpBatcherConfig {
+pub struct OpBatcherBuilder {
     /// Docker image configuration for op-batcher.
     pub docker_image: DockerImageBuilder,
     /// Container name for op-batcher.
@@ -41,8 +41,8 @@ pub struct OpBatcherConfig {
     pub sub_safety_margin: u64,
     /// Batch submission interval.
     pub poll_interval: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     /// Extra arguments to pass to op-batcher.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
 }
 
@@ -51,7 +51,7 @@ pub const DEFAULT_DOCKER_IMAGE: &str = "us-docker.pkg.dev/oplabs-tools-artifacts
 /// Default Docker tag for op-batcher.
 pub const DEFAULT_DOCKER_TAG: &str = "v1.16.2";
 
-impl Default for OpBatcherConfig {
+impl Default for OpBatcherBuilder {
     fn default() -> Self {
         Self {
             docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
@@ -78,7 +78,7 @@ pub struct OpBatcherHandler {
     pub rpc_url: Url,
 }
 
-impl OpBatcherConfig {
+impl OpBatcherBuilder {
     /// Start the op-batcher.
     pub async fn start(
         &self,

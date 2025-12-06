@@ -111,6 +111,11 @@ pub struct Cli {
     #[arg(long, alias = "l2", env = "KUP_L2_CHAIN")]
     pub l2_chain: Option<L2Chain>,
 
+    /// Redeploy all contracts.
+    /// If not provided and the deployer data directory exists, the contracts will not be redeployed.
+    #[arg(long, env = "KUP_REDEPLOY", default_value_t = false)]
+    pub redeploy: bool,
+
     /// The path to the output data directory.
     ///
     /// If not provided, the data will be stored at: ./data_<network-name>

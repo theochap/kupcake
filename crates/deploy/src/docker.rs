@@ -7,7 +7,7 @@ use bollard::{
     Docker,
     container::{
         Config, CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions,
-        WaitContainerOptions,
+        StopContainerOptions, WaitContainerOptions,
     },
     image::CreateImageOptions,
     network::CreateNetworkOptions,
@@ -324,6 +324,8 @@ impl Drop for KupDocker {
 }
 
 impl KupDocker {
+    const STOP_CONTAINER_TIMEOUT: Duration = Duration::from_secs(5);
+
     pub async fn pull_image(&self, image: &str, tag: &str) -> Result<()> {
         let full_image = format!("{}:{}", image, tag);
 
@@ -530,11 +532,13 @@ impl KupDocker {
     ) -> Result<()> {
         tracing::trace!(container_id, "Stopping and removing container");
 
-        // Kill the container (stop with timeout=0)
+        // Stop the container
         docker
-            .kill_container(
+            .stop_container(
                 container_id,
-                None::<bollard::container::KillContainerOptions<String>>,
+                Some(StopContainerOptions {
+                    t: Self::STOP_CONTAINER_TIMEOUT.as_secs() as i64,
+                }),
             )
             .await
             .ok(); // Ignore errors if already stopped

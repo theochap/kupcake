@@ -18,9 +18,9 @@ pub use anvil::{AnvilConfig, AnvilHandler};
 pub use grafana::{
     GrafanaConfig, MetricsTarget, MonitoringConfig, MonitoringHandler, PrometheusConfig,
 };
-pub use kona_node::{KonaNodeConfig, KonaNodeHandler};
-pub use op_batcher::{OpBatcherConfig, OpBatcherHandler};
-pub use op_challenger::{OpChallengerConfig, OpChallengerHandler};
+pub use kona_node::{KonaNodeBuilder, KonaNodeHandler};
+pub use op_batcher::{OpBatcherBuilder, OpBatcherHandler};
+pub use op_challenger::{OpChallengerBuilder, OpChallengerHandler};
 pub use op_deployer::OpDeployerConfig;
-pub use op_proposer::{OpProposerConfig, OpProposerHandler};
-pub use op_reth::{OpRethConfig, OpRethHandler};
+pub use op_proposer::{OpProposerBuilder, OpProposerHandler};
+pub use op_reth::{OpRethBuilder, OpRethHandler};

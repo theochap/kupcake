@@ -23,7 +23,7 @@ pub const DEFAULT_METRICS_PORT: u16 = 9001;
 
 /// Configuration for the op-reth execution client.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct OpRethConfig {
+pub struct OpRethBuilder {
     /// Docker image configuration for op-reth.
     pub docker_image: DockerImageBuilder,
     /// Container name for op-reth.
@@ -40,8 +40,8 @@ pub struct OpRethConfig {
     pub discovery_port: u16,
     /// Port for metrics.
     pub metrics_port: u16,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     /// Extra arguments to pass to op-reth.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
 }
 
@@ -50,7 +50,7 @@ pub const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/paradigmxyz/op-reth";
 /// Default Docker tag for op-reth.
 pub const DEFAULT_DOCKER_TAG: &str = "latest";
 
-impl Default for OpRethConfig {
+impl Default for OpRethBuilder {
     fn default() -> Self {
         Self {
             docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
@@ -80,7 +80,7 @@ pub struct OpRethHandler {
     pub authrpc_url: Url,
 }
 
-impl OpRethConfig {
+impl OpRethBuilder {
     /// Start the op-reth execution client.
     pub async fn start(
         &self,

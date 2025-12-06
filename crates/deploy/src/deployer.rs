@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::{
-    AnvilConfig, AnvilHandler, KonaNodeHandler, KupDocker, KupDockerConfig, L2StackConfig,
-    MetricsTarget, MonitoringConfig, OpBatcherHandler, OpChallengerHandler, OpDeployerConfig,
-    OpProposerHandler, OpRethHandler, fs, services,
+    AnvilConfig, KonaNodeHandler, KupDocker, KupDockerConfig, L2StackBuilder, MetricsTarget,
+    MonitoringConfig, OpBatcherHandler, OpChallengerHandler, OpDeployerConfig, OpProposerHandler,
+    OpRethHandler, services,
 };
 
 /// The default name for the kupcake configuration file.
-pub const KUPCONF_FILENAME: &str = "kupconf.toml";
+pub const KUPCONF_FILENAME: &str = "Kupcake.toml";
 
 /// Handler for the complete L2 node setup.
 pub struct L2NodesHandler {
@@ -41,7 +41,7 @@ pub struct Deployer {
     pub docker: KupDockerConfig,
     /// Configuration for all L2 components for the op-stack.
     #[serde(flatten)]
-    pub l2_stack: L2StackConfig,
+    pub l2_stack: L2StackBuilder,
     /// Configuration for the monitoring stack.
     pub monitoring: MonitoringConfig,
 
@@ -63,7 +63,20 @@ impl Deployer {
 
     /// Load the configuration from a TOML file.
     pub fn load_from_file(path: &PathBuf) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
+        if !path.exists() {
+            return Err(anyhow::anyhow!(
+                "Configuration file or directory not found: {}",
+                path.display()
+            ));
+        }
+
+        let config_path = if path.is_dir() {
+            path.join(KUPCONF_FILENAME)
+        } else {
+            path.to_path_buf()
+        };
+
+        let content = std::fs::read_to_string(config_path)
             .context(format!("Failed to read config from {}", path.display()))?;
         let config: Self =
             toml::from_str(&content).context("Failed to parse config file as TOML")?;
@@ -80,122 +93,6 @@ impl Deployer {
 }
 
 impl Deployer {
-    /// Generate a JWT secret for authenticated communication between op-reth and kona-node.
-    fn generate_jwt_secret() -> String {
-        use rand::Rng;
-        let mut rng = rand::rng();
-        let secret: [u8; 32] = rng.random();
-        hex::encode(secret)
-    }
-
-    /// Write the JWT secret to a file.
-    async fn write_jwt_secret(host_config_path: &PathBuf) -> Result<PathBuf, anyhow::Error> {
-        let jwt_secret = Self::generate_jwt_secret();
-        let jwt_path = host_config_path.join("jwt.hex");
-
-        tokio::fs::write(&jwt_path, &jwt_secret)
-            .await
-            .context("Failed to write JWT secret file")?;
-
-        tracing::debug!(path = ?jwt_path, "JWT secret written");
-        Ok(jwt_path)
-    }
-
-    /// Start all L2 node components.
-    ///
-    /// This starts op-reth first (execution client), then kona-node (consensus client),
-    /// followed by op-batcher (batch submitter), op-proposer, and op-challenger.
-    /// The components communicate via the Engine API using JWT authentication.
-    async fn start_l2_nodes(
-        l2_nodes_config: L2StackConfig,
-        docker: &mut KupDocker,
-        host_config_path: PathBuf,
-        anvil_handler: &AnvilHandler,
-    ) -> Result<L2NodesHandler, anyhow::Error> {
-        if !host_config_path.exists() {
-            fs::FsHandler::create_host_config_directory(&host_config_path)?;
-        }
-
-        // Generate JWT secret for Engine API authentication
-        Self::write_jwt_secret(&host_config_path).await?;
-
-        tracing::info!("Starting op-reth execution client...");
-
-        // Start op-reth first
-        let op_reth_handler = l2_nodes_config
-            .op_reth
-            .start(docker, &host_config_path)
-            .await?;
-
-        // Give op-reth a moment to initialize before starting kona-node
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-        tracing::info!("Starting kona-node consensus client...");
-
-        // Start kona-node
-        let kona_node_handler = l2_nodes_config
-            .kona_node
-            .start(docker, &host_config_path, anvil_handler, &op_reth_handler)
-            .await?;
-
-        // Give kona-node a moment to initialize before starting op-batcher
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-        tracing::info!("Starting op-batcher...");
-
-        // Start op-batcher
-        let op_batcher_handler = l2_nodes_config
-            .op_batcher
-            .start(
-                docker,
-                &host_config_path,
-                anvil_handler,
-                &op_reth_handler,
-                &kona_node_handler,
-            )
-            .await?;
-
-        tracing::info!("Starting op-proposer...");
-
-        // Start op-proposer
-        let op_proposer_handler = l2_nodes_config
-            .op_proposer
-            .start(docker, &host_config_path, anvil_handler, &kona_node_handler)
-            .await?;
-
-        tracing::info!("Starting op-challenger...");
-
-        // Start op-challenger
-        let op_challenger_handler = l2_nodes_config
-            .op_challenger
-            .start(
-                docker,
-                &host_config_path,
-                anvil_handler,
-                &kona_node_handler,
-                &l2_nodes_config.op_reth,
-            )
-            .await?;
-
-        tracing::info!(
-            l2_http_rpc = %op_reth_handler.http_rpc_url,
-            l2_ws_rpc = %op_reth_handler.ws_rpc_url,
-            kona_node_rpc = %kona_node_handler.rpc_url,
-            op_batcher_rpc = %op_batcher_handler.rpc_url,
-            op_proposer_rpc = %op_proposer_handler.rpc_url,
-            op_challenger_rpc = %op_challenger_handler.rpc_url,
-            "L2 nodes started successfully"
-        );
-
-        Ok(L2NodesHandler {
-            op_reth: op_reth_handler,
-            kona_node: kona_node_handler,
-            op_batcher: op_batcher_handler,
-            op_proposer: op_proposer_handler,
-            op_challenger: op_challenger_handler,
-        })
-    }
-
     /// Build metrics targets for Prometheus scraping from L2 node handlers.
     fn build_metrics_targets(l2_nodes: &L2NodesHandler) -> Vec<MetricsTarget> {
         use services::kona_node::DEFAULT_METRICS_PORT as KONA_METRICS_PORT;
@@ -243,7 +140,7 @@ impl Deployer {
         ]
     }
 
-    pub async fn deploy(self) -> Result<()> {
+    pub async fn deploy(self, force_deploy: bool) -> Result<()> {
         tracing::info!("Starting deployment process...");
 
         // Initialize Docker client
@@ -261,34 +158,36 @@ impl Deployer {
             .start(&mut docker, self.outdata.join("anvil"), self.l1_chain_id)
             .await?;
 
-        tracing::info!("Deploying L1 contracts...");
-
         // Deploy L1 contracts - the deployer output goes to the same directory
         // that will be used for L2 nodes config (genesis.json, rollup.json)
-        let l2_nodes_data_path = self.outdata.join("deployer");
+        let l2_nodes_data_path = self.outdata.join("l2-stack");
 
-        self.op_deployer
-            .deploy_contracts(
-                &mut docker,
-                l2_nodes_data_path.clone(),
-                &anvil,
-                self.l1_chain_id,
-                self.l2_chain_id,
-            )
-            .await?;
+        // Deploy L1 contracts if force_deploy is true or if the deployer output directory does not exist yet.
+        if force_deploy || !l2_nodes_data_path.exists() {
+            tracing::info!("Deploying L1 contracts...");
+
+            self.op_deployer
+                .deploy_contracts(
+                    &mut docker,
+                    l2_nodes_data_path.clone(),
+                    &anvil,
+                    self.l1_chain_id,
+                    self.l2_chain_id,
+                )
+                .await?;
+        } else {
+            tracing::info!("L1 contracts already deployed, skipping deployment");
+        }
 
         tracing::info!(
             "Starting L2 nodes (op-reth + kona-node + op-batcher + op-proposer + op-challenger)..."
         );
 
-        let l2_stack = Self::start_l2_nodes(
-            self.l2_stack,
-            &mut docker,
-            l2_nodes_data_path.clone(),
-            &anvil,
-        )
-        .await
-        .context("Failed to start L2 nodes")?;
+        let l2_stack = self
+            .l2_stack
+            .start(&mut docker, l2_nodes_data_path.clone(), &anvil)
+            .await
+            .context("Failed to start L2 nodes")?;
 
         // Start monitoring stack if enabled
         let monitoring = if self.monitoring.enabled {

@@ -22,7 +22,7 @@ pub const DEFAULT_METRICS_PORT: u16 = 7302;
 
 /// Configuration for the op-proposer component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct OpProposerConfig {
+pub struct OpProposerBuilder {
     /// Docker image configuration for op-proposer.
     pub docker_image: DockerImageBuilder,
     /// Container name for op-proposer.
@@ -35,8 +35,8 @@ pub struct OpProposerConfig {
     pub metrics_port: u16,
     /// Proposal interval.
     pub proposal_interval: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     /// Extra arguments to pass to op-proposer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
 }
 
@@ -46,7 +46,7 @@ pub const DEFAULT_DOCKER_IMAGE: &str =
 /// Default Docker tag for op-proposer.
 pub const DEFAULT_DOCKER_TAG: &str = "develop";
 
-impl Default for OpProposerConfig {
+impl Default for OpProposerBuilder {
     fn default() -> Self {
         Self {
             docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
@@ -70,7 +70,7 @@ pub struct OpProposerHandler {
     pub rpc_url: Url,
 }
 
-impl OpProposerConfig {
+impl OpProposerBuilder {
     /// Start the op-proposer.
     pub async fn start(
         &self,

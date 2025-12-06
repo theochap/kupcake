@@ -10,9 +10,9 @@ use rand::Rng;
 
 use cli::{Cli, OutData};
 use kupcake_deploy::{
-    AnvilConfig, Deployer, GrafanaConfig, KonaNodeConfig, KupDockerConfig, L2StackConfig,
-    MonitoringConfig, OpBatcherConfig, OpChallengerConfig, OpDeployerConfig, OpProposerConfig,
-    OpRethConfig, PrometheusConfig,
+    AnvilConfig, Deployer, GrafanaConfig, KonaNodeBuilder, KupDockerConfig, L2StackBuilder,
+    MonitoringConfig, OpBatcherBuilder, OpChallengerBuilder, OpDeployerConfig, OpProposerBuilder,
+    OpRethBuilder, PrometheusConfig,
 };
 
 #[tokio::main]
@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
             "Loading deployment from config file..."
         );
 
-        deployer.deploy().await?;
+        deployer.deploy(cli.redeploy).await?;
 
         return Ok(());
     }
@@ -116,24 +116,24 @@ async fn main() -> Result<()> {
             ..Default::default()
         },
 
-        l2_stack: L2StackConfig {
-            op_reth: OpRethConfig {
+        l2_stack: L2StackBuilder {
+            op_reth: OpRethBuilder {
                 container_name: format!("{}-op-reth", network_name),
                 ..Default::default()
             },
-            kona_node: KonaNodeConfig {
+            kona_node: KonaNodeBuilder {
                 container_name: format!("{}-kona-node", network_name),
                 ..Default::default()
             },
-            op_batcher: OpBatcherConfig {
+            op_batcher: OpBatcherBuilder {
                 container_name: format!("{}-op-batcher", network_name),
                 ..Default::default()
             },
-            op_proposer: OpProposerConfig {
+            op_proposer: OpProposerBuilder {
                 container_name: format!("{}-op-proposer", network_name),
                 ..Default::default()
             },
-            op_challenger: OpChallengerConfig {
+            op_challenger: OpChallengerBuilder {
                 container_name: format!("{}-op-challenger", network_name),
                 ..Default::default()
             },
@@ -158,7 +158,7 @@ async fn main() -> Result<()> {
     // Save the configuration to kupconf.toml before deploying
     deployer.save_config()?;
 
-    deployer.deploy().await?;
+    deployer.deploy(cli.redeploy).await?;
 
     Ok(())
 }

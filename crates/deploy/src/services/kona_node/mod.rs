@@ -22,7 +22,7 @@ pub const DEFAULT_METRICS_PORT: u16 = 7300;
 
 /// Configuration for the kona-node consensus client.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct KonaNodeConfig {
+pub struct KonaNodeBuilder {
     /// Docker image configuration for kona-node.
     pub docker_image: DockerImageBuilder,
     /// Container name for kona-node.
@@ -33,8 +33,8 @@ pub struct KonaNodeConfig {
     pub rpc_port: u16,
     /// Port for metrics.
     pub metrics_port: u16,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     /// Extra arguments to pass to kona-node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
 }
 
@@ -43,7 +43,7 @@ pub const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/theochap/kona-node";
 /// Default Docker tag for kona-node.
 pub const DEFAULT_DOCKER_TAG: &str = "test";
 
-impl Default for KonaNodeConfig {
+impl Default for KonaNodeBuilder {
     fn default() -> Self {
         Self {
             docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
@@ -66,7 +66,7 @@ pub struct KonaNodeHandler {
     pub rpc_url: Url,
 }
 
-impl KonaNodeConfig {
+impl KonaNodeBuilder {
     /// Start the kona-node consensus client.
     pub async fn start(
         &self,

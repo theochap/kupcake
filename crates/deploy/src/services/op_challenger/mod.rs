@@ -14,7 +14,7 @@ use crate::docker::{
     CreateAndStartContainerOptions, DockerImageBuilder, KupDocker, PortMapping, ServiceConfig,
 };
 
-use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethConfig};
+use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethBuilder};
 
 /// Default ports for op-challenger.
 pub const DEFAULT_RPC_PORT: u16 = 8561;
@@ -22,7 +22,7 @@ pub const DEFAULT_METRICS_PORT: u16 = 7303;
 
 /// Configuration for the op-challenger component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct OpChallengerConfig {
+pub struct OpChallengerBuilder {
     /// Docker image configuration for op-challenger.
     pub docker_image: DockerImageBuilder,
     /// Container name for op-challenger.
@@ -33,8 +33,8 @@ pub struct OpChallengerConfig {
     pub rpc_port: u16,
     /// Port for metrics.
     pub metrics_port: u16,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     /// Extra arguments to pass to op-challenger.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
 }
 
@@ -44,7 +44,7 @@ pub const DEFAULT_DOCKER_IMAGE: &str =
 /// Default Docker tag for op-challenger.
 pub const DEFAULT_DOCKER_TAG: &str = "develop";
 
-impl Default for OpChallengerConfig {
+impl Default for OpChallengerBuilder {
     fn default() -> Self {
         Self {
             docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
@@ -67,7 +67,7 @@ pub struct OpChallengerHandler {
     pub rpc_url: Url,
 }
 
-impl OpChallengerConfig {
+impl OpChallengerBuilder {
     /// Start the op-challenger.
     pub async fn start(
         &self,
@@ -75,7 +75,7 @@ impl OpChallengerConfig {
         host_config_path: &PathBuf,
         anvil_handler: &AnvilHandler,
         kona_node_handler: &KonaNodeHandler,
-        op_reth_config: &OpRethConfig,
+        op_reth_config: &OpRethBuilder,
     ) -> Result<OpChallengerHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 

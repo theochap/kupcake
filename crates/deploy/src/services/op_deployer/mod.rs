@@ -314,9 +314,7 @@ impl OpDeployerConfig {
         // Container path where anvil will write the config
         let container_config_path = PathBuf::from("/data");
 
-        if !host_config_path.exists() {
-            FsHandler::create_host_config_directory(&host_config_path)?;
-        }
+        FsHandler::create_host_config_directory(&host_config_path)?;
 
         // Pull the op-deployer image once and reuse it
         let image = self.docker_image.build(docker).await?;

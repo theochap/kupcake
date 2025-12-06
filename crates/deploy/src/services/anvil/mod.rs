@@ -38,10 +38,11 @@ pub struct AnvilConfig {
     pub port: u16,
     /// URL to fork from.
     pub fork_url: String,
-    /// Extra arguments to pass to Anvil.
-    pub extra_args: Vec<String>,
     /// Container name for Anvil.
     pub container_name: String,
+    /// Extra arguments to pass to Anvil.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_args: Vec<String>,
 }
 
 /// Parsed Anvil configuration data.
@@ -94,6 +95,7 @@ impl AnvilConfig {
             .port(ANVIL_INTERNAL_PORT)
             .fork_url(&self.fork_url)
             .config_out(container_config_path.join("anvil.json"))
+            .state_path(container_config_path.clone())
             .extra_args(self.extra_args.clone())
             .build();
 
