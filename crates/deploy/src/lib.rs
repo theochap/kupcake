@@ -29,9 +29,9 @@ pub struct AccountInfo {
     pub private_key: Bytes,
 }
 
-/// Combined configuration for all L2 node components.
+/// Combined configuration for all L2 components for the op-stack.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct L2NodesConfig {
+pub struct L2StackConfig {
     /// Configuration for op-reth execution client.
     pub op_reth: OpRethConfig,
     /// Configuration for kona-node consensus client.
@@ -44,7 +44,7 @@ pub struct L2NodesConfig {
     pub op_challenger: OpChallengerConfig,
 }
 
-impl Default for L2NodesConfig {
+impl Default for L2StackConfig {
     fn default() -> Self {
         Self {
             op_reth: OpRethConfig::default(),
@@ -87,12 +87,14 @@ pub struct Deployer {
     pub op_deployer: OpDeployerConfig,
     /// Configuration for the Docker client.
     pub docker: KupDockerConfig,
-    /// Configuration for all L2 node components.
-    pub l2_nodes: L2NodesConfig,
+    /// Configuration for all L2 components for the op-stack.
+    #[serde(flatten)]
+    pub l2_stack: L2StackConfig,
     /// Configuration for the monitoring stack.
     pub monitoring: MonitoringConfig,
 
     /// Path to the dashboards directory (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dashboards_path: Option<PathBuf>,
 }
 
@@ -153,7 +155,7 @@ impl Deployer {
     /// followed by op-batcher (batch submitter), op-proposer, and op-challenger.
     /// The components communicate via the Engine API using JWT authentication.
     async fn start_l2_nodes(
-        l2_nodes_config: L2NodesConfig,
+        l2_nodes_config: L2StackConfig,
         docker: &mut KupDocker,
         host_config_path: PathBuf,
         anvil_handler: &AnvilHandler,
@@ -327,8 +329,8 @@ impl Deployer {
             "Starting L2 nodes (op-reth + kona-node + op-batcher + op-proposer + op-challenger)..."
         );
 
-        let l2_nodes = Self::start_l2_nodes(
-            self.l2_nodes,
+        let l2_stack = Self::start_l2_nodes(
+            self.l2_stack,
             &mut docker,
             l2_nodes_data_path.clone(),
             &anvil,
@@ -341,7 +343,7 @@ impl Deployer {
             tracing::info!("Starting monitoring stack (Prometheus + Grafana)...");
 
             let monitoring_data_path = self.outdata.join("monitoring");
-            let metrics_targets = Self::build_metrics_targets(&l2_nodes);
+            let metrics_targets = Self::build_metrics_targets(&l2_stack);
 
             Some(
                 self.monitoring
@@ -361,12 +363,12 @@ impl Deployer {
         tracing::info!("✓ Deployment complete!");
         tracing::info!("");
         tracing::info!("L1 (Anvil) RPC:       {}", anvil.l1_rpc_url);
-        tracing::info!("L2 (op-reth) HTTP:    {}", l2_nodes.op_reth.http_rpc_url);
-        tracing::info!("L2 (op-reth) WS:      {}", l2_nodes.op_reth.ws_rpc_url);
-        tracing::info!("Kona Node RPC:        {}", l2_nodes.kona_node.rpc_url);
-        tracing::info!("Op Batcher RPC:       {}", l2_nodes.op_batcher.rpc_url);
-        tracing::info!("Op Proposer RPC:      {}", l2_nodes.op_proposer.rpc_url);
-        tracing::info!("Op Challenger RPC:    {}", l2_nodes.op_challenger.rpc_url);
+        tracing::info!("L2 (op-reth) HTTP:    {}", l2_stack.op_reth.http_rpc_url);
+        tracing::info!("L2 (op-reth) WS:      {}", l2_stack.op_reth.ws_rpc_url);
+        tracing::info!("Kona Node RPC:        {}", l2_stack.kona_node.rpc_url);
+        tracing::info!("Op Batcher RPC:       {}", l2_stack.op_batcher.rpc_url);
+        tracing::info!("Op Proposer RPC:      {}", l2_stack.op_proposer.rpc_url);
+        tracing::info!("Op Challenger RPC:    {}", l2_stack.op_challenger.rpc_url);
 
         if let Some(ref mon) = monitoring {
             tracing::info!("Prometheus:           {}", mon.prometheus.url);

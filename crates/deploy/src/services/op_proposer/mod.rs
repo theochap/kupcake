@@ -35,6 +35,7 @@ pub struct OpProposerConfig {
     pub metrics_port: u16,
     /// Proposal interval.
     pub proposal_interval: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     /// Extra arguments to pass to op-proposer.
     pub extra_args: Vec<String>,
 }

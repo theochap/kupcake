@@ -41,6 +41,7 @@ pub struct OpBatcherConfig {
     pub sub_safety_margin: u64,
     /// Batch submission interval.
     pub poll_interval: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     /// Extra arguments to pass to op-batcher.
     pub extra_args: Vec<String>,
 }

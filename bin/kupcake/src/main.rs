@@ -10,7 +10,7 @@ use rand::Rng;
 
 use cli::{Cli, OutData};
 use kupcake_deploy::{
-    AnvilConfig, Deployer, GrafanaConfig, KonaNodeConfig, KupDockerConfig, L2NodesConfig,
+    AnvilConfig, Deployer, GrafanaConfig, KonaNodeConfig, KupDockerConfig, L2StackConfig,
     MonitoringConfig, OpBatcherConfig, OpChallengerConfig, OpDeployerConfig, OpProposerConfig,
     OpRethConfig, PrometheusConfig,
 };
@@ -116,7 +116,7 @@ async fn main() -> Result<()> {
             ..Default::default()
         },
 
-        l2_nodes: L2NodesConfig {
+        l2_stack: L2StackConfig {
             op_reth: OpRethConfig {
                 container_name: format!("{}-op-reth", network_name),
                 ..Default::default()

@@ -33,6 +33,7 @@ pub struct KonaNodeConfig {
     pub rpc_port: u16,
     /// Port for metrics.
     pub metrics_port: u16,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     /// Extra arguments to pass to kona-node.
     pub extra_args: Vec<String>,
 }
