@@ -9,8 +9,8 @@ Kupcake spins up a local L1 (via Anvil fork), deploys all OP Stack contracts aut
 - **One-command deployment** — Deploy a complete OP Stack chain with a single command
 - **Local L1 via Anvil** — Forks Sepolia or Mainnet using Foundry's Anvil
 - **Automatic contract deployment** — Uses `op-deployer` to deploy all OP Stack contracts
-- **Full L2 node stack** — Runs kona-node (consensus) + op-reth (execution) out of the box
-- **Complete sequencer stack** — Includes op-batcher, op-proposer, and op-challenger
+- **Full L2 CL/EL stack** — Runs kona-node (consensus) + op-reth (execution) out of the box
+- **Complete op-stack stack** — Includes op-batcher, op-proposer, and op-challenger
 - **Built-in monitoring** — Prometheus + Grafana dashboards for metrics visualization
 - **Config generation** — Outputs `genesis.json` and `rollup.json` for L2 nodes
 - **Docker-based** — No local toolchain required, just Docker
@@ -122,7 +122,7 @@ After running, you'll find these files in the output directory (`data-<network-n
 │  5. Start L2 consensus client (sequencer mode)              │
 │     └─> Docker: ghcr.io/op-rs/kona/kona-node                │
 │                                                             │
-│  6. Start sequencer services                                │
+│  6. Start op-stack services                                 │
 │     └─> Docker: op-batcher, op-proposer, op-challenger      │
 │                                                             │
 │  7. Start monitoring stack                                  │
