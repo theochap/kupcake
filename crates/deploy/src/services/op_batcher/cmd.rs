@@ -128,6 +128,20 @@ impl OpBatcherCmdBuilder {
             self.rpc_addr,
             "--rpc.port".to_string(),
             self.rpc_port.to_string(),
+            "--poll-interval".to_string(),
+            "1s".to_string(),
+            "--sub-safety-margin".to_string(),
+            "6".to_string(),
+            "--num-confirmations".to_string(),
+            "1".to_string(),
+            "--safe-abort-nonce-too-low-count".to_string(),
+            "3".to_string(),
+            "--resubmission-timeout".to_string(),
+            "30s".to_string(),
+            "--max-channel-duration".to_string(),
+            "1".to_string(),
+            "--log.level".to_string(),
+            "TRACE".to_string(),
         ];
 
         if self.rpc_enable_admin {

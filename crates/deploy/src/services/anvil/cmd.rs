@@ -75,6 +75,12 @@ impl AnvilCmdBuilder {
             self.chain_id.to_string(),
             "--block-time".to_string(),
             "12".to_string(),
+            "--accounts".to_string(),
+            "30".to_string(),
+            "--timestamp".to_string(),
+            "1647646644".to_string(),
+            "--fork-block-number".to_string(),
+            "9790615".to_string(),
         ];
 
         if let Some(fork_url) = self.fork_url {

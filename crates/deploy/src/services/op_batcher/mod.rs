@@ -20,6 +20,11 @@ use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethHand
 pub const DEFAULT_RPC_PORT: u16 = 8548;
 pub const DEFAULT_METRICS_PORT: u16 = 7301;
 
+/// Default Docker image for op-batcher.
+pub const DEFAULT_DOCKER_IMAGE: &str = "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-batcher";
+/// Default Docker tag for op-batcher.
+pub const DEFAULT_DOCKER_TAG: &str = "v1.15.0";
+
 /// Configuration for the op-batcher component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpBatcherBuilder {
@@ -45,11 +50,6 @@ pub struct OpBatcherBuilder {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
 }
-
-/// Default Docker image for op-batcher.
-pub const DEFAULT_DOCKER_IMAGE: &str = "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-batcher";
-/// Default Docker tag for op-batcher.
-pub const DEFAULT_DOCKER_TAG: &str = "v1.16.2";
 
 impl Default for OpBatcherBuilder {
     fn default() -> Self {

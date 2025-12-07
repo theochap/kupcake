@@ -23,12 +23,13 @@ pub const DEFAULT_DOCKER_TAG: &str = "v0.5.0-rc.2";
 /// The minimum number of accounts required for the intent file. Those are:
 /// [`ChainConfig::base_fee_vault_recipient`], [`ChainConfig::l1_fee_vault_recipient`], [`ChainConfig::sequencer_fee_vault_recipient`], [`ChainRoles::l1_proxy_admin_owner`],
 /// [`ChainRoles::l2_proxy_admin_owner`], [`ChainRoles::system_config_owner`], [`ChainRoles::unsafe_block_signer`], [`ChainRoles::batcher`], [`ChainRoles::proposer`], [`ChainRoles::challenger`].
-const MIN_ACCOUNTS_FOR_INTENT: usize = 10;
+const MIN_ACCOUNTS_FOR_INTENT: usize = 11;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct IntentFile {
     config_type: String,
+    // op_deployer_version: String,
     #[serde(rename = "l1ChainID")]
     l1_chain_id: u64,
     opcm_address: String,
@@ -45,6 +46,8 @@ struct ChainConfig {
     base_fee_vault_recipient: String,
     l1_fee_vault_recipient: String,
     sequencer_fee_vault_recipient: String,
+    // operator_fee_vault_recipient: String,
+    // chain_fees_recipient: String,
     eip1559_denominator_canyon: u64,
     eip1559_denominator: u64,
     eip1559_elasticity: u64,
@@ -217,16 +220,14 @@ impl OpDeployerConfig {
         anvil_handler: &AnvilHandler,
     ) -> Result<(), anyhow::Error> {
         let cmd = vec![
-            "op-deployer".to_string(),
-            "--cache-dir".to_string(),
-            container_config_path.join(".cache").display().to_string(),
-            "apply".to_string(),
-            "--workdir".to_string(),
-            container_config_path.display().to_string(),
-            "--l1-rpc-url".to_string(),
-            anvil_handler.l1_rpc_url.to_string(),
-            "--private-key".to_string(),
-            anvil_handler.account_infos[0].private_key.to_string(),
+            "sh".to_string(),
+            "-c".to_string(),
+            format!(
+                "cat {container_config_path_str}/intent.toml && op-deployer --log.level TRACE --cache-dir {container_config_path_str}/.cache apply --workdir {container_config_path_str} --l1-rpc-url {l1_rpc_url} --private-key {private_key}",
+                container_config_path_str = container_config_path.display().to_string(),
+                l1_rpc_url = anvil_handler.l1_rpc_url.to_string(),
+                private_key = anvil_handler.account_infos[0].private_key.to_string(),
+            ),
         ];
 
         self.run_docker_container(
@@ -408,6 +409,9 @@ impl OpDeployerConfig {
             chain.roles.batcher = format_address(&accounts[7].address);
             chain.roles.proposer = format_address(&accounts[8].address);
             chain.roles.challenger = format_address(&accounts[9].address);
+
+            // chain.chain_fees_recipient = format_address(&accounts[10].address);
+            // chain.operator_fee_vault_recipient = format_address(&accounts[11].address);
 
             tracing::debug!(
                 chain_id = chain.id,

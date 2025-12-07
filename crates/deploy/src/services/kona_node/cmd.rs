@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use alloy_core::primitives::Bytes;
+
 /// Builder for kona-node consensus client commands.
 #[derive(Debug, Clone)]
 pub struct KonaNodeCmdBuilder {
@@ -16,6 +18,7 @@ pub struct KonaNodeCmdBuilder {
     metrics_enabled: bool,
     metrics_port: u16,
     no_discovery: bool,
+    unsafe_block_signer_key: Option<Bytes>,
     extra_args: Vec<String>,
 }
 
@@ -28,7 +31,7 @@ impl KonaNodeCmdBuilder {
         jwt_secret: impl AsRef<Path>,
     ) -> Self {
         Self {
-            mode: "sequencer".to_string(),
+            mode: "validator".to_string(),
             l1_rpc: l1_rpc.into(),
             l1_beacon: String::new(),
             l1_slot_duration: 12,
@@ -39,6 +42,7 @@ impl KonaNodeCmdBuilder {
             metrics_enabled: true,
             metrics_port: 7300,
             no_discovery: true,
+            unsafe_block_signer_key: None,
             extra_args: Vec::new(),
         }
     }
@@ -46,6 +50,12 @@ impl KonaNodeCmdBuilder {
     /// Set the operating mode (sequencer, follower, etc.).
     pub fn mode(mut self, mode: impl Into<String>) -> Self {
         self.mode = mode.into();
+        self
+    }
+
+    /// Set the unsafe block signer key.
+    pub fn unsafe_block_signer_key(mut self, key: Bytes) -> Self {
+        self.unsafe_block_signer_key = Some(key.into());
         self
     }
 
@@ -99,6 +109,12 @@ impl KonaNodeCmdBuilder {
 
         // Subcommand
         cmd.push("node".to_string());
+
+        if let Some(unsafe_block_signer_key) = self.unsafe_block_signer_key {
+            cmd.push("--p2p.sequencer.key".to_string());
+            cmd.push(hex::encode(unsafe_block_signer_key));
+        }
+
         cmd.push("--mode".to_string());
         cmd.push(self.mode);
 

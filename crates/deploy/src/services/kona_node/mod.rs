@@ -39,9 +39,9 @@ pub struct KonaNodeBuilder {
 }
 
 /// Default Docker image for kona-node.
-pub const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/theochap/kona-node";
+pub const DEFAULT_DOCKER_IMAGE: &str = "kona-node";
 /// Default Docker tag for kona-node.
-pub const DEFAULT_DOCKER_TAG: &str = "test";
+pub const DEFAULT_DOCKER_TAG: &str = "local";
 
 impl Default for KonaNodeBuilder {
     fn default() -> Self {
@@ -84,6 +84,7 @@ impl KonaNodeBuilder {
             container_config_path.join("jwt.hex"),
         )
         .mode("sequencer")
+        .unsafe_block_signer_key(anvil_handler.account_infos[6].private_key.clone())
         .l1_slot_duration(12)
         .rpc_port(self.rpc_port)
         .metrics(true, self.metrics_port)
