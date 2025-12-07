@@ -176,6 +176,6 @@ mod tests {
 
         assert!(cmd.contains(&"node".to_string()));
         assert!(cmd.contains(&"--mode".to_string()));
-        assert!(cmd.contains(&"sequencer".to_string()));
+        assert!(cmd.contains(&"validator".to_string()));
     }
 }

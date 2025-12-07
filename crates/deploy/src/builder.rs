@@ -113,6 +113,8 @@ pub struct DeployerBuilder {
     dashboards_path: Option<PathBuf>,
     /// Whether monitoring is enabled.
     monitoring_enabled: bool,
+    /// Block time in seconds for both L1 (Anvil) and L2 derivation.
+    block_time: u64,
 }
 
 impl DeployerBuilder {
@@ -127,7 +129,17 @@ impl DeployerBuilder {
             no_cleanup: false,
             dashboards_path: None,
             monitoring_enabled: true,
+            block_time: 12,
         }
+    }
+
+    /// Set the block time in seconds.
+    ///
+    /// This affects both the Anvil L1 chain and the kona-node L1 slot duration.
+    /// Defaults to 12 seconds (Ethereum mainnet block time).
+    pub fn block_time(mut self, block_time: u64) -> Self {
+        self.block_time = block_time;
+        self
     }
 
     /// Set the L2 chain ID.
@@ -135,6 +147,16 @@ impl DeployerBuilder {
     /// If not set, a random chain ID between 10000 and 99999 will be generated.
     pub fn l2_chain_id(mut self, l2_chain_id: u64) -> Self {
         self.l2_chain_id = Some(l2_chain_id);
+        self
+    }
+
+    /// Set the L2 chain ID if `Some`, otherwise do nothing.
+    ///
+    /// If not set, a random chain ID between 10000 and 99999 will be generated.
+    pub fn maybe_l2_chain_id(mut self, l2_chain_id: Option<u64>) -> Self {
+        if let Some(id) = l2_chain_id {
+            self.l2_chain_id = Some(id);
+        }
         self
     }
 
@@ -146,11 +168,31 @@ impl DeployerBuilder {
         self
     }
 
+    /// Set the network name if `Some`, otherwise do nothing.
+    ///
+    /// If not set, a memorable two-word name will be generated (e.g., "kup-happy-turtle").
+    pub fn maybe_network_name(mut self, name: Option<String>) -> Self {
+        if let Some(n) = name {
+            self.network_name = Some(n);
+        }
+        self
+    }
+
     /// Set the output data directory path.
     ///
     /// If not set, defaults to `./data-<network-name>`.
     pub fn outdata(mut self, outdata: OutDataPath) -> Self {
         self.outdata = Some(outdata);
+        self
+    }
+
+    /// Set the output data directory path if `Some`, otherwise do nothing.
+    ///
+    /// If not set, defaults to `./data-<network-name>`.
+    pub fn maybe_outdata(mut self, outdata: Option<OutDataPath>) -> Self {
+        if let Some(o) = outdata {
+            self.outdata = Some(o);
+        }
         self
     }
 
@@ -166,6 +208,17 @@ impl DeployerBuilder {
     /// timestamp will be set to match the latest block.
     pub fn l1_rpc_url(mut self, url: impl Into<String>) -> Self {
         self.l1_rpc_url = Some(url.into());
+        self
+    }
+
+    /// Set the L1 RPC URL for forking if `Some`, otherwise do nothing.
+    ///
+    /// When provided, Anvil will fork from this RPC endpoint and the genesis
+    /// timestamp will be set to match the latest block.
+    pub fn maybe_l1_rpc_url(mut self, url: Option<String>) -> Self {
+        if let Some(u) = url {
+            self.l1_rpc_url = Some(u);
+        }
         self
     }
 
@@ -234,12 +287,15 @@ impl DeployerBuilder {
 
         // Fetch genesis timestamp and fork block number if L1 RPC URL is provided
         let (genesis_timestamp, fork_block_number) = if let Some(ref rpc_url) = self.l1_rpc_url {
-            const SLOT_TIME_SEC: u64 = 12;
             let block = fetch_latest_block(rpc_url)
                 .await
                 .context("Failed to fetch latest block from L1 RPC")?;
             (
-                Some(block.timestamp.saturating_sub(SLOT_TIME_SEC * block.number)),
+                Some(
+                    block
+                        .timestamp
+                        .saturating_sub(self.block_time * block.number),
+                ),
                 Some(block.number),
             )
         } else {
@@ -265,6 +321,7 @@ impl DeployerBuilder {
                 fork_url: self.l1_rpc_url,
                 timestamp: genesis_timestamp,
                 fork_block_number,
+                block_time: self.block_time,
                 ..Default::default()
             },
 
@@ -285,6 +342,7 @@ impl DeployerBuilder {
                 },
                 kona_node: KonaNodeBuilder {
                     container_name: format!("{}-kona-node", network_name),
+                    l1_slot_duration: self.block_time,
                     ..Default::default()
                 },
                 op_batcher: OpBatcherBuilder {

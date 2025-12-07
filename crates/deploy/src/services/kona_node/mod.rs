@@ -33,6 +33,8 @@ pub struct KonaNodeBuilder {
     pub rpc_port: u16,
     /// Port for metrics.
     pub metrics_port: u16,
+    /// L1 slot duration in seconds (block time).
+    pub l1_slot_duration: u64,
     /// Extra arguments to pass to kona-node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -51,6 +53,7 @@ impl Default for KonaNodeBuilder {
             host: "0.0.0.0".to_string(),
             rpc_port: DEFAULT_RPC_PORT,
             metrics_port: DEFAULT_METRICS_PORT,
+            l1_slot_duration: 12,
             extra_args: Vec::new(),
         }
     }
@@ -85,7 +88,7 @@ impl KonaNodeBuilder {
         )
         .mode("sequencer")
         .unsafe_block_signer_key(anvil_handler.account_infos[6].private_key.clone())
-        .l1_slot_duration(12)
+        .l1_slot_duration(self.l1_slot_duration)
         .rpc_port(self.rpc_port)
         .metrics(true, self.metrics_port)
         .discovery(false)

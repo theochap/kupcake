@@ -38,36 +38,19 @@ async fn main() -> Result<()> {
     }
 
     // Otherwise, create a new deployment from CLI arguments
-    let mut builder = DeployerBuilder::new(cli.l1_chain.to_chain_id())
-        .no_cleanup(cli.no_cleanup)
-        .dashboards_path(PathBuf::from("grafana/dashboards"));
-
-    // Set L2 chain ID if provided
-    if let Some(l2_chain) = cli.l2_chain {
-        builder = builder.l2_chain_id(l2_chain.to_chain_id());
-    }
-
-    // Set network name if provided
-    if let Some(network_name) = cli.network {
-        builder = builder.network_name(network_name);
-    }
-
-    // Set output data path if provided
-    if let Some(outdata) = cli.outdata {
-        let outdata_path = match outdata {
+    let deployer = DeployerBuilder::new(cli.l1_chain.to_chain_id())
+        .maybe_l2_chain_id(cli.l2_chain.map(|c| c.to_chain_id()))
+        .maybe_network_name(cli.network)
+        .maybe_outdata(cli.outdata.map(|o| match o {
             OutData::TempDir => OutDataPath::TempDir,
             OutData::Path(path) => OutDataPath::Path(PathBuf::from(path)),
-        };
-        builder = builder.outdata(outdata_path);
-    }
-
-    // Set L1 RPC URL if available
-    if let Ok(rpc_url) = cli.l1_rpc_provider.to_rpc_url(cli.l1_chain) {
-        builder = builder.l1_rpc_url(rpc_url);
-    }
-
-    // Build the deployer configuration
-    let deployer = builder.build().await?;
+        }))
+        .maybe_l1_rpc_url(cli.l1_rpc_provider.to_rpc_url(cli.l1_chain).ok())
+        .no_cleanup(cli.no_cleanup)
+        .block_time(cli.block_time)
+        .dashboards_path(PathBuf::from("grafana/dashboards"))
+        .build()
+        .await?;
 
     // Save the configuration to kupconf.toml before deploying
     deployer.save_config()?;

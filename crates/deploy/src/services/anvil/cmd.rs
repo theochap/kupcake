@@ -8,6 +8,7 @@ pub struct AnvilCmdBuilder {
     host: String,
     port: u16,
     chain_id: u64,
+    block_time: u64,
     fork_url: Option<String>,
     state_path: Option<String>,
     config_out: Option<String>,
@@ -23,6 +24,7 @@ impl AnvilCmdBuilder {
             host: "0.0.0.0".to_string(),
             port: 8545,
             chain_id,
+            block_time: 12,
             fork_url: None,
             state_path: None,
             config_out: None,
@@ -30,6 +32,12 @@ impl AnvilCmdBuilder {
             fork_block_number: None,
             extra_args: Vec::new(),
         }
+    }
+
+    /// Set the block time in seconds.
+    pub fn block_time(mut self, block_time: u64) -> Self {
+        self.block_time = block_time;
+        self
     }
 
     /// Set the host address.
@@ -90,7 +98,7 @@ impl AnvilCmdBuilder {
             "--chain-id".to_string(),
             self.chain_id.to_string(),
             "--block-time".to_string(),
-            "12".to_string(),
+            self.block_time.to_string(),
             "--accounts".to_string(),
             "30".to_string(),
         ];

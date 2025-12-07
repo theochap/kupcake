@@ -36,6 +36,8 @@ pub struct AnvilConfig {
     pub host: String,
     /// Port for Anvil RPC.
     pub port: u16,
+    /// Block time in seconds.
+    pub block_time: u64,
     /// URL to fork from (optional, if not provided Anvil runs without forking).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_url: Option<String>,
@@ -98,6 +100,7 @@ impl AnvilConfig {
         let mut cmd_builder = AnvilCmdBuilder::new(chain_id)
             .host("0.0.0.0")
             .port(ANVIL_INTERNAL_PORT)
+            .block_time(self.block_time)
             .timestamp(self.timestamp)
             .fork_block_number(self.fork_block_number)
             .config_out(container_config_path.join("anvil.json"))
@@ -179,6 +182,7 @@ impl Default for AnvilConfig {
             container_name: "kupcake-anvil".to_string(),
             host: "0.0.0.0".to_string(),
             port: DEFAULT_PORT,
+            block_time: 12,
             fork_url: None,
             timestamp: None,
             fork_block_number: None,

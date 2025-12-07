@@ -126,6 +126,12 @@ pub struct Cli {
     #[arg(long, env = "KUP_NO_CLEANUP")]
     pub no_cleanup: bool,
 
+    /// The block time in seconds for the L1 chain (Anvil) and L2 derivation.
+    ///
+    /// Defaults to 12 seconds (Ethereum mainnet block time).
+    #[arg(long, env = "KUP_BLOCK_TIME", default_value_t = 12)]
+    pub block_time: u64,
+
     /// Path to an existing kupconf.toml configuration file to load.
     ///
     /// When provided, the deployment will use the configuration from this file
