@@ -11,7 +11,7 @@ use url::Url;
 pub use cmd::OpChallengerCmdBuilder;
 
 use crate::docker::{
-    CreateAndStartContainerOptions, DockerImageBuilder, KupDocker, PortMapping, ServiceConfig,
+    CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig,
 };
 
 use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethBuilder};
@@ -24,7 +24,7 @@ pub const DEFAULT_METRICS_PORT: u16 = 7303;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpChallengerBuilder {
     /// Docker image configuration for op-challenger.
-    pub docker_image: DockerImageBuilder,
+    pub docker_image: DockerImage,
     /// Container name for op-challenger.
     pub container_name: String,
     /// Host for the RPC endpoint.
@@ -47,7 +47,7 @@ pub const DEFAULT_DOCKER_TAG: &str = "develop";
 impl Default for OpChallengerBuilder {
     fn default() -> Self {
         Self {
-            docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
+            docker_image: DockerImage::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
             container_name: "kupcake-op-challenger".to_string(),
             host: "0.0.0.0".to_string(),
             rpc_port: DEFAULT_RPC_PORT,
@@ -112,9 +112,9 @@ impl OpChallengerBuilder {
         .extra_args(self.extra_args.clone())
         .build();
 
-        let image = self.docker_image.build(docker).await?;
+        self.docker_image.pull(docker).await?;
 
-        let service_config = ServiceConfig::new(image)
+        let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports([
                 PortMapping::tcp_same(self.rpc_port),

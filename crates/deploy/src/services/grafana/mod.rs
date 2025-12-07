@@ -7,9 +7,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    docker::{
-        CreateAndStartContainerOptions, DockerImageBuilder, KupDocker, PortMapping, ServiceConfig,
-    },
+    docker::{CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig},
     fs::FsHandler,
 };
 
@@ -21,7 +19,7 @@ pub const DEFAULT_GRAFANA_PORT: u16 = 3019;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PrometheusConfig {
     /// Docker image configuration for Prometheus.
-    pub docker_image: DockerImageBuilder,
+    pub docker_image: DockerImage,
 
     /// Container name for Prometheus.
     pub container_name: String,
@@ -44,7 +42,7 @@ pub const DEFAULT_PROMETHEUS_DOCKER_TAG: &str = "latest";
 impl Default for PrometheusConfig {
     fn default() -> Self {
         Self {
-            docker_image: DockerImageBuilder::new(
+            docker_image: DockerImage::new(
                 DEFAULT_PROMETHEUS_DOCKER_IMAGE,
                 DEFAULT_PROMETHEUS_DOCKER_TAG,
             ),
@@ -60,7 +58,7 @@ impl Default for PrometheusConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GrafanaConfig {
     /// Docker image configuration for Grafana.
-    pub docker_image: DockerImageBuilder,
+    pub docker_image: DockerImage,
 
     /// Container name for Grafana.
     pub container_name: String,
@@ -86,7 +84,7 @@ pub const DEFAULT_GRAFANA_DOCKER_TAG: &str = "latest";
 impl Default for GrafanaConfig {
     fn default() -> Self {
         Self {
-            docker_image: DockerImageBuilder::new(
+            docker_image: DockerImage::new(
                 DEFAULT_GRAFANA_DOCKER_IMAGE,
                 DEFAULT_GRAFANA_DOCKER_TAG,
             ),
@@ -332,9 +330,9 @@ providers:
             "--web.enable-lifecycle".to_string(),
         ];
 
-        let image = self.prometheus.docker_image.build(docker).await?;
+        self.prometheus.docker_image.pull(docker).await?;
 
-        let service_config = ServiceConfig::new(image)
+        let service_config = ServiceConfig::new(self.prometheus.docker_image.clone())
             .cmd(cmd)
             .ports([PortMapping::tcp_same(self.prometheus.port)])
             .bind_str(format!(
@@ -390,9 +388,9 @@ providers:
             "GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer".to_string(),
         ];
 
-        let image = self.grafana.docker_image.build(docker).await?;
+        self.grafana.docker_image.pull(docker).await?;
 
-        let service_config = ServiceConfig::new(image)
+        let service_config = ServiceConfig::new(self.grafana.docker_image.clone())
             .ports([PortMapping::tcp(GRAFANA_INTERNAL_PORT, self.grafana.port)])
             .bind_str(format!(
                 "{}:/etc/grafana/provisioning:ro",

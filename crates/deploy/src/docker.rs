@@ -167,43 +167,29 @@ pub struct ServiceHandler {
 }
 
 /// A Docker image reference with image name and tag.
-///
-/// This newtype ensures that an image is pulled and available locally
-/// before it can be used to start a container.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DockerImage {
     /// The image name (e.g., "ghcr.io/foundry-rs/foundry").
-    image: String,
+    pub image: String,
     /// The image tag (e.g., "latest" or "v1.0.0").
-    tag: String,
+    pub tag: String,
 }
 
 impl DockerImage {
-    /// Create a new DockerImage, ensuring it is pulled and available locally.
+    /// Create a new DockerImage with the given image name and tag.
+    pub fn new(image: impl Into<String>, tag: impl Into<String>) -> Self {
+        Self {
+            image: image.into(),
+            tag: tag.into(),
+        }
+    }
+
+    /// Pull the image, ensuring it is available locally.
     ///
-    /// This constructor will check if the image exists locally and pull it
-    /// if necessary.
-    pub async fn new(
-        image: impl Into<String>,
-        tag: impl Into<String>,
-        docker: &KupDocker,
-    ) -> Result<Self> {
-        let image = image.into();
-        let tag = tag.into();
-
-        docker.pull_image(&image, &tag).await?;
-
-        Ok(Self { image, tag })
-    }
-
-    /// Get the image name.
-    pub fn image(&self) -> &str {
-        &self.image
-    }
-
-    /// Get the image tag.
-    pub fn tag(&self) -> &str {
-        &self.tag
+    /// This will check if the image exists locally and pull it if necessary.
+    pub async fn pull(&self, docker: &KupDocker) -> Result<&Self> {
+        docker.pull_image(&self.image, &self.tag).await?;
+        Ok(self)
     }
 
     /// Get the full image reference (image:tag).
@@ -215,35 +201,6 @@ impl DockerImage {
 impl std::fmt::Display for DockerImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.image, self.tag)
-    }
-}
-
-/// A builder for creating Docker images.
-///
-/// This type holds the image name and tag, and provides a method to build
-/// a [`DockerImage`] by pulling it using the Docker client.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct DockerImageBuilder {
-    /// The image name (e.g., "ghcr.io/foundry-rs/foundry").
-    pub image: String,
-    /// The image tag (e.g., "latest" or "v1.0.0").
-    pub tag: String,
-}
-
-impl DockerImageBuilder {
-    /// Create a new DockerImageBuilder with the given image name and tag.
-    pub fn new(image: impl Into<String>, tag: impl Into<String>) -> Self {
-        Self {
-            image: image.into(),
-            tag: tag.into(),
-        }
-    }
-
-    /// Build a [`DockerImage`] by pulling it using the Docker client.
-    ///
-    /// This will check if the image exists locally and pull it if necessary.
-    pub async fn build(&self, docker: &KupDocker) -> Result<DockerImage> {
-        DockerImage::new(&self.image, &self.tag, docker).await
     }
 }
 

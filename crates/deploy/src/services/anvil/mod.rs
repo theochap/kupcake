@@ -13,9 +13,7 @@ pub use cmd::AnvilCmdBuilder;
 
 use crate::{
     AccountInfo,
-    docker::{
-        CreateAndStartContainerOptions, DockerImageBuilder, KupDocker, PortMapping, ServiceConfig,
-    },
+    docker::{CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig},
     fs::FsHandler,
 };
 
@@ -31,7 +29,7 @@ pub const DEFAULT_DOCKER_TAG: &str = "latest";
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AnvilConfig {
     /// Docker image configuration for Anvil.
-    pub docker_image: DockerImageBuilder,
+    pub docker_image: DockerImage,
     /// Host address for Anvil.
     pub host: String,
     /// Port for Anvil RPC.
@@ -113,9 +111,9 @@ impl AnvilConfig {
 
         let cmd = cmd_builder.build();
 
-        let image = self.docker_image.build(docker).await?;
+        self.docker_image.pull(docker).await?;
 
-        let service_config = ServiceConfig::new(image)
+        let service_config = ServiceConfig::new(self.docker_image.clone())
             .entrypoint(vec!["anvil".to_string()])
             .cmd(cmd)
             .ports([PortMapping::tcp(ANVIL_INTERNAL_PORT, self.port)])
@@ -178,7 +176,7 @@ impl AnvilConfig {
 impl Default for AnvilConfig {
     fn default() -> Self {
         Self {
-            docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
+            docker_image: DockerImage::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
             container_name: "kupcake-anvil".to_string(),
             host: "0.0.0.0".to_string(),
             port: DEFAULT_PORT,

@@ -1,4 +1,12 @@
 use clap::Parser;
+use kupcake_deploy::{
+    ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG, GRAFANA_DEFAULT_IMAGE, GRAFANA_DEFAULT_TAG,
+    KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG, OP_BATCHER_DEFAULT_IMAGE,
+    OP_BATCHER_DEFAULT_TAG, OP_CHALLENGER_DEFAULT_IMAGE, OP_CHALLENGER_DEFAULT_TAG,
+    OP_DEPLOYER_DEFAULT_IMAGE, OP_DEPLOYER_DEFAULT_TAG, OP_PROPOSER_DEFAULT_IMAGE,
+    OP_PROPOSER_DEFAULT_TAG, OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG, PROMETHEUS_DEFAULT_IMAGE,
+    PROMETHEUS_DEFAULT_TAG,
+};
 use tracing::level_filters::LevelFilter;
 
 /// The default L1 chain ID (Sepolia).
@@ -138,4 +146,84 @@ pub struct Cli {
     /// instead of generating a new one from CLI arguments.
     #[arg(long, alias = "conf", env = "KUP_CONFIG")]
     pub config: Option<String>,
+
+    /// Docker image overrides for all services.
+    #[clap(flatten)]
+    pub docker_images: DockerImageOverrides,
+}
+
+/// Docker image overrides for all services.
+#[derive(Debug, Clone, Parser)]
+pub struct DockerImageOverrides {
+    /// Docker image for Anvil (L1 chain).
+    #[arg(long, env = "KUP_ANVIL_IMAGE", default_value = ANVIL_DEFAULT_IMAGE)]
+    pub anvil_image: String,
+
+    /// Docker tag for Anvil.
+    #[arg(long, env = "KUP_ANVIL_TAG", default_value = ANVIL_DEFAULT_TAG)]
+    pub anvil_tag: String,
+
+    /// Docker image for op-reth (L2 execution client).
+    #[arg(long, env = "KUP_OP_RETH_IMAGE", default_value = OP_RETH_DEFAULT_IMAGE)]
+    pub op_reth_image: String,
+
+    /// Docker tag for op-reth.
+    #[arg(long, env = "KUP_OP_RETH_TAG", default_value = OP_RETH_DEFAULT_TAG)]
+    pub op_reth_tag: String,
+
+    /// Docker image for kona-node (L2 consensus client).
+    #[arg(long, env = "KUP_KONA_NODE_IMAGE", default_value = KONA_NODE_DEFAULT_IMAGE)]
+    pub kona_node_image: String,
+
+    /// Docker tag for kona-node.
+    #[arg(long, env = "KUP_KONA_NODE_TAG", default_value = KONA_NODE_DEFAULT_TAG)]
+    pub kona_node_tag: String,
+
+    /// Docker image for op-batcher.
+    #[arg(long, env = "KUP_OP_BATCHER_IMAGE", default_value = OP_BATCHER_DEFAULT_IMAGE)]
+    pub op_batcher_image: String,
+
+    /// Docker tag for op-batcher.
+    #[arg(long, env = "KUP_OP_BATCHER_TAG", default_value = OP_BATCHER_DEFAULT_TAG)]
+    pub op_batcher_tag: String,
+
+    /// Docker image for op-proposer.
+    #[arg(long, env = "KUP_OP_PROPOSER_IMAGE", default_value = OP_PROPOSER_DEFAULT_IMAGE)]
+    pub op_proposer_image: String,
+
+    /// Docker tag for op-proposer.
+    #[arg(long, env = "KUP_OP_PROPOSER_TAG", default_value = OP_PROPOSER_DEFAULT_TAG)]
+    pub op_proposer_tag: String,
+
+    /// Docker image for op-challenger.
+    #[arg(long, env = "KUP_OP_CHALLENGER_IMAGE", default_value = OP_CHALLENGER_DEFAULT_IMAGE)]
+    pub op_challenger_image: String,
+
+    /// Docker tag for op-challenger.
+    #[arg(long, env = "KUP_OP_CHALLENGER_TAG", default_value = OP_CHALLENGER_DEFAULT_TAG)]
+    pub op_challenger_tag: String,
+
+    /// Docker image for op-deployer.
+    #[arg(long, env = "KUP_OP_DEPLOYER_IMAGE", default_value = OP_DEPLOYER_DEFAULT_IMAGE)]
+    pub op_deployer_image: String,
+
+    /// Docker tag for op-deployer.
+    #[arg(long, env = "KUP_OP_DEPLOYER_TAG", default_value = OP_DEPLOYER_DEFAULT_TAG)]
+    pub op_deployer_tag: String,
+
+    /// Docker image for Prometheus.
+    #[arg(long, env = "KUP_PROMETHEUS_IMAGE", default_value = PROMETHEUS_DEFAULT_IMAGE)]
+    pub prometheus_image: String,
+
+    /// Docker tag for Prometheus.
+    #[arg(long, env = "KUP_PROMETHEUS_TAG", default_value = PROMETHEUS_DEFAULT_TAG)]
+    pub prometheus_tag: String,
+
+    /// Docker image for Grafana.
+    #[arg(long, env = "KUP_GRAFANA_IMAGE", default_value = GRAFANA_DEFAULT_IMAGE)]
+    pub grafana_image: String,
+
+    /// Docker tag for Grafana.
+    #[arg(long, env = "KUP_GRAFANA_TAG", default_value = GRAFANA_DEFAULT_TAG)]
+    pub grafana_tag: String,
 }

@@ -11,7 +11,7 @@ use url::Url;
 pub use cmd::OpBatcherCmdBuilder;
 
 use crate::docker::{
-    CreateAndStartContainerOptions, DockerImageBuilder, KupDocker, PortMapping, ServiceConfig,
+    CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig,
 };
 
 use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethHandler};
@@ -29,7 +29,7 @@ pub const DEFAULT_DOCKER_TAG: &str = "v1.15.0";
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpBatcherBuilder {
     /// Docker image configuration for op-batcher.
-    pub docker_image: DockerImageBuilder,
+    pub docker_image: DockerImage,
     /// Container name for op-batcher.
     pub container_name: String,
     /// Host for the RPC endpoint.
@@ -54,7 +54,7 @@ pub struct OpBatcherBuilder {
 impl Default for OpBatcherBuilder {
     fn default() -> Self {
         Self {
-            docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
+            docker_image: DockerImage::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
             container_name: "kupcake-op-batcher".to_string(),
             host: "0.0.0.0".to_string(),
             rpc_port: DEFAULT_RPC_PORT,
@@ -105,9 +105,9 @@ impl OpBatcherBuilder {
         .extra_args(self.extra_args.clone())
         .build();
 
-        let image = self.docker_image.build(docker).await?;
+        self.docker_image.pull(docker).await?;
 
-        let service_config = ServiceConfig::new(image)
+        let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports([
                 PortMapping::tcp_same(self.rpc_port),

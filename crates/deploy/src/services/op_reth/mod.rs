@@ -11,7 +11,7 @@ use url::Url;
 pub use cmd::OpRethCmdBuilder;
 
 use crate::docker::{
-    CreateAndStartContainerOptions, DockerImageBuilder, KupDocker, PortMapping, ServiceConfig,
+    CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig,
 };
 
 /// Default ports for op-reth.
@@ -25,7 +25,7 @@ pub const DEFAULT_METRICS_PORT: u16 = 9001;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpRethBuilder {
     /// Docker image configuration for op-reth.
-    pub docker_image: DockerImageBuilder,
+    pub docker_image: DockerImage,
     /// Container name for op-reth.
     pub container_name: String,
     /// Host for the HTTP RPC endpoint.
@@ -53,7 +53,7 @@ pub const DEFAULT_DOCKER_TAG: &str = "latest";
 impl Default for OpRethBuilder {
     fn default() -> Self {
         Self {
-            docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
+            docker_image: DockerImage::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
             container_name: "kupcake-op-reth".to_string(),
             host: "0.0.0.0".to_string(),
             http_port: DEFAULT_HTTP_PORT,
@@ -103,9 +103,9 @@ impl OpRethBuilder {
         .extra_args(self.extra_args.clone())
         .build();
 
-        let image = self.docker_image.build(docker).await?;
+        self.docker_image.pull(docker).await?;
 
-        let service_config = ServiceConfig::new(image)
+        let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports([
                 PortMapping::tcp_same(self.http_port),

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AccountInfo,
-    docker::{DockerImage, DockerImageBuilder, KupDocker},
+    docker::{DockerImage, KupDocker},
     fs::FsHandler,
 };
 
@@ -75,7 +75,7 @@ struct ChainRoles {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OpDeployerConfig {
     /// Docker image configuration for op-deployer.
-    pub docker_image: DockerImageBuilder,
+    pub docker_image: DockerImage,
     /// Container name for op-deployer.
     pub container_name: String,
 }
@@ -83,7 +83,7 @@ pub struct OpDeployerConfig {
 impl Default for OpDeployerConfig {
     fn default() -> Self {
         Self {
-            docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
+            docker_image: DockerImage::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
             container_name: "kupcake-op-deployer".to_string(),
         }
     }
@@ -318,12 +318,12 @@ impl OpDeployerConfig {
         FsHandler::create_host_config_directory(&host_config_path)?;
 
         // Pull the op-deployer image once and reuse it
-        let image = self.docker_image.build(docker).await?;
+        self.docker_image.pull(docker).await?;
 
         let config_file_path = self
             .generate_intent_file(
                 docker,
-                &image,
+                &self.docker_image,
                 &host_config_path,
                 &container_config_path,
                 l1_chain_id,
@@ -342,7 +342,7 @@ impl OpDeployerConfig {
         // Now apply the contract deployments.
         self.apply_contract_deployments(
             docker,
-            &image,
+            &self.docker_image,
             &host_config_path,
             &container_config_path,
             anvil_handler,
@@ -353,7 +353,7 @@ impl OpDeployerConfig {
         // Now generate the config files to be used by the L2 nodes.
         self.generate_config_files(
             docker,
-            &image,
+            &self.docker_image,
             &host_config_path,
             &container_config_path,
             l2_chain_id,

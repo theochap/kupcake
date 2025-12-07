@@ -11,7 +11,7 @@ use url::Url;
 pub use cmd::KonaNodeCmdBuilder;
 
 use crate::docker::{
-    CreateAndStartContainerOptions, DockerImageBuilder, KupDocker, PortMapping, ServiceConfig,
+    CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig,
 };
 
 use super::{anvil::AnvilHandler, op_reth::OpRethHandler};
@@ -24,7 +24,7 @@ pub const DEFAULT_METRICS_PORT: u16 = 7300;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct KonaNodeBuilder {
     /// Docker image configuration for kona-node.
-    pub docker_image: DockerImageBuilder,
+    pub docker_image: DockerImage,
     /// Container name for kona-node.
     pub container_name: String,
     /// Host for the RPC endpoint.
@@ -48,7 +48,7 @@ pub const DEFAULT_DOCKER_TAG: &str = "local";
 impl Default for KonaNodeBuilder {
     fn default() -> Self {
         Self {
-            docker_image: DockerImageBuilder::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
+            docker_image: DockerImage::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
             container_name: "kupcake-kona-node".to_string(),
             host: "0.0.0.0".to_string(),
             rpc_port: DEFAULT_RPC_PORT,
@@ -95,9 +95,9 @@ impl KonaNodeBuilder {
         .extra_args(self.extra_args.clone())
         .build();
 
-        let image = self.docker_image.build(docker).await?;
+        self.docker_image.pull(docker).await?;
 
-        let service_config = ServiceConfig::new(image)
+        let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports([
                 PortMapping::tcp_same(self.rpc_port),
