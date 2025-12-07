@@ -36,10 +36,15 @@ pub struct AnvilConfig {
     pub host: String,
     /// Port for Anvil RPC.
     pub port: u16,
-    /// URL to fork from.
-    pub fork_url: String,
+    /// URL to fork from (optional, if not provided Anvil runs without forking).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fork_url: Option<String>,
     /// Container name for Anvil.
     pub container_name: String,
+    /// Genesis timestamp.
+    pub timestamp: Option<u64>,
+    /// Fork block number.
+    pub fork_block_number: Option<u64>,
     /// Extra arguments to pass to Anvil.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -90,14 +95,20 @@ impl AnvilConfig {
         // Anvil listens on port 8545 inside the container
         const ANVIL_INTERNAL_PORT: u16 = 8545;
 
-        let cmd = AnvilCmdBuilder::new(chain_id)
+        let mut cmd_builder = AnvilCmdBuilder::new(chain_id)
             .host("0.0.0.0")
             .port(ANVIL_INTERNAL_PORT)
-            .fork_url(&self.fork_url)
+            .timestamp(self.timestamp)
+            .fork_block_number(self.fork_block_number)
             .config_out(container_config_path.join("anvil.json"))
             .state_path(container_config_path.clone())
-            .extra_args(self.extra_args.clone())
-            .build();
+            .extra_args(self.extra_args.clone());
+
+        if let Some(ref fork_url) = self.fork_url {
+            cmd_builder = cmd_builder.fork_url(fork_url);
+        }
+
+        let cmd = cmd_builder.build();
 
         let image = self.docker_image.build(docker).await?;
 
@@ -168,7 +179,9 @@ impl Default for AnvilConfig {
             container_name: "kupcake-anvil".to_string(),
             host: "0.0.0.0".to_string(),
             port: DEFAULT_PORT,
-            fork_url: String::new(),
+            fork_url: None,
+            timestamp: None,
+            fork_block_number: None,
             extra_args: Vec::new(),
         }
     }

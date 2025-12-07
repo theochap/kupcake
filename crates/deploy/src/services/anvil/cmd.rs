@@ -11,6 +11,8 @@ pub struct AnvilCmdBuilder {
     fork_url: Option<String>,
     state_path: Option<String>,
     config_out: Option<String>,
+    timestamp: Option<u64>,
+    fork_block_number: Option<u64>,
     extra_args: Vec<String>,
 }
 
@@ -24,6 +26,8 @@ impl AnvilCmdBuilder {
             fork_url: None,
             state_path: None,
             config_out: None,
+            timestamp: None,
+            fork_block_number: None,
             extra_args: Vec::new(),
         }
     }
@@ -58,6 +62,18 @@ impl AnvilCmdBuilder {
         self
     }
 
+    /// Set the genesis timestamp.
+    pub fn timestamp(mut self, timestamp: Option<u64>) -> Self {
+        self.timestamp = timestamp;
+        self
+    }
+
+    /// Set the fork block number.
+    pub fn fork_block_number(mut self, block_number: Option<u64>) -> Self {
+        self.fork_block_number = block_number;
+        self
+    }
+
     /// Add extra arguments.
     pub fn extra_args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.extra_args.extend(args.into_iter().map(|s| s.into()));
@@ -77,11 +93,17 @@ impl AnvilCmdBuilder {
             "12".to_string(),
             "--accounts".to_string(),
             "30".to_string(),
-            "--timestamp".to_string(),
-            "1647646644".to_string(),
-            "--fork-block-number".to_string(),
-            "9790615".to_string(),
         ];
+
+        if let Some(timestamp) = self.timestamp {
+            cmd.push("--timestamp".to_string());
+            cmd.push(timestamp.to_string());
+        }
+
+        if let Some(fork_block_number) = self.fork_block_number {
+            cmd.push("--fork-block-number".to_string());
+            cmd.push(fork_block_number.to_string());
+        }
 
         if let Some(fork_url) = self.fork_url {
             cmd.push("--fork-url".to_string());

@@ -4,16 +4,11 @@ mod cli;
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
-use rand::Rng;
 
 use cli::{Cli, OutData};
-use kupcake_deploy::{
-    AnvilConfig, Deployer, GrafanaConfig, KonaNodeBuilder, KupDockerConfig, L2StackBuilder,
-    MonitoringConfig, OpBatcherBuilder, OpChallengerBuilder, OpDeployerConfig, OpProposerBuilder,
-    OpRethBuilder, PrometheusConfig,
-};
+use kupcake_deploy::{Deployer, DeployerBuilder, OutDataPath};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -43,117 +38,36 @@ async fn main() -> Result<()> {
     }
 
     // Otherwise, create a new deployment from CLI arguments
-    let l2_chain_id = cli
-        .l2_chain
-        .map(|l2_chain| l2_chain.to_chain_id())
-        .unwrap_or_else(|| rand::rng().random_range(10000..=99999));
+    let mut builder = DeployerBuilder::new(cli.l1_chain.to_chain_id())
+        .no_cleanup(cli.no_cleanup)
+        .dashboards_path(PathBuf::from("grafana/dashboards"));
 
-    let l1_chain = cli.l1_chain.to_string();
-
-    // If the L2 chain is not provided, use the L2 chain id as the name.
-    let l2_chain = cli
-        .l2_chain
-        .map(|l2_chain| l2_chain.to_string())
-        .unwrap_or_else(|| l2_chain_id.to_string());
-
-    // If the network name is not provided, generate a memorable two-word name
-    let network_name = cli.network.clone().unwrap_or_else(|| {
-        let name = names::Generator::default()
-            .next()
-            .unwrap_or_else(|| "unknown-network".to_string());
-        format!("kup-{}", name)
-    });
-
-    let outdata_path = match &cli.outdata {
-        None => PathBuf::from(format!("data-{}", network_name)),
-        Some(OutData::TempDir) => {
-            let temp_dir = tempdir::TempDir::new("data-kup-")
-                .context("Failed to create temporary directory")?;
-            PathBuf::from(temp_dir.path().to_string_lossy().to_string())
-        }
-        Some(OutData::Path(path)) => PathBuf::from(path),
-    };
-
-    // Create the output data directory if it doesn't exist.
-    if !outdata_path.try_exists().context(format!(
-        "Failed to check if output data directory exists at path {}. Ensure you provided valid permissions to the directory.",
-        outdata_path.display().to_string()
-    ))? {
-        std::fs::create_dir_all(&outdata_path).context("Failed to create output data directory")?;
+    // Set L2 chain ID if provided
+    if let Some(l2_chain) = cli.l2_chain {
+        builder = builder.l2_chain_id(l2_chain.to_chain_id());
     }
 
-    let outdata_path = outdata_path
-        .canonicalize()
-        .context("Failed to canonicalize output data directory path")?;
+    // Set network name if provided
+    if let Some(network_name) = cli.network {
+        builder = builder.network_name(network_name);
+    }
 
-    tracing::info!(
-        network_name,
-        l1_chain,
-        l2_chain,
-        outdata_path = outdata_path.display().to_string(),
-        "Starting OP Stack network..."
-    );
+    // Set output data path if provided
+    if let Some(outdata) = cli.outdata {
+        let outdata_path = match outdata {
+            OutData::TempDir => OutDataPath::TempDir,
+            OutData::Path(path) => OutDataPath::Path(PathBuf::from(path)),
+        };
+        builder = builder.outdata(outdata_path);
+    }
 
-    // Deploy the network.
-    let deployer = Deployer {
-        l1_chain_id: cli.l1_chain.to_chain_id(),
-        l2_chain_id,
-        outdata: outdata_path.clone(),
+    // Set L1 RPC URL if available
+    if let Ok(rpc_url) = cli.l1_rpc_provider.to_rpc_url(cli.l1_chain) {
+        builder = builder.l1_rpc_url(rpc_url);
+    }
 
-        anvil: AnvilConfig {
-            container_name: format!("{}-anvil", network_name),
-            fork_url: cli.l1_rpc_provider.to_rpc_url(cli.l1_chain)?,
-            ..Default::default()
-        },
-
-        docker: KupDockerConfig {
-            net_name: format!("{}-network", network_name),
-            no_cleanup: cli.no_cleanup,
-        },
-
-        op_deployer: OpDeployerConfig {
-            container_name: format!("{}-op-deployer", network_name),
-            ..Default::default()
-        },
-
-        l2_stack: L2StackBuilder {
-            op_reth: OpRethBuilder {
-                container_name: format!("{}-op-reth", network_name),
-                ..Default::default()
-            },
-            kona_node: KonaNodeBuilder {
-                container_name: format!("{}-kona-node", network_name),
-                ..Default::default()
-            },
-            op_batcher: OpBatcherBuilder {
-                container_name: format!("{}-op-batcher", network_name),
-                ..Default::default()
-            },
-            op_proposer: OpProposerBuilder {
-                container_name: format!("{}-op-proposer", network_name),
-                ..Default::default()
-            },
-            op_challenger: OpChallengerBuilder {
-                container_name: format!("{}-op-challenger", network_name),
-                ..Default::default()
-            },
-        },
-
-        monitoring: MonitoringConfig {
-            prometheus: PrometheusConfig {
-                container_name: format!("{}-prometheus", network_name),
-                ..Default::default()
-            },
-            grafana: GrafanaConfig {
-                container_name: format!("{}-grafana", network_name),
-                ..Default::default()
-            },
-            enabled: true,
-        },
-
-        // Use the dashboards from the project's grafana/dashboards directory
-        dashboards_path: Some(PathBuf::from("grafana/dashboards")),
-    };
+    // Build the deployer configuration
+    let deployer = builder.build().await?;
 
     // Save the configuration to kupconf.toml before deploying
     deployer.save_config()?;

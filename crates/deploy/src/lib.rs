@@ -5,6 +5,9 @@
 
 use alloy_core::primitives::Bytes;
 
+mod builder;
+pub use builder::{DeployerBuilder, OutDataPath};
+
 mod deployer;
 pub use deployer::Deployer;
 
