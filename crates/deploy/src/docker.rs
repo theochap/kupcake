@@ -94,6 +94,8 @@ pub struct ServiceConfig {
     pub binds: Vec<String>,
     /// Environment variables.
     pub env: Option<Vec<String>>,
+    /// User to run the container as (e.g., "1000:1000" for UID:GID).
+    pub user: Option<String>,
 }
 
 impl ServiceConfig {
@@ -106,6 +108,7 @@ impl ServiceConfig {
             port_mappings: Vec::new(),
             binds: Vec::new(),
             env: None,
+            user: None,
         }
     }
 
@@ -155,6 +158,12 @@ impl ServiceConfig {
         self.env = Some(env);
         self
     }
+
+    /// Set the user to run the container as (e.g., "1000:1000" for UID:GID).
+    pub fn user(mut self, user: impl Into<String>) -> Self {
+        self.user = Some(user.into());
+        self
+    }
 }
 
 /// Handler returned after starting a service.
@@ -187,14 +196,8 @@ impl DockerImage {
     /// Pull the image, ensuring it is available locally.
     ///
     /// This will check if the image exists locally and pull it if necessary.
-    pub async fn pull(&self, docker: &KupDocker) -> Result<&Self> {
-        docker.pull_image(&self.image, &self.tag).await?;
-        Ok(self)
-    }
-
-    /// Get the full image reference (image:tag).
-    pub fn full_name(&self) -> String {
-        format!("{}:{}", self.image, self.tag)
+    pub async fn pull(&self, docker: &KupDocker) -> Result<String> {
+        docker.pull_image(&self.image, &self.tag).await
     }
 }
 
@@ -283,13 +286,13 @@ impl Drop for KupDocker {
 impl KupDocker {
     const STOP_CONTAINER_TIMEOUT: Duration = Duration::from_secs(5);
 
-    pub async fn pull_image(&self, image: &str, tag: &str) -> Result<()> {
+    pub async fn pull_image(&self, image: &str, tag: &str) -> Result<String> {
         let full_image = format!("{}:{}", image, tag);
 
         // Check if image is already available locally
         if self.docker.inspect_image(&full_image).await.is_ok() {
             tracing::debug!(image = %full_image, "Image already available locally, skipping pull");
-            return Ok(());
+            return Ok(full_image);
         }
 
         tracing::debug!(image = %full_image, "Image not found locally, pulling...");
@@ -312,7 +315,7 @@ impl KupDocker {
             tracing::trace!(status, "Image pull");
         }
 
-        Ok(())
+        Ok(full_image)
     }
 
     /// Create a new Docker client.
@@ -546,6 +549,8 @@ impl KupDocker {
         config: ServiceConfig,
         options: CreateAndStartContainerOptions,
     ) -> Result<ServiceHandler> {
+        let image = config.image.pull(self).await?;
+
         // Build port bindings from the port mappings
         let port_bindings: HashMap<String, Option<Vec<PortBinding>>> = config
             .port_mappings
@@ -573,10 +578,11 @@ impl KupDocker {
         };
 
         let container_config = Config {
-            image: Some(config.image.full_name()),
+            image: Some(image),
             entrypoint: config.entrypoint,
             cmd: config.cmd,
             env: config.env,
+            user: config.user,
             host_config: Some(host_config),
             ..Default::default()
         };

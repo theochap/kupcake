@@ -3,12 +3,11 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use bollard::{container::Config, secret::HostConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     AccountInfo,
-    docker::{DockerImage, KupDocker},
+    docker::{CreateAndStartContainerOptions, DockerImage, KupDocker, ServiceConfig},
     fs::FsHandler,
 };
 
@@ -99,50 +98,27 @@ impl OpDeployerConfig {
         container_config_path: &PathBuf,
         cmd: Vec<String>,
     ) -> Result<(), anyhow::Error> {
+        let mut service_config = ServiceConfig::new(image.clone()).cmd(cmd).bind(
+            host_config_path,
+            container_config_path,
+            "rw",
+        );
+
         // Get current user UID and GID to run container as non-root
-        // This ensures files created by the container have the correct and can be rewritten by this process.
+        // This ensures files created by the container have the correct permissions
+        // and can be rewritten by this process.
         #[cfg(unix)]
-        let user = {
+        {
             use std::os::unix::fs::MetadataExt;
             let metadata = std::fs::metadata(&host_config_path)
                 .context("Failed to get metadata for host config path")?;
-            Some(format!("{}:{}", metadata.uid(), metadata.gid()))
-        };
+            service_config = service_config.user(format!("{}:{}", metadata.uid(), metadata.gid()));
+        }
 
-        #[cfg(not(unix))]
-        let user: Option<String> = None;
-
-        // Bind mount: host_path:container_path
-        // This maps the host file to the container file so data persists on the host
-        let host_config = HostConfig {
-            binds: Some(vec![format!(
-                "{}:{}:rw",
-                host_config_path.display(),
-                container_config_path.to_string_lossy()
-            )]),
-            auto_remove: Some(false),
-            network_mode: Some(docker.network_id.clone()),
-            ..Default::default()
-        };
-
-        // Create container configuration
-        let config = Config {
-            image: Some(image.full_name()),
-            cmd: Some(cmd),
-            host_config: Some(host_config),
-            user,
-            attach_stdout: Some(true),
-            attach_stderr: Some(true),
-            ..Default::default()
-        };
-
-        use crate::docker::CreateAndStartContainerOptions;
-
-        // Start the container
-        let container_id = docker
-            .create_and_start_container(
+        let handler = docker
+            .start_service(
                 container_name,
-                config,
+                service_config,
                 CreateAndStartContainerOptions {
                     stream_logs: true,
                     wait_for_container: true,
@@ -156,8 +132,8 @@ impl OpDeployerConfig {
             ))?;
 
         tracing::debug!(
-            container_id,
-            container_name,
+            container_id = handler.container_id,
+            container_name = handler.container_name,
             "Op Deployer container completed successfully",
         );
 

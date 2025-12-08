@@ -111,8 +111,6 @@ impl AnvilConfig {
 
         let cmd = cmd_builder.build();
 
-        self.docker_image.pull(docker).await?;
-
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .entrypoint(vec!["anvil".to_string()])
             .cmd(cmd)
