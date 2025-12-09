@@ -13,12 +13,13 @@ use serde::Deserialize;
 use crate::{
     ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG, AnvilConfig, Deployer, DockerImage,
     GRAFANA_DEFAULT_IMAGE, GRAFANA_DEFAULT_TAG, GrafanaConfig, KONA_NODE_DEFAULT_IMAGE,
-    KONA_NODE_DEFAULT_TAG, KonaNodeBuilder, KupDockerConfig, L2StackBuilder, MonitoringConfig,
-    OP_BATCHER_DEFAULT_IMAGE, OP_BATCHER_DEFAULT_TAG, OP_CHALLENGER_DEFAULT_IMAGE,
-    OP_CHALLENGER_DEFAULT_TAG, OP_DEPLOYER_DEFAULT_IMAGE, OP_DEPLOYER_DEFAULT_TAG,
-    OP_PROPOSER_DEFAULT_IMAGE, OP_PROPOSER_DEFAULT_TAG, OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG,
-    OpBatcherBuilder, OpChallengerBuilder, OpDeployerConfig, OpProposerBuilder, OpRethBuilder,
-    PROMETHEUS_DEFAULT_IMAGE, PROMETHEUS_DEFAULT_TAG, PrometheusConfig,
+    KONA_NODE_DEFAULT_TAG, KonaNodeBuilder, KupDockerConfig, L2NodeBuilder, L2NodeRole,
+    L2StackBuilder, MonitoringConfig, OP_BATCHER_DEFAULT_IMAGE, OP_BATCHER_DEFAULT_TAG,
+    OP_CHALLENGER_DEFAULT_IMAGE, OP_CHALLENGER_DEFAULT_TAG, OP_DEPLOYER_DEFAULT_IMAGE,
+    OP_DEPLOYER_DEFAULT_TAG, OP_PROPOSER_DEFAULT_IMAGE, OP_PROPOSER_DEFAULT_TAG,
+    OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG, OpBatcherBuilder, OpChallengerBuilder,
+    OpDeployerConfig, OpProposerBuilder, OpRethBuilder, PROMETHEUS_DEFAULT_IMAGE,
+    PROMETHEUS_DEFAULT_TAG, PrometheusConfig,
 };
 
 /// Block header information from an RPC response.
@@ -120,6 +121,8 @@ pub struct DeployerBuilder {
     monitoring_enabled: bool,
     /// Block time in seconds for both L1 (Anvil) and L2 derivation.
     block_time: u64,
+    /// Number of L2 nodes (1 sequencer + N-1 validators).
+    l2_node_count: usize,
 
     // Docker images
     anvil_docker: DockerImage,
@@ -146,6 +149,7 @@ impl DeployerBuilder {
             dashboards_path: None,
             monitoring_enabled: true,
             block_time: 12,
+            l2_node_count: 1,
             anvil_docker: DockerImage::new(ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG),
             op_reth_docker: DockerImage::new(OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG),
             kona_node_docker: DockerImage::new(KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG),
@@ -173,6 +177,19 @@ impl DeployerBuilder {
     /// Defaults to 12 seconds (Ethereum mainnet block time).
     pub fn block_time(mut self, block_time: u64) -> Self {
         self.block_time = block_time;
+        self
+    }
+
+    /// Set the number of L2 nodes to deploy.
+    ///
+    /// The first node is always the sequencer, additional nodes are validators.
+    /// Must be at least 1. Defaults to 1 (sequencer only).
+    pub fn l2_node_count(mut self, count: usize) -> Self {
+        assert!(
+            count >= 1,
+            "At least one L2 node (the sequencer) is required"
+        );
+        self.l2_node_count = count;
         self
     }
 
@@ -480,33 +497,62 @@ impl DeployerBuilder {
                 container_name: format!("{}-op-deployer", network_name),
             },
 
-            l2_stack: L2StackBuilder {
-                op_reth: OpRethBuilder {
-                    docker_image: self.op_reth_docker,
-                    container_name: format!("{}-op-reth", network_name),
-                    ..Default::default()
-                },
-                kona_node: KonaNodeBuilder {
-                    docker_image: self.kona_node_docker,
-                    container_name: format!("{}-kona-node", network_name),
-                    l1_slot_duration: self.block_time,
-                    ..Default::default()
-                },
-                op_batcher: OpBatcherBuilder {
-                    docker_image: self.op_batcher_docker,
-                    container_name: format!("{}-op-batcher", network_name),
-                    ..Default::default()
-                },
-                op_proposer: OpProposerBuilder {
-                    docker_image: self.op_proposer_docker,
-                    container_name: format!("{}-op-proposer", network_name),
-                    ..Default::default()
-                },
-                op_challenger: OpChallengerBuilder {
-                    docker_image: self.op_challenger_docker,
-                    container_name: format!("{}-op-challenger", network_name),
-                    ..Default::default()
-                },
+            l2_stack: {
+                // Build L2 nodes: first is sequencer, rest are validators
+                let mut nodes = Vec::with_capacity(self.l2_node_count);
+
+                // Sequencer node (always first)
+                nodes.push(L2NodeBuilder {
+                    role: L2NodeRole::Sequencer,
+                    op_reth: OpRethBuilder {
+                        docker_image: self.op_reth_docker.clone(),
+                        container_name: format!("{}-op-reth", network_name),
+                        ..Default::default()
+                    },
+                    kona_node: KonaNodeBuilder {
+                        docker_image: self.kona_node_docker.clone(),
+                        container_name: format!("{}-kona-node", network_name),
+                        l1_slot_duration: self.block_time,
+                        ..Default::default()
+                    },
+                });
+
+                // Validator nodes (if any)
+                for i in 1..self.l2_node_count {
+                    nodes.push(L2NodeBuilder {
+                        role: L2NodeRole::Validator,
+                        op_reth: OpRethBuilder {
+                            docker_image: self.op_reth_docker.clone(),
+                            container_name: format!("{}-op-reth-validator-{}", network_name, i),
+                            ..Default::default()
+                        },
+                        kona_node: KonaNodeBuilder {
+                            docker_image: self.kona_node_docker.clone(),
+                            container_name: format!("{}-kona-node-validator-{}", network_name, i),
+                            l1_slot_duration: self.block_time,
+                            ..Default::default()
+                        },
+                    });
+                }
+
+                L2StackBuilder {
+                    nodes,
+                    op_batcher: OpBatcherBuilder {
+                        docker_image: self.op_batcher_docker,
+                        container_name: format!("{}-op-batcher", network_name),
+                        ..Default::default()
+                    },
+                    op_proposer: OpProposerBuilder {
+                        docker_image: self.op_proposer_docker,
+                        container_name: format!("{}-op-proposer", network_name),
+                        ..Default::default()
+                    },
+                    op_challenger: OpChallengerBuilder {
+                        docker_image: self.op_challenger_docker,
+                        container_name: format!("{}-op-challenger", network_name),
+                        ..Default::default()
+                    },
+                }
             },
 
             monitoring: MonitoringConfig {

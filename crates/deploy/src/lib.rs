@@ -33,6 +33,10 @@ pub use services::{
     KONA_NODE_DEFAULT_TAG,
     KonaNodeBuilder,
     KonaNodeHandler,
+    // L2 Node types
+    L2NodeBuilder,
+    L2NodeHandler,
+    L2NodeRole,
     MetricsTarget,
     MonitoringConfig,
     OP_BATCHER_DEFAULT_IMAGE,
@@ -60,6 +64,7 @@ pub use services::{
 };
 
 mod l2_stack;
+pub use deployer::L2StackHandler;
 pub use l2_stack::L2StackBuilder;
 
 /// Account information from Anvil.

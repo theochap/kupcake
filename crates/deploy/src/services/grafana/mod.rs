@@ -176,11 +176,11 @@ pub struct MonitoringHandler {
 
 /// Metrics target for Prometheus scraping.
 pub struct MetricsTarget {
-    pub job_name: &'static str,
+    pub job_name: String,
     pub container_name: String,
     pub port: u16,
-    pub service_label: &'static str,
-    pub layer_label: &'static str,
+    pub service_label: String,
+    pub layer_label: String,
 }
 
 impl MonitoringConfig {

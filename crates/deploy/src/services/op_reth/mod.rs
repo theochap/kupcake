@@ -107,24 +107,39 @@ pub struct OpRethHandler {
 
 impl OpRethBuilder {
     /// Start the op-reth execution client.
+    ///
+    /// # Arguments
+    /// * `docker` - Docker client
+    /// * `host_config_path` - Path on host for config files
+    /// * `sequencer_rpc` - Optional URL of the sequencer's op-reth HTTP RPC.
+    ///   If None (for sequencer nodes), uses self as sequencer.
+    ///   If Some (for validator nodes), connects to the specified sequencer.
+    /// * `jwt_filename` - The JWT secret filename (shared with kona-node)
     pub async fn start(
         &self,
         docker: &mut KupDocker,
         host_config_path: &PathBuf,
+        sequencer_rpc: Option<&Url>,
+        jwt_filename: &str,
     ) -> Result<OpRethHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
+        // For sequencer nodes, point to self. For validators, point to the sequencer.
+        let sequencer_http = sequencer_rpc
+            .map(|url| url.to_string())
+            .unwrap_or_else(|| format!("http://{}:{}", self.container_name, self.http_port));
+
         let cmd = OpRethCmdBuilder::new(
             container_config_path.join("genesis.json"),
-            container_config_path.join("reth-data"),
+            container_config_path.join(format!("reth-data-{}", self.container_name)),
         )
         .http_port(self.http_port)
         .ws_port(self.ws_port)
         .authrpc_port(self.authrpc_port)
-        .authrpc_jwtsecret(container_config_path.join("jwt.hex"))
+        .authrpc_jwtsecret(container_config_path.join(jwt_filename))
         .metrics("0.0.0.0", self.metrics_port)
         .discovery(false)
-        .sequencer_http(format!("http://{}:{}", self.container_name, self.http_port))
+        .sequencer_http(sequencer_http)
         .extra_args(self.extra_args.clone())
         .build();
 

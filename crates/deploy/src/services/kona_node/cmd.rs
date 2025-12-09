@@ -4,6 +4,8 @@ use std::path::Path;
 
 use alloy_core::primitives::Bytes;
 
+pub const DEFAULT_P2P_PORT: u16 = 9222;
+
 /// Builder for kona-node consensus client commands.
 #[derive(Debug, Clone)]
 pub struct KonaNodeCmdBuilder {
@@ -15,9 +17,13 @@ pub struct KonaNodeCmdBuilder {
     rollup_cfg: String,
     jwt_secret: String,
     rpc_port: u16,
+    p2p_port: u16,
     metrics_enabled: bool,
     metrics_port: u16,
     no_discovery: bool,
+    bootnodes: Vec<String>,
+    /// P2P private key (32 bytes hex-encoded)
+    p2p_priv_key: Option<String>,
     unsafe_block_signer_key: Option<Bytes>,
     extra_args: Vec<String>,
 }
@@ -39,9 +45,12 @@ impl KonaNodeCmdBuilder {
             rollup_cfg: rollup_cfg.as_ref().display().to_string(),
             jwt_secret: jwt_secret.as_ref().display().to_string(),
             rpc_port: 7545,
+            p2p_port: DEFAULT_P2P_PORT,
             metrics_enabled: true,
             metrics_port: 7300,
-            no_discovery: true,
+            no_discovery: false,
+            bootnodes: Vec::new(),
+            p2p_priv_key: None,
             unsafe_block_signer_key: None,
             extra_args: Vec::new(),
         }
@@ -87,6 +96,18 @@ impl KonaNodeCmdBuilder {
     /// Enable or disable P2P discovery.
     pub fn discovery(mut self, enabled: bool) -> Self {
         self.no_discovery = !enabled;
+        self
+    }
+
+    /// Set the P2P bootnodes (ENR addresses).
+    pub fn bootnodes(mut self, bootnodes: Vec<String>) -> Self {
+        self.bootnodes = bootnodes;
+        self
+    }
+
+    /// Set the P2P private key (32 bytes hex-encoded).
+    pub fn p2p_priv_key(mut self, key: impl Into<String>) -> Self {
+        self.p2p_priv_key = Some(key.into());
         self
     }
 
@@ -147,6 +168,22 @@ impl KonaNodeCmdBuilder {
         if self.no_discovery {
             cmd.push("--p2p.no-discovery".to_string());
         }
+
+        // P2P bootnodes
+        if !self.bootnodes.is_empty() {
+            cmd.push("--p2p.bootnodes".to_string());
+            cmd.push(self.bootnodes.join(","));
+        }
+
+        // P2P private key
+        if let Some(p2p_priv_key) = self.p2p_priv_key {
+            cmd.push("--p2p.priv.raw".to_string());
+            cmd.push(p2p_priv_key);
+        }
+
+        // P2P port
+        cmd.push("--p2p.listen.tcp".to_string());
+        cmd.push(self.p2p_port.to_string());
 
         // RPC
         cmd.push("--rpc.port".to_string());

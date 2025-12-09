@@ -48,6 +48,7 @@ async fn main() -> Result<()> {
         .maybe_l1_rpc_url(cli.l1_rpc_provider.to_rpc_url(cli.l1_chain).ok())
         .no_cleanup(cli.no_cleanup)
         .block_time(cli.block_time)
+        .l2_node_count(cli.l2_nodes)
         // Docker images
         .anvil_image(cli.docker_images.anvil_image)
         .anvil_tag(cli.docker_images.anvil_tag)

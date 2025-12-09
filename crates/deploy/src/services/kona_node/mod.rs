@@ -5,16 +5,64 @@ mod cmd;
 use std::path::PathBuf;
 
 use anyhow::Context;
+use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 pub use cmd::KonaNodeCmdBuilder;
 
-use crate::docker::{
-    CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig,
+use crate::{
+    docker::{CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig},
+    services::kona_node::cmd::DEFAULT_P2P_PORT,
 };
 
-use super::{anvil::AnvilHandler, op_reth::OpRethHandler};
+use super::{anvil::AnvilHandler, l2_node::L2NodeRole, op_reth::OpRethHandler};
+
+/// P2P keypair for kona-node identity.
+#[derive(Debug, Clone)]
+pub struct P2pKeypair {
+    /// Private key (32 bytes hex-encoded, without 0x prefix)
+    pub private_key: String,
+    /// Node ID derived from the public key (64 bytes hex-encoded, without 0x prefix)
+    pub node_id: String,
+}
+
+impl P2pKeypair {
+    /// Generate a new random P2P keypair.
+    pub fn generate() -> Self {
+        use rand::Rng;
+
+        // Generate 32 random bytes for the private key
+        let mut rng = rand::rng();
+        let private_key_bytes: [u8; 32] = rng.random();
+
+        // Create signing key from private key bytes
+        let signing_key = SigningKey::from_bytes(&private_key_bytes.into())
+            .expect("32 bytes is a valid secp256k1 private key");
+
+        // Get the verifying (public) key
+        let verifying_key = signing_key.verifying_key();
+
+        // Get uncompressed public key point (65 bytes: 0x04 prefix + 64 bytes)
+        let public_key_point = verifying_key.to_encoded_point(false);
+        let public_key_bytes = public_key_point.as_bytes();
+
+        // Node ID is the public key without the 0x04 prefix (64 bytes = 128 hex chars)
+        // Skip the first byte (0x04 uncompressed marker)
+        let node_id = hex::encode(&public_key_bytes[1..]);
+        let private_key = hex::encode(private_key_bytes);
+
+        Self {
+            private_key,
+            node_id,
+        }
+    }
+
+    /// Build an enode URL using this keypair, container name, and port.
+    pub fn to_enode(&self, container_name: &str, port: u16) -> String {
+        format!("enode://{}@{}:{}", self.node_id, container_name, port)
+    }
+}
 
 /// Default ports for kona-node.
 pub const DEFAULT_RPC_PORT: u16 = 7545;
@@ -73,52 +121,85 @@ pub struct KonaNodeHandler {
     pub container_id: String,
     /// Docker container name.
     pub container_name: String,
+    /// P2P port for peer discovery.
+    pub p2p_port: u16,
     /// The RPC URL for the kona-node (internal Docker network).
     pub rpc_url: Url,
     /// The RPC URL accessible from host (if published). None if not published.
     pub rpc_host_url: Option<Url>,
     /// The metrics URL accessible from host (if published). None if not published.
     pub metrics_host_url: Option<Url>,
+    /// The node's P2P enode URL for peer discovery (enode://nodeID@container:port).
+    pub p2p_enode: String,
 }
 
 impl KonaNodeBuilder {
     /// Start the kona-node consensus client.
+    ///
+    /// # Arguments
+    /// * `docker` - Docker client
+    /// * `host_config_path` - Path on host for config files
+    /// * `anvil_handler` - Handler for the L1 Anvil instance
+    /// * `op_reth_handler` - Handler for the paired op-reth instance
+    /// * `role` - Role of this node (sequencer or validator)
+    /// * `jwt_filename` - The JWT secret filename (shared with op-reth)
+    /// * `bootnodes` - List of enode URLs for P2P peer discovery
     pub async fn start(
         &self,
         docker: &mut KupDocker,
         host_config_path: &PathBuf,
         anvil_handler: &AnvilHandler,
         op_reth_handler: &OpRethHandler,
+        role: L2NodeRole,
+        jwt_filename: &str,
+        bootnodes: &[String],
     ) -> Result<KonaNodeHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
-        let cmd = KonaNodeCmdBuilder::new(
+        // Generate a P2P keypair for this node
+        let p2p_keypair = P2pKeypair::generate();
+        let p2p_enode = p2p_keypair.to_enode(&self.container_name, DEFAULT_P2P_PORT);
+
+        tracing::debug!(
+            container_name = %self.container_name,
+            node_id = %p2p_keypair.node_id,
+            enode = %p2p_enode,
+            "Generated P2P keypair for kona-node"
+        );
+
+        let mut cmd_builder = KonaNodeCmdBuilder::new(
             anvil_handler.l1_rpc_url.to_string(),
             op_reth_handler.authrpc_url.to_string(),
             container_config_path.join("rollup.json"),
-            container_config_path.join("jwt.hex"),
+            container_config_path.join(jwt_filename),
         )
-        .mode("sequencer")
-        .unsafe_block_signer_key(
-            anvil_handler
-                .accounts
-                .unsafe_block_signer
-                .private_key
-                .clone(),
-        )
+        .mode(role.as_kona_mode())
         .l1_slot_duration(self.l1_slot_duration)
         .rpc_port(self.rpc_port)
         .metrics(true, self.metrics_port)
-        .discovery(false)
-        .extra_args(self.extra_args.clone())
-        .build();
+        .discovery(true)
+        .bootnodes(bootnodes.to_vec())
+        .p2p_priv_key(&p2p_keypair.private_key)
+        .extra_args(self.extra_args.clone());
 
-        self.docker_image.pull(docker).await?;
+        // Only sequencers need the block signer key
+        if role == L2NodeRole::Sequencer {
+            cmd_builder = cmd_builder.unsafe_block_signer_key(
+                anvil_handler
+                    .accounts
+                    .unsafe_block_signer
+                    .private_key
+                    .clone(),
+            );
+        }
+
+        let cmd = cmd_builder.build();
 
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> = [
             PortMapping::tcp_optional(self.rpc_port, self.rpc_host_port),
             PortMapping::tcp_optional(self.metrics_port, self.metrics_host_port),
+            PortMapping::tcp_optional(DEFAULT_P2P_PORT, Some(0)),
         ]
         .into_iter()
         .flatten()
@@ -162,6 +243,7 @@ impl KonaNodeBuilder {
             container_name = %handler.container_name,
             ?rpc_host_url,
             ?metrics_host_url,
+            enode = %p2p_enode,
             "kona-node container started"
         );
 
@@ -171,6 +253,8 @@ impl KonaNodeBuilder {
             rpc_url,
             rpc_host_url,
             metrics_host_url,
+            p2p_enode,
+            p2p_port: DEFAULT_P2P_PORT,
         })
     }
 }

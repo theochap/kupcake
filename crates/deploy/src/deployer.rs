@@ -3,21 +3,33 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::{
-    AnvilConfig, KonaNodeHandler, KupDocker, KupDockerConfig, L2StackBuilder, MetricsTarget,
-    MonitoringConfig, OpBatcherHandler, OpChallengerHandler, OpDeployerConfig, OpProposerHandler,
-    OpRethHandler, services,
+    AnvilConfig, KupDocker, KupDockerConfig, L2StackBuilder, MetricsTarget, MonitoringConfig,
+    OpBatcherHandler, OpChallengerHandler, OpDeployerConfig, OpProposerHandler, services,
+    services::l2_node::L2NodeHandler,
 };
 
 /// The default name for the kupcake configuration file.
 pub const KUPCONF_FILENAME: &str = "Kupcake.toml";
 
-/// Handler for the complete L2 node setup.
-pub struct L2NodesHandler {
-    pub op_reth: OpRethHandler,
-    pub kona_node: KonaNodeHandler,
+/// Handler for the complete L2 stack setup.
+pub struct L2StackHandler {
+    /// Handlers for all L2 nodes (sequencer first, then validators).
+    pub nodes: Vec<L2NodeHandler>,
     pub op_batcher: OpBatcherHandler,
     pub op_proposer: OpProposerHandler,
     pub op_challenger: OpChallengerHandler,
+}
+
+impl L2StackHandler {
+    /// Get the sequencer node handler (the first node).
+    pub fn sequencer(&self) -> &L2NodeHandler {
+        &self.nodes[0]
+    }
+
+    /// Get validator node handlers (all nodes except the first).
+    pub fn validators(&self) -> Vec<&L2NodeHandler> {
+        self.nodes.iter().skip(1).collect()
+    }
 }
 
 /// Main deployer that orchestrates the entire OP Stack deployment.
@@ -93,51 +105,68 @@ impl Deployer {
 }
 
 impl Deployer {
-    /// Build metrics targets for Prometheus scraping from L2 node handlers.
-    fn build_metrics_targets(l2_nodes: &L2NodesHandler) -> Vec<MetricsTarget> {
+    /// Build metrics targets for Prometheus scraping from L2 stack handlers.
+    fn build_metrics_targets(l2_stack: &L2StackHandler) -> Vec<MetricsTarget> {
         use services::kona_node::DEFAULT_METRICS_PORT as KONA_METRICS_PORT;
         use services::op_batcher::DEFAULT_METRICS_PORT as BATCHER_METRICS_PORT;
         use services::op_challenger::DEFAULT_METRICS_PORT as CHALLENGER_METRICS_PORT;
         use services::op_proposer::DEFAULT_METRICS_PORT as PROPOSER_METRICS_PORT;
         use services::op_reth::DEFAULT_METRICS_PORT as RETH_METRICS_PORT;
 
-        vec![
-            MetricsTarget {
-                job_name: "op-reth",
-                container_name: l2_nodes.op_reth.container_name.clone(),
+        let mut targets = Vec::new();
+
+        // Add metrics targets for all L2 nodes (sequencer + validators)
+        for (i, node) in l2_stack.nodes.iter().enumerate() {
+            let role = if i == 0 { "sequencer" } else { "validator" };
+            let suffix = if i == 0 {
+                String::new()
+            } else {
+                format!("-{}", i)
+            };
+
+            targets.push(MetricsTarget {
+                job_name: format!("op-reth{}", suffix),
+                container_name: node.op_reth.container_name.clone(),
                 port: RETH_METRICS_PORT,
-                service_label: "op-reth",
-                layer_label: "execution",
-            },
-            MetricsTarget {
-                job_name: "kona-node",
-                container_name: l2_nodes.kona_node.container_name.clone(),
+                service_label: format!("op-reth-{}", role),
+                layer_label: "execution".to_string(),
+            });
+
+            targets.push(MetricsTarget {
+                job_name: format!("kona-node{}", suffix),
+                container_name: node.kona_node.container_name.clone(),
                 port: KONA_METRICS_PORT,
-                service_label: "kona-node",
-                layer_label: "consensus",
-            },
-            MetricsTarget {
-                job_name: "op-batcher",
-                container_name: l2_nodes.op_batcher.container_name.clone(),
-                port: BATCHER_METRICS_PORT,
-                service_label: "op-batcher",
-                layer_label: "batcher",
-            },
-            MetricsTarget {
-                job_name: "op-proposer",
-                container_name: l2_nodes.op_proposer.container_name.clone(),
-                port: PROPOSER_METRICS_PORT,
-                service_label: "op-proposer",
-                layer_label: "proposer",
-            },
-            MetricsTarget {
-                job_name: "op-challenger",
-                container_name: l2_nodes.op_challenger.container_name.clone(),
-                port: CHALLENGER_METRICS_PORT,
-                service_label: "op-challenger",
-                layer_label: "challenger",
-            },
-        ]
+                service_label: format!("kona-node-{}", role),
+                layer_label: "consensus".to_string(),
+            });
+        }
+
+        // Add metrics targets for batcher, proposer, and challenger
+        targets.push(MetricsTarget {
+            job_name: "op-batcher".to_string(),
+            container_name: l2_stack.op_batcher.container_name.clone(),
+            port: BATCHER_METRICS_PORT,
+            service_label: "op-batcher".to_string(),
+            layer_label: "batcher".to_string(),
+        });
+
+        targets.push(MetricsTarget {
+            job_name: "op-proposer".to_string(),
+            container_name: l2_stack.op_proposer.container_name.clone(),
+            port: PROPOSER_METRICS_PORT,
+            service_label: "op-proposer".to_string(),
+            layer_label: "proposer".to_string(),
+        });
+
+        targets.push(MetricsTarget {
+            job_name: "op-challenger".to_string(),
+            container_name: l2_stack.op_challenger.container_name.clone(),
+            port: CHALLENGER_METRICS_PORT,
+            service_label: "op-challenger".to_string(),
+            layer_label: "challenger".to_string(),
+        });
+
+        targets
     }
 
     pub async fn deploy(self, force_deploy: bool) -> Result<()> {
@@ -179,15 +208,18 @@ impl Deployer {
             tracing::info!("L1 contracts already deployed, skipping deployment");
         }
 
+        let node_count = self.l2_stack.nodes.len();
         tracing::info!(
-            "Starting L2 nodes (op-reth + kona-node + op-batcher + op-proposer + op-challenger)..."
+            node_count,
+            "Starting L2 stack ({} node(s) + op-batcher + op-proposer + op-challenger)...",
+            node_count
         );
 
         let l2_stack = self
             .l2_stack
             .start(&mut docker, l2_nodes_data_path.clone(), &anvil)
             .await
-            .context("Failed to start L2 nodes")?;
+            .context("Failed to start L2 stack")?;
 
         // Start monitoring stack if enabled
         let monitoring = if self.monitoring.enabled {
@@ -217,23 +249,23 @@ impl Deployer {
         if let Some(ref url) = anvil.l1_host_url {
             tracing::info!("L1 (Anvil) RPC:       {}", url);
         }
-        if let Some(ref url) = l2_stack.op_reth.http_host_url {
-            tracing::info!("L2 (op-reth) HTTP:    {}", url);
+
+        // Log endpoints for all L2 nodes
+        for (i, node) in l2_stack.nodes.iter().enumerate() {
+            let role = if i == 0 { "sequencer" } else { "validator" };
+            if let Some(ref url) = node.op_reth.http_host_url {
+                tracing::info!("L2 {} (op-reth) HTTP:    {}", role, url);
+            }
+            if let Some(ref url) = node.op_reth.ws_host_url {
+                tracing::info!("L2 {} (op-reth) WS:      {}", role, url);
+            }
+            if let Some(ref url) = node.kona_node.rpc_host_url {
+                tracing::info!("L2 {} (kona-node) RPC:   {}", role, url);
+            }
         }
-        if let Some(ref url) = l2_stack.op_reth.ws_host_url {
-            tracing::info!("L2 (op-reth) WS:      {}", url);
-        }
-        if let Some(ref url) = l2_stack.kona_node.rpc_host_url {
-            tracing::info!("L2 (kona-node) RPC:   {}", url);
-        }
-        if let Some(ref url) = l2_stack.kona_node.metrics_host_url {
-            tracing::info!("L2 (kona-node) Metrics: {}", url);
-        }
+
         if let Some(ref url) = l2_stack.op_batcher.rpc_host_url {
             tracing::info!("L2 (op-batcher) RPC:  {}", url);
-        }
-        if let Some(ref url) = l2_stack.op_batcher.metrics_host_url {
-            tracing::info!("L2 (op-batcher) Metrics: {}", url);
         }
         if let Some(ref mon) = monitoring {
             if let Some(ref url) = mon.prometheus.host_url {
@@ -246,9 +278,19 @@ impl Deployer {
         tracing::info!("");
         tracing::info!("=== Internal Docker network endpoints ===");
         tracing::info!("L1 (Anvil) RPC:       {}", anvil.l1_rpc_url);
-        tracing::info!("L2 (op-reth) HTTP:    {}", l2_stack.op_reth.http_rpc_url);
-        tracing::info!("L2 (op-reth) WS:      {}", l2_stack.op_reth.ws_rpc_url);
-        tracing::info!("Kona Node RPC:        {}", l2_stack.kona_node.rpc_url);
+
+        // Log internal endpoints for all L2 nodes
+        for (i, node) in l2_stack.nodes.iter().enumerate() {
+            let role = if i == 0 { "sequencer" } else { "validator" };
+            tracing::info!(
+                "L2 {} (op-reth) HTTP:    {}",
+                role,
+                node.op_reth.http_rpc_url
+            );
+            tracing::info!("L2 {} (op-reth) WS:      {}", role, node.op_reth.ws_rpc_url);
+            tracing::info!("L2 {} (kona-node) RPC:   {}", role, node.kona_node.rpc_url);
+        }
+
         tracing::info!("Op Batcher RPC:       {}", l2_stack.op_batcher.rpc_url);
         tracing::info!("Op Proposer RPC:      {}", l2_stack.op_proposer.rpc_url);
         tracing::info!("Op Challenger RPC:    {}", l2_stack.op_challenger.rpc_url);

@@ -21,4 +21,6 @@ hex.workspace = true
 names.workspace = true
 tempdir.workspace = true
 reqwest.workspace = true
+multiaddr.workspace = true
+k256.workspace = true
 

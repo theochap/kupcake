@@ -1,20 +1,23 @@
+//! L2 Stack configuration and deployment.
+
 use std::path::PathBuf;
 
-use anyhow::Context as _;
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AnvilHandler, KonaNodeBuilder, KupDocker, OpBatcherBuilder, OpChallengerBuilder,
-    OpProposerBuilder, OpRethBuilder, deployer::L2NodesHandler, fs,
+    AnvilHandler, KupDocker, OpBatcherBuilder, OpChallengerBuilder, OpProposerBuilder,
+    deployer::L2StackHandler,
+    fs,
+    services::l2_node::{L2NodeBuilder, L2NodeHandler},
 };
 
 /// Combined configuration for all L2 components for the op-stack.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct L2StackBuilder {
-    /// Configuration for op-reth execution client.
-    pub op_reth: OpRethBuilder,
-    /// Configuration for kona-node consensus client.
-    pub kona_node: KonaNodeBuilder,
+    /// Configuration for L2 nodes (op-reth + kona-node pairs).
+    /// The first node is always the sequencer, subsequent nodes are validators.
+    pub nodes: Vec<L2NodeBuilder>,
     /// Configuration for op-batcher.
     pub op_batcher: OpBatcherBuilder,
     /// Configuration for op-proposer.
@@ -26,8 +29,7 @@ pub struct L2StackBuilder {
 impl Default for L2StackBuilder {
     fn default() -> Self {
         Self {
-            op_reth: OpRethBuilder::default(),
-            kona_node: KonaNodeBuilder::default(),
+            nodes: vec![L2NodeBuilder::sequencer()],
             op_batcher: OpBatcherBuilder::default(),
             op_proposer: OpProposerBuilder::default(),
             op_challenger: OpChallengerBuilder::default(),
@@ -36,113 +38,178 @@ impl Default for L2StackBuilder {
 }
 
 impl L2StackBuilder {
-    /// Generate a JWT secret for authenticated communication between op-reth and kona-node.
-    fn generate_jwt_secret() -> String {
-        use rand::Rng;
-        let mut rng = rand::rng();
-        let secret: [u8; 32] = rng.random();
-        hex::encode(secret)
+    /// Create a new L2 stack builder with the specified number of nodes.
+    ///
+    /// The first node is always a sequencer, and additional nodes are validators.
+    pub fn with_node_count(count: usize) -> Self {
+        assert!(count >= 1, "At least one node (the sequencer) is required");
+
+        let mut nodes = Vec::with_capacity(count);
+
+        // First node is the sequencer
+        nodes.push(L2NodeBuilder::sequencer());
+
+        // Additional nodes are validators
+        for i in 1..count {
+            nodes.push(L2NodeBuilder::validator().with_name_suffix(&format!("validator-{}", i)));
+        }
+
+        Self {
+            nodes,
+            ..Default::default()
+        }
     }
 
-    /// Write the JWT secret to a file.
-    async fn write_jwt_secret(host_config_path: &PathBuf) -> Result<PathBuf, anyhow::Error> {
-        let jwt_secret = Self::generate_jwt_secret();
-        let jwt_path = host_config_path.join("jwt.hex");
+    /// Add a validator node to the stack.
+    pub fn add_validator(mut self) -> Self {
+        let validator_index = self.nodes.len();
+        self.nodes.push(
+            L2NodeBuilder::validator().with_name_suffix(&format!("validator-{}", validator_index)),
+        );
+        self
+    }
 
-        tokio::fs::write(&jwt_path, &jwt_secret)
-            .await
-            .context("Failed to write JWT secret file")?;
+    /// Get the sequencer node builder (the first node).
+    pub fn sequencer(&self) -> &L2NodeBuilder {
+        &self.nodes[0]
+    }
 
-        tracing::debug!(path = ?jwt_path, "JWT secret written");
-        Ok(jwt_path)
+    /// Get validator node builders (all nodes except the first).
+    pub fn validators(&self) -> Vec<&L2NodeBuilder> {
+        self.nodes.iter().skip(1).collect()
     }
 
     /// Start all L2 node components.
     ///
-    /// This starts op-reth first (execution client), then kona-node (consensus client),
+    /// This starts the sequencer node first, then validator nodes,
     /// followed by op-batcher (batch submitter), op-proposer, and op-challenger.
-    /// The components communicate via the Engine API using JWT authentication.
+    /// Each L2 node pair (op-reth + kona-node) generates its own JWT for authentication.
+    /// P2P peer discovery is enabled by passing ENRs between nodes.
     pub async fn start(
         &self,
         docker: &mut KupDocker,
         host_config_path: PathBuf,
         anvil_handler: &AnvilHandler,
-    ) -> Result<L2NodesHandler, anyhow::Error> {
+    ) -> Result<L2StackHandler, anyhow::Error> {
         if !host_config_path.exists() {
             fs::FsHandler::create_host_config_directory(&host_config_path)?;
         }
 
-        // Generate JWT secret for Engine API authentication
-        Self::write_jwt_secret(&host_config_path).await?;
+        // Start all L2 nodes (each generates its own JWT)
+        let mut node_handlers: Vec<L2NodeHandler> = Vec::with_capacity(self.nodes.len());
 
-        tracing::info!("Starting op-reth execution client...");
+        // Mutable list of peer ENRs for P2P discovery
+        // Each node adds its ENR after starting, so subsequent nodes can use it as a bootnode
+        let mut peer_enrs: Vec<String> = Vec::new();
 
-        // Start op-reth first
-        let op_reth_handler = self.op_reth.start(docker, &host_config_path).await?;
+        // Start the sequencer first (it must be first)
+        tracing::info!("Starting sequencer node (op-reth + kona-node)...");
+        let sequencer_handler = self.nodes[0]
+            .start(
+                docker,
+                &host_config_path,
+                anvil_handler,
+                None,
+                &mut peer_enrs,
+            )
+            .await
+            .context("Failed to start sequencer node")?;
 
-        // Give op-reth a moment to initialize before starting kona-node
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let sequencer_rpc = sequencer_handler.op_reth.http_rpc_url.clone();
+        node_handlers.push(sequencer_handler);
 
-        tracing::info!("Starting kona-node consensus client...");
+        // Start validator nodes (if any)
+        for (i, validator) in self.nodes.iter().skip(1).enumerate() {
+            tracing::info!("Starting validator node {} (op-reth + kona-node)...", i + 1);
 
-        // Start kona-node
-        let kona_node_handler = self
-            .kona_node
-            .start(docker, &host_config_path, anvil_handler, &op_reth_handler)
-            .await?;
+            let validator_handler = validator
+                .start(
+                    docker,
+                    &host_config_path,
+                    anvil_handler,
+                    Some(&sequencer_rpc),
+                    &mut peer_enrs,
+                )
+                .await
+                .context(format!("Failed to start validator node {}", i + 1))?;
 
-        // Give kona-node a moment to initialize before starting op-batcher
+            node_handlers.push(validator_handler);
+        }
+
+        tracing::info!(
+            peer_count = peer_enrs.len(),
+            "All L2 nodes started with P2P peer discovery"
+        );
+
+        // Give nodes a moment to initialize before starting batcher
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        // Get references to the sequencer handlers for the remaining components
+        let sequencer = &node_handlers[0];
 
         tracing::info!("Starting op-batcher...");
 
-        // Start op-batcher
+        // Start op-batcher (connects to sequencer)
         let op_batcher_handler = self
             .op_batcher
             .start(
                 docker,
                 &host_config_path,
                 anvil_handler,
-                &op_reth_handler,
-                &kona_node_handler,
+                &sequencer.op_reth,
+                &sequencer.kona_node,
             )
             .await?;
 
         tracing::info!("Starting op-proposer...");
 
-        // Start op-proposer
+        // Start op-proposer (connects to sequencer)
         let op_proposer_handler = self
             .op_proposer
-            .start(docker, &host_config_path, anvil_handler, &kona_node_handler)
+            .start(
+                docker,
+                &host_config_path,
+                anvil_handler,
+                &sequencer.kona_node,
+            )
             .await?;
 
         tracing::info!("Starting op-challenger...");
 
-        // Start op-challenger
+        // Start op-challenger (connects to sequencer)
         let op_challenger_handler = self
             .op_challenger
             .start(
                 docker,
                 &host_config_path,
                 anvil_handler,
-                &kona_node_handler,
-                &self.op_reth,
+                &sequencer.kona_node,
+                &self.nodes[0].op_reth,
             )
             .await?;
 
+        // Log all node endpoints
+        for (i, node) in node_handlers.iter().enumerate() {
+            let role = if i == 0 { "sequencer" } else { "validator" };
+            tracing::info!(
+                role = role,
+                index = i,
+                l2_http_rpc = %node.op_reth.http_rpc_url,
+                l2_ws_rpc = %node.op_reth.ws_rpc_url,
+                kona_node_rpc = %node.kona_node.rpc_url,
+                "L2 node started"
+            );
+        }
+
         tracing::info!(
-            l2_http_rpc = %op_reth_handler.http_rpc_url,
-            l2_ws_rpc = %op_reth_handler.ws_rpc_url,
-            kona_node_rpc = %kona_node_handler.rpc_url,
             op_batcher_rpc = %op_batcher_handler.rpc_url,
             op_proposer_rpc = %op_proposer_handler.rpc_url,
             op_challenger_rpc = %op_challenger_handler.rpc_url,
-            "L2 nodes started successfully"
+            "L2 stack started successfully"
         );
 
-        Ok(L2NodesHandler {
-            op_reth: op_reth_handler,
-            kona_node: kona_node_handler,
+        Ok(L2StackHandler {
+            nodes: node_handlers,
             op_batcher: op_batcher_handler,
             op_proposer: op_proposer_handler,
             op_challenger: op_challenger_handler,

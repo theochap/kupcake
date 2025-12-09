@@ -140,6 +140,13 @@ pub struct Cli {
     #[arg(long, env = "KUP_BLOCK_TIME", default_value_t = 12)]
     pub block_time: u64,
 
+    /// The number of L2 nodes to deploy.
+    ///
+    /// The first node is always the sequencer, additional nodes are validators.
+    /// Defaults to 3 (sequencer + 2 validators).
+    #[arg(long, alias = "nodes", env = "KUP_L2_NODES", default_value_t = 3)]
+    pub l2_nodes: usize,
+
     /// Path to an existing kupconf.toml configuration file to load.
     ///
     /// When provided, the deployment will use the configuration from this file
