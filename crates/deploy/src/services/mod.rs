@@ -15,7 +15,7 @@ pub mod op_reth;
 
 // Re-export commonly used types
 pub use anvil::{
-    AnvilConfig, AnvilHandler, DEFAULT_DOCKER_IMAGE as ANVIL_DEFAULT_IMAGE,
+    AnvilAccounts, AnvilConfig, AnvilHandler, DEFAULT_DOCKER_IMAGE as ANVIL_DEFAULT_IMAGE,
     DEFAULT_DOCKER_TAG as ANVIL_DEFAULT_TAG,
 };
 pub use grafana::{

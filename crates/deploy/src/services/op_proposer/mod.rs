@@ -89,8 +89,7 @@ impl OpProposerBuilder {
     ) -> Result<OpProposerHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
-        // The proposer account is at index 8 in the Anvil accounts
-        let proposer_private_key = &anvil_handler.account_infos[8].private_key;
+        let proposer_private_key = &anvil_handler.accounts.proposer.private_key;
 
         // Read the DisputeGameFactory address from state.json
         let state_file_path = host_config_path.join("state.json");

@@ -102,8 +102,7 @@ impl OpBatcherBuilder {
     ) -> Result<OpBatcherHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
-        // The batcher account is at index 7 in the Anvil accounts
-        let batcher_private_key = &anvil_handler.account_infos[7].private_key;
+        let batcher_private_key = &anvil_handler.accounts.batcher.private_key;
 
         let cmd = OpBatcherCmdBuilder::new(
             anvil_handler.l1_rpc_url.to_string(),

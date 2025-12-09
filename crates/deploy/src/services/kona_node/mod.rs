@@ -99,7 +99,13 @@ impl KonaNodeBuilder {
             container_config_path.join("jwt.hex"),
         )
         .mode("sequencer")
-        .unsafe_block_signer_key(anvil_handler.account_infos[6].private_key.clone())
+        .unsafe_block_signer_key(
+            anvil_handler
+                .accounts
+                .unsafe_block_signer
+                .private_key
+                .clone(),
+        )
         .l1_slot_duration(self.l1_slot_duration)
         .rpc_port(self.rpc_port)
         .metrics(true, self.metrics_port)

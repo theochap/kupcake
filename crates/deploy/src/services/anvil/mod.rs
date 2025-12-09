@@ -17,6 +17,98 @@ use crate::{
     fs::FsHandler,
 };
 
+/// Named accounts from Anvil matching the OP Stack participant roles.
+///
+/// These accounts map to the roles used by the op-deployer for L1 contract deployment:
+/// - Index 0: deployer (also base_fee_vault_recipient)
+/// - Index 1: l1_fee_vault_recipient
+/// - Index 2: sequencer_fee_vault_recipient
+/// - Index 3: l1_proxy_admin_owner
+/// - Index 4: l2_proxy_admin_owner
+/// - Index 5: system_config_owner
+/// - Index 6: unsafe_block_signer
+/// - Index 7: batcher
+/// - Index 8: proposer
+/// - Index 9: challenger
+/// - Index 10+: extra_accounts
+#[derive(Debug, Clone)]
+pub struct AnvilAccounts {
+    /// The deployer account (index 0). Also used as base_fee_vault_recipient.
+    pub deployer: AccountInfo,
+    /// The L1 fee vault recipient account (index 1).
+    pub l1_fee_vault_recipient: AccountInfo,
+    /// The sequencer fee vault recipient account (index 2).
+    pub sequencer_fee_vault_recipient: AccountInfo,
+    /// The L1 proxy admin owner account (index 3).
+    pub l1_proxy_admin_owner: AccountInfo,
+    /// The L2 proxy admin owner account (index 4).
+    pub l2_proxy_admin_owner: AccountInfo,
+    /// The system config owner account (index 5).
+    pub system_config_owner: AccountInfo,
+    /// The unsafe block signer account (index 6).
+    pub unsafe_block_signer: AccountInfo,
+    /// The batcher account (index 7).
+    pub batcher: AccountInfo,
+    /// The proposer account (index 8).
+    pub proposer: AccountInfo,
+    /// The challenger account (index 9).
+    pub challenger: AccountInfo,
+    /// Additional accounts beyond the named roles (index 10+).
+    pub extra_accounts: Vec<AccountInfo>,
+}
+
+impl AnvilAccounts {
+    /// The minimum number of accounts required for OP Stack deployment.
+    pub const MIN_REQUIRED_ACCOUNTS: usize = 10;
+
+    /// Create named accounts from a vector of account infos.
+    ///
+    /// Returns an error if fewer than 10 accounts are provided.
+    pub fn from_account_infos(accounts: Vec<AccountInfo>) -> Result<Self, anyhow::Error> {
+        if accounts.len() < Self::MIN_REQUIRED_ACCOUNTS {
+            anyhow::bail!(
+                "Not enough accounts provided. Need at least {}, got {}",
+                Self::MIN_REQUIRED_ACCOUNTS,
+                accounts.len()
+            );
+        }
+
+        let mut accounts = accounts.into_iter();
+
+        Ok(Self {
+            deployer: accounts.next().unwrap(),
+            l1_fee_vault_recipient: accounts.next().unwrap(),
+            sequencer_fee_vault_recipient: accounts.next().unwrap(),
+            l1_proxy_admin_owner: accounts.next().unwrap(),
+            l2_proxy_admin_owner: accounts.next().unwrap(),
+            system_config_owner: accounts.next().unwrap(),
+            unsafe_block_signer: accounts.next().unwrap(),
+            batcher: accounts.next().unwrap(),
+            proposer: accounts.next().unwrap(),
+            challenger: accounts.next().unwrap(),
+            extra_accounts: accounts.collect(),
+        })
+    }
+
+    /// Returns all accounts as a slice, in order (named accounts first, then extra).
+    pub fn all_accounts(&self) -> Vec<&AccountInfo> {
+        let mut accounts = vec![
+            &self.deployer,
+            &self.l1_fee_vault_recipient,
+            &self.sequencer_fee_vault_recipient,
+            &self.l1_proxy_admin_owner,
+            &self.l2_proxy_admin_owner,
+            &self.system_config_owner,
+            &self.unsafe_block_signer,
+            &self.batcher,
+            &self.proposer,
+            &self.challenger,
+        ];
+        accounts.extend(self.extra_accounts.iter());
+        accounts
+    }
+}
+
 /// Default port for Anvil.
 pub const DEFAULT_PORT: u16 = 8545;
 
@@ -77,8 +169,8 @@ pub struct AnvilHandler {
     pub l1_rpc_url: Url,
     /// The RPC URL accessible from host (if published). None if not published.
     pub l1_host_url: Option<Url>,
-    /// Account information from Anvil.
-    pub account_infos: Vec<AccountInfo>,
+    /// Named accounts from Anvil matching the OP Stack participant roles.
+    pub accounts: AnvilAccounts,
 }
 
 impl AnvilConfig {
@@ -168,7 +260,7 @@ impl AnvilConfig {
         )
         .context("Failed to parse Anvil config")?;
 
-        let account_infos = l1_config
+        let account_infos: Vec<AccountInfo> = l1_config
             .available_accounts
             .iter()
             .zip(l1_config.private_keys)
@@ -177,6 +269,9 @@ impl AnvilConfig {
                 private_key: private_key.clone(),
             })
             .collect();
+
+        let accounts = AnvilAccounts::from_account_infos(account_infos)
+            .context("Failed to create named accounts from Anvil")?;
 
         let l1_rpc_url = KupDocker::build_http_url(&handler.container_name, ANVIL_INTERNAL_PORT)?;
 
@@ -197,7 +292,7 @@ impl AnvilConfig {
         Ok(AnvilHandler {
             container_id: handler.container_id,
             container_name: handler.container_name,
-            account_infos,
+            accounts,
             l1_rpc_url,
             l1_host_url,
         })

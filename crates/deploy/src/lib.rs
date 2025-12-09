@@ -23,6 +23,7 @@ pub use services::{
     // Docker image defaults
     ANVIL_DEFAULT_IMAGE,
     ANVIL_DEFAULT_TAG,
+    AnvilAccounts,
     AnvilConfig,
     AnvilHandler,
     GRAFANA_DEFAULT_IMAGE,
@@ -62,6 +63,7 @@ mod l2_stack;
 pub use l2_stack::L2StackBuilder;
 
 /// Account information from Anvil.
+#[derive(Debug, Clone)]
 pub struct AccountInfo {
     pub address: Bytes,
     pub private_key: Bytes,

@@ -87,8 +87,7 @@ impl OpChallengerBuilder {
     ) -> Result<OpChallengerHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
-        // The challenger account is at index 9 in the Anvil accounts
-        let challenger_private_key = &anvil_handler.account_infos[9].private_key;
+        let challenger_private_key = &anvil_handler.accounts.challenger.private_key;
 
         // Read the DisputeGameFactory address from state.json
         let state_file_path = host_config_path.join("state.json");
