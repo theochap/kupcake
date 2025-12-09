@@ -32,8 +32,14 @@ pub struct AnvilConfig {
     pub docker_image: DockerImage,
     /// Host address for Anvil.
     pub host: String,
-    /// Port for Anvil RPC.
+    /// Port for Anvil RPC (container port).
     pub port: u16,
+    /// Host port for Anvil RPC. If None, not published to host.
+    #[serde(
+        default = "default_anvil_host_port",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub host_port: Option<u16>,
     /// Block time in seconds.
     pub block_time: u64,
     /// URL to fork from (optional, if not provided Anvil runs without forking).
@@ -50,6 +56,10 @@ pub struct AnvilConfig {
     pub extra_args: Vec<String>,
 }
 
+fn default_anvil_host_port() -> Option<u16> {
+    Some(0) // Let OS pick an available port
+}
+
 /// Parsed Anvil configuration data.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct L1AnvilData {
@@ -63,8 +73,10 @@ pub struct AnvilHandler {
     pub container_id: String,
     /// Docker container name.
     pub container_name: String,
-    /// The RPC URL for the L1 chain behind Anvil.
+    /// The RPC URL for the L1 chain behind Anvil (internal Docker network).
     pub l1_rpc_url: Url,
+    /// The RPC URL accessible from host (if published). None if not published.
+    pub l1_host_url: Option<Url>,
     /// Account information from Anvil.
     pub account_infos: Vec<AccountInfo>,
 }
@@ -111,10 +123,16 @@ impl AnvilConfig {
 
         let cmd = cmd_builder.build();
 
+        // Build port mappings only for ports that should be published to host
+        let port_mappings: Vec<PortMapping> =
+            PortMapping::tcp_optional(ANVIL_INTERNAL_PORT, self.host_port)
+                .into_iter()
+                .collect();
+
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .entrypoint(vec!["anvil".to_string()])
             .cmd(cmd)
-            .ports([PortMapping::tcp(ANVIL_INTERNAL_PORT, self.port)])
+            .ports(port_mappings)
             .bind(&host_config_path, &container_config_path, "rw");
 
         let handler = docker
@@ -162,11 +180,26 @@ impl AnvilConfig {
 
         let l1_rpc_url = KupDocker::build_http_url(&handler.container_name, ANVIL_INTERNAL_PORT)?;
 
+        // Build host-accessible URL from bound port
+        let l1_host_url = handler
+            .get_tcp_host_port(ANVIL_INTERNAL_PORT)
+            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
+            .transpose()
+            .context("Failed to build Anvil host URL")?;
+
+        tracing::info!(
+            container_id = %handler.container_id,
+            container_name = %handler.container_name,
+            ?l1_host_url,
+            "Anvil container started"
+        );
+
         Ok(AnvilHandler {
             container_id: handler.container_id,
             container_name: handler.container_name,
             account_infos,
             l1_rpc_url,
+            l1_host_url,
         })
     }
 }
@@ -178,6 +211,7 @@ impl Default for AnvilConfig {
             container_name: "kupcake-anvil".to_string(),
             host: "0.0.0.0".to_string(),
             port: DEFAULT_PORT,
+            host_port: Some(0), // Let OS pick an available port
             block_time: 12,
             fork_url: None,
             timestamp: None,

@@ -30,16 +30,31 @@ pub struct OpRethBuilder {
     pub container_name: String,
     /// Host for the HTTP RPC endpoint.
     pub host: String,
-    /// Port for the HTTP JSON-RPC server.
+    /// Port for the HTTP JSON-RPC server (container port).
     pub http_port: u16,
-    /// Port for the WebSocket JSON-RPC server.
+    /// Port for the WebSocket JSON-RPC server (container port).
     pub ws_port: u16,
-    /// Port for the authenticated Engine API (used by kona-node).
+    /// Port for the authenticated Engine API (container port, used by kona-node).
     pub authrpc_port: u16,
-    /// Port for P2P discovery.
+    /// Port for P2P discovery (container port).
     pub discovery_port: u16,
-    /// Port for metrics.
+    /// Port for metrics (container port).
     pub metrics_port: u16,
+    /// Host port for HTTP JSON-RPC. If None, not published to host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_host_port: Option<u16>,
+    /// Host port for WebSocket JSON-RPC. If None, not published to host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ws_host_port: Option<u16>,
+    /// Host port for authenticated Engine API. If None, not published to host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authrpc_host_port: Option<u16>,
+    /// Host port for P2P discovery. If None, not published to host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_host_port: Option<u16>,
+    /// Host port for metrics. If None, not published to host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_host_port: Option<u16>,
     /// Extra arguments to pass to op-reth.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -61,6 +76,12 @@ impl Default for OpRethBuilder {
             authrpc_port: DEFAULT_AUTHRPC_PORT,
             discovery_port: DEFAULT_DISCOVERY_PORT,
             metrics_port: DEFAULT_METRICS_PORT,
+            // Default: publish HTTP and WS to host (port 0 = OS picks), others internal only
+            http_host_port: Some(0),
+            ws_host_port: Some(0),
+            authrpc_host_port: None,
+            discovery_host_port: None,
+            metrics_host_port: None,
             extra_args: Vec::new(),
         }
     }
@@ -72,12 +93,16 @@ pub struct OpRethHandler {
     pub container_id: String,
     /// Docker container name.
     pub container_name: String,
-    /// The HTTP RPC URL for the L2 execution client.
+    /// The HTTP RPC URL for the L2 execution client (internal Docker network).
     pub http_rpc_url: Url,
-    /// The WebSocket RPC URL for the L2 execution client.
+    /// The WebSocket RPC URL for the L2 execution client (internal Docker network).
     pub ws_rpc_url: Url,
-    /// The authenticated RPC URL for Engine API (used by kona-node).
+    /// The authenticated RPC URL for Engine API (internal Docker network, used by kona-node).
     pub authrpc_url: Url,
+    /// The HTTP RPC URL accessible from host (if published). None if not published.
+    pub http_host_url: Option<Url>,
+    /// The WebSocket RPC URL accessible from host (if published). None if not published.
+    pub ws_host_url: Option<Url>,
 }
 
 impl OpRethBuilder {
@@ -103,18 +128,22 @@ impl OpRethBuilder {
         .extra_args(self.extra_args.clone())
         .build();
 
-        self.docker_image.pull(docker).await?;
+        // Build port mappings only for ports that should be published to host
+        let port_mappings: Vec<PortMapping> = [
+            PortMapping::tcp_optional(self.http_port, self.http_host_port),
+            PortMapping::tcp_optional(self.ws_port, self.ws_host_port),
+            PortMapping::tcp_optional(self.authrpc_port, self.authrpc_host_port),
+            PortMapping::tcp_optional(self.metrics_port, self.metrics_host_port),
+            PortMapping::tcp_optional(self.discovery_port, self.discovery_host_port),
+            PortMapping::udp_optional(self.discovery_port, self.discovery_host_port),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
 
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
-            .ports([
-                PortMapping::tcp_same(self.http_port),
-                PortMapping::tcp_same(self.ws_port),
-                PortMapping::tcp_same(self.authrpc_port),
-                PortMapping::tcp_same(self.metrics_port),
-                PortMapping::tcp_same(self.discovery_port),
-                PortMapping::udp_same(self.discovery_port),
-            ])
+            .ports(port_mappings)
             .bind(host_config_path, &container_config_path, "rw");
 
         let handler = docker
@@ -129,15 +158,31 @@ impl OpRethBuilder {
             .await
             .context("Failed to start op-reth container")?;
 
-        tracing::info!(
-            container_id = %handler.container_id,
-            container_name = %handler.container_name,
-            "op-reth container started"
-        );
-
+        // Build internal Docker network URLs
         let http_rpc_url = KupDocker::build_http_url(&handler.container_name, self.http_port)?;
         let ws_rpc_url = KupDocker::build_ws_url(&handler.container_name, self.ws_port)?;
         let authrpc_url = KupDocker::build_http_url(&handler.container_name, self.authrpc_port)?;
+
+        // Build host-accessible URLs from bound ports
+        let http_host_url = handler
+            .get_tcp_host_port(self.http_port)
+            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
+            .transpose()
+            .context("Failed to build HTTP host URL")?;
+
+        let ws_host_url = handler
+            .get_tcp_host_port(self.ws_port)
+            .map(|port| Url::parse(&format!("ws://localhost:{}/", port)))
+            .transpose()
+            .context("Failed to build WebSocket host URL")?;
+
+        tracing::info!(
+            container_id = %handler.container_id,
+            container_name = %handler.container_name,
+            ?http_host_url,
+            ?ws_host_url,
+            "op-reth container started"
+        );
 
         Ok(OpRethHandler {
             container_id: handler.container_id,
@@ -145,6 +190,8 @@ impl OpRethBuilder {
             http_rpc_url,
             ws_rpc_url,
             authrpc_url,
+            http_host_url,
+            ws_host_url,
         })
     }
 }

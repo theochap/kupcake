@@ -27,11 +27,22 @@ pub struct PrometheusConfig {
     /// Host for the Prometheus server.
     pub host: String,
 
-    /// Port for the Prometheus server.
+    /// Port for the Prometheus server (container port).
     pub port: u16,
+
+    /// Host port for Prometheus. If None, not published to host. If Some(0), OS picks port.
+    #[serde(
+        default = "default_prometheus_host_port",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub host_port: Option<u16>,
 
     /// Scrape interval in seconds.
     pub scrape_interval: u64,
+}
+
+fn default_prometheus_host_port() -> Option<u16> {
+    Some(0) // Let OS pick an available port
 }
 
 /// Default Docker image for Prometheus.
@@ -49,6 +60,7 @@ impl Default for PrometheusConfig {
             container_name: "kupcake-prometheus".to_string(),
             host: "0.0.0.0".to_string(),
             port: DEFAULT_PROMETHEUS_PORT,
+            host_port: Some(0), // Let OS pick an available port
             scrape_interval: 15,
         }
     }
@@ -66,14 +78,25 @@ pub struct GrafanaConfig {
     /// Host for the Grafana server.
     pub host: String,
 
-    /// Port for the Grafana server.
+    /// Port for the Grafana server (container port).
     pub port: u16,
+
+    /// Host port for Grafana. If None, not published to host. If Some(0), OS picks port.
+    #[serde(
+        default = "default_grafana_host_port",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub host_port: Option<u16>,
 
     /// Admin username.
     pub admin_user: String,
 
     /// Admin password.
     pub admin_password: String,
+}
+
+fn default_grafana_host_port() -> Option<u16> {
+    Some(0) // Let OS pick an available port
 }
 
 /// Default Docker image for Grafana.
@@ -91,6 +114,7 @@ impl Default for GrafanaConfig {
             container_name: "kupcake-grafana".to_string(),
             host: "0.0.0.0".to_string(),
             port: DEFAULT_GRAFANA_PORT,
+            host_port: Some(0), // Let OS pick an available port
             admin_user: "admin".to_string(),
             admin_password: "admin".to_string(),
         }
@@ -125,8 +149,11 @@ pub struct PrometheusHandler {
     pub container_id: String,
     pub container_name: String,
 
-    /// The URL for the Prometheus server.
+    /// The URL for the Prometheus server (internal Docker network).
     pub url: Url,
+
+    /// The URL accessible from host (if published). None if not published.
+    pub host_url: Option<Url>,
 }
 
 /// Handler for Grafana.
@@ -134,8 +161,11 @@ pub struct GrafanaHandler {
     pub container_id: String,
     pub container_name: String,
 
-    /// The URL for the Grafana server.
+    /// The URL for the Grafana server (internal Docker network).
     pub url: Url,
+
+    /// The URL accessible from host (if published). None if not published.
+    pub host_url: Option<Url>,
 }
 
 /// Handler for the complete monitoring stack.
@@ -332,9 +362,15 @@ providers:
 
         self.prometheus.docker_image.pull(docker).await?;
 
+        // Build port mappings only for ports that should be published to host
+        let port_mappings: Vec<PortMapping> =
+            PortMapping::tcp_optional(self.prometheus.port, self.prometheus.host_port)
+                .into_iter()
+                .collect();
+
         let service_config = ServiceConfig::new(self.prometheus.docker_image.clone())
             .cmd(cmd)
-            .ports([PortMapping::tcp_same(self.prometheus.port)])
+            .ports(port_mappings)
             .bind_str(format!(
                 "{}:{}:ro",
                 host_config_path.join("prometheus.yml").display(),
@@ -353,19 +389,28 @@ providers:
             .await
             .context("Failed to start Prometheus container")?;
 
+        // Build internal Docker network URL
+        let url = KupDocker::build_http_url(&handler.container_name, self.prometheus.port)?;
+
+        // Build host-accessible URL from bound port
+        let host_url = handler
+            .get_tcp_host_port(self.prometheus.port)
+            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
+            .transpose()
+            .context("Failed to build Prometheus host URL")?;
+
         tracing::info!(
             container_id = %handler.container_id,
             container_name = %handler.container_name,
+            ?host_url,
             "Prometheus container started"
         );
-
-        let url = Url::parse(&format!("http://localhost:{}/", self.prometheus.port))
-            .context("Failed to parse Prometheus URL")?;
 
         Ok(PrometheusHandler {
             container_id: handler.container_id,
             container_name: handler.container_name,
             url,
+            host_url,
         })
     }
 
@@ -390,8 +435,14 @@ providers:
 
         self.grafana.docker_image.pull(docker).await?;
 
+        // Build port mappings only for ports that should be published to host
+        let port_mappings: Vec<PortMapping> =
+            PortMapping::tcp_optional(GRAFANA_INTERNAL_PORT, self.grafana.host_port)
+                .into_iter()
+                .collect();
+
         let service_config = ServiceConfig::new(self.grafana.docker_image.clone())
-            .ports([PortMapping::tcp(GRAFANA_INTERNAL_PORT, self.grafana.port)])
+            .ports(port_mappings)
             .bind_str(format!(
                 "{}:/etc/grafana/provisioning:ro",
                 grafana_provisioning_path.display()
@@ -410,19 +461,28 @@ providers:
             .await
             .context("Failed to start Grafana container")?;
 
+        // Build internal Docker network URL
+        let url = KupDocker::build_http_url(&handler.container_name, GRAFANA_INTERNAL_PORT)?;
+
+        // Build host-accessible URL from bound port
+        let host_url = handler
+            .get_tcp_host_port(GRAFANA_INTERNAL_PORT)
+            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
+            .transpose()
+            .context("Failed to build Grafana host URL")?;
+
         tracing::info!(
             container_id = %handler.container_id,
             container_name = %handler.container_name,
+            ?host_url,
             "Grafana container started"
         );
-
-        let url = Url::parse(&format!("http://localhost:{}/", self.grafana.port))
-            .context("Failed to parse Grafana URL")?;
 
         Ok(GrafanaHandler {
             container_id: handler.container_id,
             container_name: handler.container_name,
             url,
+            host_url,
         })
     }
 

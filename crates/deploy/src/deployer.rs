@@ -213,6 +213,38 @@ impl Deployer {
 
         tracing::info!("✓ Deployment complete!");
         tracing::info!("");
+        tracing::info!("=== Host-accessible endpoints (curl from your terminal) ===");
+        if let Some(ref url) = anvil.l1_host_url {
+            tracing::info!("L1 (Anvil) RPC:       {}", url);
+        }
+        if let Some(ref url) = l2_stack.op_reth.http_host_url {
+            tracing::info!("L2 (op-reth) HTTP:    {}", url);
+        }
+        if let Some(ref url) = l2_stack.op_reth.ws_host_url {
+            tracing::info!("L2 (op-reth) WS:      {}", url);
+        }
+        if let Some(ref url) = l2_stack.kona_node.rpc_host_url {
+            tracing::info!("L2 (kona-node) RPC:   {}", url);
+        }
+        if let Some(ref url) = l2_stack.kona_node.metrics_host_url {
+            tracing::info!("L2 (kona-node) Metrics: {}", url);
+        }
+        if let Some(ref url) = l2_stack.op_batcher.rpc_host_url {
+            tracing::info!("L2 (op-batcher) RPC:  {}", url);
+        }
+        if let Some(ref url) = l2_stack.op_batcher.metrics_host_url {
+            tracing::info!("L2 (op-batcher) Metrics: {}", url);
+        }
+        if let Some(ref mon) = monitoring {
+            if let Some(ref url) = mon.prometheus.host_url {
+                tracing::info!("Prometheus:           {}", url);
+            }
+            if let Some(ref url) = mon.grafana.host_url {
+                tracing::info!("Grafana:              {}", url);
+            }
+        }
+        tracing::info!("");
+        tracing::info!("=== Internal Docker network endpoints ===");
         tracing::info!("L1 (Anvil) RPC:       {}", anvil.l1_rpc_url);
         tracing::info!("L2 (op-reth) HTTP:    {}", l2_stack.op_reth.http_rpc_url);
         tracing::info!("L2 (op-reth) WS:      {}", l2_stack.op_reth.ws_rpc_url);
@@ -220,11 +252,6 @@ impl Deployer {
         tracing::info!("Op Batcher RPC:       {}", l2_stack.op_batcher.rpc_url);
         tracing::info!("Op Proposer RPC:      {}", l2_stack.op_proposer.rpc_url);
         tracing::info!("Op Challenger RPC:    {}", l2_stack.op_challenger.rpc_url);
-
-        if let Some(ref mon) = monitoring {
-            tracing::info!("Prometheus:           {}", mon.prometheus.url);
-            tracing::info!("Grafana:              {}", mon.grafana.url);
-        }
 
         tracing::info!("");
 

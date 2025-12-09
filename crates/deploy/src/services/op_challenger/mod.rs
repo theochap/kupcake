@@ -29,10 +29,16 @@ pub struct OpChallengerBuilder {
     pub container_name: String,
     /// Host for the RPC endpoint.
     pub host: String,
-    /// Port for the op-challenger RPC server.
+    /// Port for the op-challenger RPC server (container port).
     pub rpc_port: u16,
-    /// Port for metrics.
+    /// Port for metrics (container port).
     pub metrics_port: u16,
+    /// Host port for RPC. If None, not published to host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rpc_host_port: Option<u16>,
+    /// Host port for metrics. If None, not published to host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_host_port: Option<u16>,
     /// Extra arguments to pass to op-challenger.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -52,6 +58,8 @@ impl Default for OpChallengerBuilder {
             host: "0.0.0.0".to_string(),
             rpc_port: DEFAULT_RPC_PORT,
             metrics_port: DEFAULT_METRICS_PORT,
+            rpc_host_port: Some(0),
+            metrics_host_port: Some(0),
             extra_args: Vec::new(),
         }
     }
@@ -114,12 +122,18 @@ impl OpChallengerBuilder {
 
         self.docker_image.pull(docker).await?;
 
+        // Build port mappings only for ports that should be published to host
+        let port_mappings: Vec<PortMapping> = [
+            PortMapping::tcp_optional(self.rpc_port, self.rpc_host_port),
+            PortMapping::tcp_optional(self.metrics_port, self.metrics_host_port),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
-            .ports([
-                PortMapping::tcp_same(self.rpc_port),
-                PortMapping::tcp_same(self.metrics_port),
-            ])
+            .ports(port_mappings)
             .bind(host_config_path, &container_config_path, "rw");
 
         let handler = docker

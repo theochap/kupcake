@@ -50,6 +50,10 @@ pub struct PortMapping {
 }
 
 impl PortMapping {
+    pub fn display_container_with_protocol(&self) -> String {
+        format!("{}/{}", self.container_port, self.protocol.as_str())
+    }
+
     /// Create a new TCP port mapping.
     pub fn tcp(container_port: u16, host_port: u16) -> Self {
         Self {
@@ -76,6 +80,20 @@ impl PortMapping {
     /// Create a UDP port mapping where container and host ports are the same.
     pub fn udp_same(port: u16) -> Self {
         Self::udp(port, port)
+    }
+
+    /// Create an optional TCP port mapping.
+    /// If `host_port` is `Some(port)`, creates a mapping to that port.
+    /// If `host_port` is `None`, returns `None` (port not published).
+    pub fn tcp_optional(container_port: u16, host_port: Option<u16>) -> Option<Self> {
+        host_port.map(|hp| Self::tcp(container_port, hp))
+    }
+
+    /// Create an optional UDP port mapping.
+    /// If `host_port` is `Some(port)`, creates a mapping to that port.
+    /// If `host_port` is `None`, returns `None` (port not published).
+    pub fn udp_optional(container_port: u16, host_port: Option<u16>) -> Option<Self> {
+        host_port.map(|hp| Self::udp(container_port, hp))
     }
 }
 
@@ -173,6 +191,23 @@ pub struct ServiceHandler {
     pub container_id: String,
     /// The container name.
     pub container_name: String,
+    /// Map of container port to actual bound host port.
+    /// Key format: "port/protocol" (e.g., "8545/tcp")
+    pub bound_ports: HashMap<String, u16>,
+}
+
+impl ServiceHandler {
+    /// Get the bound host port for a container port.
+    /// Returns None if the port is not published to the host.
+    pub fn get_host_port(&self, container_port: u16, protocol: &str) -> Option<u16> {
+        let key = format!("{}/{}", container_port, protocol);
+        self.bound_ports.get(&key).copied()
+    }
+
+    /// Get the bound host port for a TCP container port.
+    pub fn get_tcp_host_port(&self, container_port: u16) -> Option<u16> {
+        self.get_host_port(container_port, "tcp")
+    }
 }
 
 /// A Docker image reference with image name and tag.
@@ -537,12 +572,62 @@ impl KupDocker {
         }
     }
 
+    /// Get the bound host ports for a running container.
+    ///
+    /// Returns a map of "container_port/protocol" -> actual_host_port.
+    pub async fn get_container_bound_ports(
+        &self,
+        container_id: &str,
+    ) -> Result<HashMap<String, u16>> {
+        let inspect = self
+            .docker
+            .inspect_container(container_id, None)
+            .await
+            .context("Failed to inspect container for port bindings")?;
+
+        // This closure parses the container bindings and returns a map of container port to host port.
+        let parse_bindings = |container_port: String, bindings: Vec<PortBinding>| {
+            bindings.into_iter().filter_map(move |binding| {
+                binding.host_port.and_then(|host_port| {
+                    // Skip empty strings (these are unbound ports)
+                    if host_port.is_empty() {
+                        return None;
+                    }
+                    let host_port = host_port.parse::<u16>().ok()?;
+                    Some((container_port.to_string(), host_port))
+                })
+            })
+        };
+
+        // This closure inspects the container ports and returns a map of container port to host port.
+        let inspect_ports = |ports: HashMap<String, Option<Vec<PortBinding>>>| {
+            ports
+                .into_iter()
+                .filter_map(|(container_port, maybe_bindings)| {
+                    maybe_bindings.map(|bindings| parse_bindings(container_port, bindings))
+                })
+                .flatten()
+                .collect::<HashMap<String, u16>>()
+        };
+
+        let bound_ports = inspect
+            .network_settings
+            .and_then(|network_settings| network_settings.ports)
+            .map(inspect_ports)
+            .unwrap_or_default();
+
+        tracing::debug!(?bound_ports, "Container bound ports");
+
+        Ok(bound_ports)
+    }
+
     /// Start a service container with the given configuration.
     ///
     /// This method handles:
     /// - Building port bindings from the port mappings
     /// - Creating the host config with network mode and binds
     /// - Creating and starting the container
+    /// - Retrieving the actual bound host ports
     pub async fn start_service(
         &mut self,
         container_name: &str,
@@ -552,30 +637,45 @@ impl KupDocker {
         let image = config.image.pull(self).await?;
 
         // Build port bindings from the port mappings
+        // When host_port is 0, we pass an empty string to let Docker assign a random available port
         let port_bindings: HashMap<String, Option<Vec<PortBinding>>> = config
             .port_mappings
             .iter()
             .map(|pm| {
                 (
-                    format!("{}/{}", pm.container_port, pm.protocol.as_str()),
+                    pm.display_container_with_protocol(),
                     Some(vec![PortBinding {
                         host_ip: Some("0.0.0.0".to_string()),
-                        host_port: Some(pm.host_port.to_string()),
+                        // Empty string tells Docker to assign a random port
+                        host_port: if pm.host_port == 0 {
+                            Some(String::new())
+                        } else {
+                            Some(pm.host_port.to_string())
+                        },
                     }]),
                 )
             })
             .collect();
 
+        // Build exposed ports (required for port bindings to work)
+        let exposed_ports: HashMap<String, HashMap<(), ()>> = config
+            .port_mappings
+            .iter()
+            .map(|pm| (pm.display_container_with_protocol(), HashMap::new()))
+            .collect();
+
         let host_config = HostConfig {
-            port_bindings: Some(port_bindings),
-            binds: if config.binds.is_empty() {
-                None
-            } else {
-                Some(config.binds)
-            },
+            port_bindings: Some(port_bindings.clone()),
+            binds: (!config.binds.is_empty()).then_some(config.binds),
             network_mode: Some(self.network_id.clone()),
             ..Default::default()
         };
+
+        tracing::debug!(
+            ?port_bindings,
+            ?exposed_ports,
+            "Creating container with port bindings"
+        );
 
         let container_config = Config {
             image: Some(image),
@@ -583,6 +683,7 @@ impl KupDocker {
             cmd: config.cmd,
             env: config.env,
             user: config.user,
+            exposed_ports: Some(exposed_ports),
             host_config: Some(host_config),
             ..Default::default()
         };
@@ -591,9 +692,19 @@ impl KupDocker {
             .create_and_start_container(container_name, container_config, options)
             .await?;
 
+        // Get the actual bound host ports after container is started
+        let bound_ports = self.get_container_bound_ports(&container_id).await?;
+
+        tracing::debug!(
+            container_name,
+            ?bound_ports,
+            "Container started with bound ports"
+        );
+
         Ok(ServiceHandler {
             container_id,
             container_name: container_name.to_string(),
+            bound_ports,
         })
     }
 
