@@ -266,6 +266,11 @@ pub struct KupDocker {
     pub config: KupDockerConfig,
 }
 
+pub struct CreateAndStartContainerResult {
+    pub container_id: String,
+    pub logs: String,
+}
+
 impl Drop for KupDocker {
     fn drop(&mut self) {
         if self.config.no_cleanup {
@@ -485,7 +490,7 @@ impl KupDocker {
         container_name: &str,
         config: Config<String>,
         options: CreateAndStartContainerOptions,
-    ) -> Result<String> {
+    ) -> Result<CreateAndStartContainerResult> {
         tracing::trace!(container_name, "Creating container");
         // Create the container
         let container = self
@@ -516,9 +521,15 @@ impl KupDocker {
             self.wait_for_container(&container_id).await?;
         }
 
+        let logs = if options.collect_logs {
+            self.collect_container_logs(&container_id, true, true).await
+        } else {
+            String::new()
+        };
+
         self.containers.insert(container_id.to_string());
 
-        Ok(container_id)
+        Ok(CreateAndStartContainerResult { container_id, logs })
     }
 
     async fn stop_and_remove_container_static(
@@ -621,21 +632,13 @@ impl KupDocker {
         Ok(bound_ports)
     }
 
-    /// Start a service container with the given configuration.
-    ///
-    /// This method handles:
-    /// - Building port bindings from the port mappings
-    /// - Creating the host config with network mode and binds
-    /// - Creating and starting the container
-    /// - Retrieving the actual bound host ports
-    pub async fn start_service(
-        &mut self,
-        container_name: &str,
+    /// Build Docker container configuration from a ServiceConfig.
+    fn build_container_config(
+        &self,
         config: ServiceConfig,
-        options: CreateAndStartContainerOptions,
-    ) -> Result<ServiceHandler> {
-        let image = config.image.pull(self).await?;
-
+        image: String,
+        options: ContainerConfigOptions,
+    ) -> Config<String> {
         // Build port bindings from the port mappings
         // When host_port is 0, we pass an empty string to let Docker assign a random available port
         let port_bindings: HashMap<String, Option<Vec<PortBinding>>> = config
@@ -664,36 +667,56 @@ impl KupDocker {
             .map(|pm| (pm.display_container_with_protocol(), HashMap::new()))
             .collect();
 
+        let has_port_bindings = !port_bindings.is_empty();
+
         let host_config = HostConfig {
-            port_bindings: Some(port_bindings.clone()),
+            port_bindings: has_port_bindings.then_some(port_bindings),
             binds: (!config.binds.is_empty()).then_some(config.binds),
             network_mode: Some(self.network_id.clone()),
+            auto_remove: options.auto_remove.then_some(true),
             ..Default::default()
         };
 
-        tracing::debug!(
-            ?port_bindings,
-            ?exposed_ports,
-            "Creating container with port bindings"
-        );
-
-        let container_config = Config {
+        Config {
             image: Some(image),
             entrypoint: config.entrypoint,
             cmd: config.cmd,
             env: config.env,
             user: config.user,
-            exposed_ports: Some(exposed_ports),
+            exposed_ports: has_port_bindings.then_some(exposed_ports),
             host_config: Some(host_config),
             ..Default::default()
-        };
+        }
+    }
 
-        let container_id = self
+    /// Start a service container with the given configuration.
+    ///
+    /// This method handles:
+    /// - Building port bindings from the port mappings
+    /// - Creating the host config with network mode and binds
+    /// - Creating and starting the container
+    /// - Retrieving the actual bound host ports
+    pub async fn start_service(
+        &mut self,
+        container_name: &str,
+        config: ServiceConfig,
+        options: CreateAndStartContainerOptions,
+    ) -> Result<ServiceHandler> {
+        let image = config.image.pull(self).await?;
+
+        let container_config =
+            self.build_container_config(config, image, ContainerConfigOptions::default());
+
+        tracing::debug!(container_name, "Creating service container");
+
+        let create_and_start_result = self
             .create_and_start_container(container_name, container_config, options)
             .await?;
 
         // Get the actual bound host ports after container is started
-        let bound_ports = self.get_container_bound_ports(&container_id).await?;
+        let bound_ports = self
+            .get_container_bound_ports(&create_and_start_result.container_id)
+            .await?;
 
         tracing::debug!(
             container_name,
@@ -702,7 +725,7 @@ impl KupDocker {
         );
 
         Ok(ServiceHandler {
-            container_id,
+            container_id: create_and_start_result.container_id,
             container_name: container_name.to_string(),
             bound_ports,
         })
@@ -721,12 +744,85 @@ impl KupDocker {
         Url::parse(&format!("ws://{}:{}/", container_name, port))
             .context("Failed to parse WebSocket URL")
     }
+
+    /// Run a command in a temporary container and capture its stdout.
+    ///
+    /// The container is automatically removed after the command completes.
+    /// Returns the stdout output as a string.
+    pub async fn run_command(&mut self, config: ServiceConfig) -> Result<String> {
+        let image = config.image.pull(self).await?;
+
+        // Generate a unique container name
+        let container_name = format!(
+            "kupcake-cmd-{}",
+            names::Generator::default().next().unwrap_or_default()
+        );
+
+        let container_config = self.build_container_config(
+            config,
+            image,
+            ContainerConfigOptions { auto_remove: false },
+        );
+
+        tracing::trace!(container_name, "Running command in container");
+
+        // Create and start the container, then wait for it to complete
+        let create_and_start_result = self
+            .create_and_start_container(
+                &container_name,
+                container_config,
+                CreateAndStartContainerOptions {
+                    stream_logs: true,
+                    wait_for_container: true,
+                    start_options: None,
+                    collect_logs: true,
+                },
+            )
+            .await
+            .context("Failed to run command container")?;
+
+        // Check exit code and collect stderr if failed
+        Ok(create_and_start_result.logs)
+    }
+
+    /// Collect logs from a container.
+    ///
+    /// Returns the collected log output as a string.
+    async fn collect_container_logs(
+        &self,
+        container_id: &str,
+        stdout: bool,
+        stderr: bool,
+    ) -> String {
+        let logs_options = LogsOptions::<String> {
+            stdout,
+            stderr,
+            follow: false,
+            ..Default::default()
+        };
+
+        let mut log_stream = self.docker.logs(container_id, Some(logs_options));
+        let mut output = String::new();
+
+        while let Some(log_result) = log_stream.next().await {
+            match log_result {
+                Ok(log) => output.push_str(&log.to_string()),
+                Err(e) => {
+                    tracing::warn!("Error reading container logs: {}", e);
+                    break;
+                }
+            }
+        }
+
+        output
+    }
 }
 
 pub struct CreateAndStartContainerOptions {
     pub start_options: Option<StartContainerOptions<String>>,
     pub wait_for_container: bool,
     pub stream_logs: bool,
+    pub collect_logs: bool,
 }
 
 impl Default for CreateAndStartContainerOptions {
@@ -735,6 +831,14 @@ impl Default for CreateAndStartContainerOptions {
             start_options: None,
             wait_for_container: false,
             stream_logs: false,
+            collect_logs: false,
         }
     }
+}
+
+/// Options for building a container configuration.
+#[derive(Default)]
+struct ContainerConfigOptions {
+    /// Whether to auto-remove the container after it exits.
+    auto_remove: bool,
 }

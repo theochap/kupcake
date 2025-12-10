@@ -2,7 +2,7 @@
 
 mod cmd;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use anyhow::Context;
 use k256::ecdsa::SigningKey;
@@ -56,11 +56,6 @@ impl P2pKeypair {
             private_key,
             node_id,
         }
-    }
-
-    /// Build an enode URL using this keypair, container name, and port.
-    pub fn to_enode(&self, container_name: &str, port: u16) -> String {
-        format!("enode://{}@{}:{}", self.node_id, container_name, port)
     }
 }
 
@@ -129,8 +124,76 @@ pub struct KonaNodeHandler {
     pub rpc_host_url: Option<Url>,
     /// The metrics URL accessible from host (if published). None if not published.
     pub metrics_host_url: Option<Url>,
-    /// The node's P2P enode URL for peer discovery (enode://nodeID@container:port).
-    pub p2p_enode: String,
+}
+
+/// Foundry Docker image used for cast commands.
+const FOUNDRY_IMAGE: &str = "ghcr.io/foundry-rs/foundry";
+const FOUNDRY_TAG: &str = "latest";
+
+/// Response from `opp2p_self` RPC endpoint.
+#[derive(Debug, Deserialize)]
+struct PeerENR {
+    /// The ENR (Ethereum Node Record) for the node.
+    #[serde(rename = "ENR")]
+    enr: Option<String>,
+}
+
+impl KonaNodeHandler {
+    /// Query the node's ENR from the `opp2p_self` RPC endpoint.
+    ///
+    /// This uses cast inside a Docker container connected to the same network
+    /// to query the internal RPC URL.
+    ///
+    /// Retries with exponential backoff since the node may not be ready
+    /// to respond immediately after starting.
+    pub async fn fetch_enr(&self, docker: &mut KupDocker) -> Result<String, anyhow::Error> {
+        let rpc_url = self.rpc_url.to_string();
+
+        // Retry with exponential backoff
+        let max_retries = 10;
+        let mut delay = Duration::from_millis(500);
+        let max_delay = Duration::from_secs(5);
+
+        for attempt in 1..=max_retries {
+            let config = ServiceConfig::new(DockerImage::new(FOUNDRY_IMAGE, FOUNDRY_TAG))
+                .cmd(vec![
+                    "rpc".to_string(),
+                    "opp2p_self".to_string(),
+                    "--rpc-url".to_string(),
+                    rpc_url.clone(),
+                ])
+                .entrypoint(vec!["cast".to_string()])
+                .env(vec!["FOUNDRY_DISABLE_NIGHTLY_WARNING=1".to_string()]);
+
+            match docker.run_command(config).await {
+                Ok(output) => {
+                    let peer_info: PeerENR = serde_json::from_str(&output)
+                        .context("Failed to parse opp2p_self response")?;
+
+                    if let Some(enr) = peer_info.enr {
+                        return Ok(enr);
+                    }
+                    return Err(anyhow::anyhow!("Node returned empty ENR"));
+                }
+                Err(e) => {
+                    if attempt == max_retries {
+                        return Err(e).context("Failed to fetch ENR after max retries");
+                    }
+                    tracing::debug!(
+                        attempt,
+                        max_retries,
+                        error = %e,
+                        delay_ms = delay.as_millis(),
+                        "Failed to fetch ENR, retrying..."
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay = std::cmp::min(delay * 2, max_delay);
+                }
+            }
+        }
+
+        unreachable!()
+    }
 }
 
 impl KonaNodeBuilder {
@@ -143,7 +206,7 @@ impl KonaNodeBuilder {
     /// * `op_reth_handler` - Handler for the paired op-reth instance
     /// * `role` - Role of this node (sequencer or validator)
     /// * `jwt_filename` - The JWT secret filename (shared with op-reth)
-    /// * `bootnodes` - List of enode URLs for P2P peer discovery
+    /// * `bootnodes` - List of ENR strings for P2P peer discovery
     pub async fn start(
         &self,
         docker: &mut KupDocker,
@@ -158,18 +221,17 @@ impl KonaNodeBuilder {
 
         // Generate a P2P keypair for this node
         let p2p_keypair = P2pKeypair::generate();
-        let p2p_enode = p2p_keypair.to_enode(&self.container_name, DEFAULT_P2P_PORT);
 
         tracing::debug!(
             container_name = %self.container_name,
             node_id = %p2p_keypair.node_id,
-            enode = %p2p_enode,
             "Generated P2P keypair for kona-node"
         );
 
         let mut cmd_builder = KonaNodeCmdBuilder::new(
             anvil_handler.l1_rpc_url.to_string(),
             op_reth_handler.authrpc_url.to_string(),
+            self.container_name.clone(),
             container_config_path.join("rollup.json"),
             container_config_path.join(jwt_filename),
         )
@@ -243,7 +305,6 @@ impl KonaNodeBuilder {
             container_name = %handler.container_name,
             ?rpc_host_url,
             ?metrics_host_url,
-            enode = %p2p_enode,
             "kona-node container started"
         );
 
@@ -253,7 +314,6 @@ impl KonaNodeBuilder {
             rpc_url,
             rpc_host_url,
             metrics_host_url,
-            p2p_enode,
             p2p_port: DEFAULT_P2P_PORT,
         })
     }

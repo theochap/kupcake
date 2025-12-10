@@ -117,6 +117,7 @@ impl OpDeployerConfig {
                     stream_logs: true,
                     wait_for_container: true,
                     start_options: None,
+                    collect_logs: false,
                 },
             )
             .await
@@ -367,10 +368,8 @@ impl OpDeployerConfig {
                 format_address(&accounts.l1_proxy_admin_owner.address);
             chain.roles.l2_proxy_admin_owner =
                 format_address(&accounts.l2_proxy_admin_owner.address);
-            chain.roles.system_config_owner =
-                format_address(&accounts.system_config_owner.address);
-            chain.roles.unsafe_block_signer =
-                format_address(&accounts.unsafe_block_signer.address);
+            chain.roles.system_config_owner = format_address(&accounts.system_config_owner.address);
+            chain.roles.unsafe_block_signer = format_address(&accounts.unsafe_block_signer.address);
 
             chain.roles.batcher = format_address(&accounts.batcher.address);
             chain.roles.proposer = format_address(&accounts.proposer.address);

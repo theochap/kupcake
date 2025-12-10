@@ -17,6 +17,7 @@ pub struct KonaNodeCmdBuilder {
     rollup_cfg: String,
     jwt_secret: String,
     rpc_port: u16,
+    p2p_ip: String,
     p2p_port: u16,
     metrics_enabled: bool,
     metrics_port: u16,
@@ -33,6 +34,7 @@ impl KonaNodeCmdBuilder {
     pub fn new(
         l1_rpc: impl Into<String>,
         l2_rpc: impl Into<String>,
+        p2p_ip: impl Into<String>,
         rollup_cfg: impl AsRef<Path>,
         jwt_secret: impl AsRef<Path>,
     ) -> Self {
@@ -51,6 +53,7 @@ impl KonaNodeCmdBuilder {
             no_discovery: false,
             bootnodes: Vec::new(),
             p2p_priv_key: None,
+            p2p_ip: p2p_ip.into(),
             unsafe_block_signer_key: None,
             extra_args: Vec::new(),
         }
@@ -150,7 +153,7 @@ impl KonaNodeCmdBuilder {
             cmd.push(self.l1_beacon);
         }
 
-        cmd.push("--l1.slot-duration".to_string());
+        cmd.push("--l1.slot-duration-override".to_string());
         cmd.push(self.l1_slot_duration.to_string());
 
         // L2 configuration
@@ -181,6 +184,13 @@ impl KonaNodeCmdBuilder {
             cmd.push(p2p_priv_key);
         }
 
+        // P2P listen IP
+        cmd.push("--p2p.listen.ip".to_string());
+        cmd.push(self.p2p_ip.clone());
+
+        cmd.push("--p2p.advertise.ip".to_string());
+        cmd.push(self.p2p_ip);
+
         // P2P port
         cmd.push("--p2p.listen.tcp".to_string());
         cmd.push(self.p2p_port.to_string());
@@ -204,6 +214,7 @@ mod tests {
         let cmd = KonaNodeCmdBuilder::new(
             "http://localhost:8545",
             "http://localhost:9551",
+            "0.0.0.0",
             "/data/rollup.json",
             "/data/jwt.hex",
         )

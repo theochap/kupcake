@@ -161,14 +161,19 @@ impl L2NodeBuilder {
             )
             .await?;
 
-        // Add this node's enode to the peer list for subsequent nodes
-        // The enode is generated deterministically from the P2P keypair
+        // Fetch this node's ENR via the opp2p_self RPC endpoint and add it to the peer list
+        // for subsequent nodes to use as a bootnode
+        let enr = kona_node_handler
+            .fetch_enr(docker)
+            .await
+            .context("Failed to fetch ENR from kona-node")?;
+
         tracing::info!(
             container_name = %kona_node_handler.container_name,
-            enode = %kona_node_handler.p2p_enode,
-            "Added kona-node enode to peer list"
+            enr = %enr,
+            "Added kona-node ENR to peer list"
         );
-        peer_enrs.push(kona_node_handler.p2p_enode.clone());
+        peer_enrs.push(enr);
 
         Ok(L2NodeHandler {
             role: self.role,
