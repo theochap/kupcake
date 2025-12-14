@@ -97,6 +97,37 @@ impl PortMapping {
     }
 }
 
+/// An exposed port within the Docker network (container-to-container).
+#[derive(Debug, Clone)]
+pub struct ExposedPort {
+    /// The port inside the container.
+    pub port: u16,
+    /// The protocol (tcp or udp).
+    pub protocol: PortProtocol,
+}
+
+impl ExposedPort {
+    /// Create a new TCP exposed port.
+    pub fn tcp(port: u16) -> Self {
+        Self {
+            port,
+            protocol: PortProtocol::Tcp,
+        }
+    }
+
+    /// Create a new UDP exposed port.
+    pub fn udp(port: u16) -> Self {
+        Self {
+            port,
+            protocol: PortProtocol::Udp,
+        }
+    }
+
+    fn display_with_protocol(&self) -> String {
+        format!("{}/{}", self.port, self.protocol.as_str())
+    }
+}
+
 /// Configuration for starting a service container.
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
@@ -106,8 +137,12 @@ pub struct ServiceConfig {
     pub entrypoint: Option<Vec<String>>,
     /// The command to run in the container.
     pub cmd: Option<Vec<String>>,
-    /// Port mappings from container to host.
-    pub port_mappings: Vec<PortMapping>,
+    /// Ports exposed within the Docker network (for container-to-container communication).
+    /// These ports are accessible by other containers on the same network.
+    pub exposed_ports: Vec<ExposedPort>,
+    /// Port bindings from container to host (published to host machine).
+    /// These ports are accessible from the host machine.
+    pub port_bindings: Vec<PortMapping>,
     /// Volume binds (host:container:mode format).
     pub binds: Vec<String>,
     /// Environment variables.
@@ -123,7 +158,8 @@ impl ServiceConfig {
             image,
             entrypoint: None,
             cmd: None,
-            port_mappings: Vec::new(),
+            exposed_ports: Vec::new(),
+            port_bindings: Vec::new(),
             binds: Vec::new(),
             env: None,
             user: None,
@@ -142,15 +178,27 @@ impl ServiceConfig {
         self
     }
 
-    /// Add a port mapping.
-    pub fn port(mut self, mapping: PortMapping) -> Self {
-        self.port_mappings.push(mapping);
+    /// Add a port to expose within the Docker network (container-to-container).
+    pub fn expose(mut self, port: ExposedPort) -> Self {
+        self.exposed_ports.push(port);
         self
     }
 
-    /// Add multiple port mappings.
+    /// Add multiple ports to expose within the Docker network.
+    pub fn expose_ports(mut self, ports: impl IntoIterator<Item = ExposedPort>) -> Self {
+        self.exposed_ports.extend(ports);
+        self
+    }
+
+    /// Add a port binding (publish to host).
+    pub fn port(mut self, mapping: PortMapping) -> Self {
+        self.port_bindings.push(mapping);
+        self
+    }
+
+    /// Add multiple port bindings (publish to host).
     pub fn ports(mut self, mappings: impl IntoIterator<Item = PortMapping>) -> Self {
-        self.port_mappings.extend(mappings);
+        self.port_bindings.extend(mappings);
         self
     }
 
@@ -639,10 +687,10 @@ impl KupDocker {
         image: String,
         options: ContainerConfigOptions,
     ) -> Config<String> {
-        // Build port bindings from the port mappings
+        // Build port bindings from the port_bindings (ports published to host)
         // When host_port is 0, we pass an empty string to let Docker assign a random available port
         let port_bindings: HashMap<String, Option<Vec<PortBinding>>> = config
-            .port_mappings
+            .port_bindings
             .iter()
             .map(|pm| {
                 (
@@ -660,14 +708,24 @@ impl KupDocker {
             })
             .collect();
 
-        // Build exposed ports (required for port bindings to work)
-        let exposed_ports: HashMap<String, HashMap<(), ()>> = config
-            .port_mappings
+        // Build exposed ports: combine explicit exposed_ports and ports from port_bindings
+        // Exposed ports are required for port bindings to work, and also allow
+        // container-to-container communication on the Docker network
+        let mut exposed_ports: HashMap<String, HashMap<(), ()>> = config
+            .exposed_ports
             .iter()
-            .map(|pm| (pm.display_container_with_protocol(), HashMap::new()))
+            .map(|ep| (ep.display_with_protocol(), HashMap::new()))
             .collect();
 
+        // Also expose ports that have bindings (required for bindings to work)
+        for pm in &config.port_bindings {
+            exposed_ports
+                .entry(pm.display_container_with_protocol())
+                .or_insert_with(HashMap::new);
+        }
+
         let has_port_bindings = !port_bindings.is_empty();
+        let has_exposed_ports = !exposed_ports.is_empty();
 
         let host_config = HostConfig {
             port_bindings: has_port_bindings.then_some(port_bindings),
@@ -683,7 +741,7 @@ impl KupDocker {
             cmd: config.cmd,
             env: config.env,
             user: config.user,
-            exposed_ports: has_port_bindings.then_some(exposed_ports),
+            exposed_ports: has_exposed_ports.then_some(exposed_ports),
             host_config: Some(host_config),
             ..Default::default()
         }

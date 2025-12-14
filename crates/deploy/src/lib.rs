@@ -16,7 +16,7 @@ mod fs;
 pub mod services;
 
 pub use docker::{
-    DockerImage, KupDocker, KupDockerConfig, PortMapping, PortProtocol, ServiceConfig,
+    DockerImage, ExposedPort, KupDocker, KupDockerConfig, PortMapping, PortProtocol, ServiceConfig,
     ServiceHandler,
 };
 pub use services::{

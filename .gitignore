@@ -1,5 +1,7 @@
 # JWT Secret (sensitive!)
 jwttoken/
+config/jwt.hex
+jwt.hex
 
 # Environment files with secrets
 .env

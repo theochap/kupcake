@@ -18,7 +18,12 @@ pub struct OpRethCmdBuilder {
     authrpc_jwtsecret: String,
     metrics: Option<String>,
     discovery_disabled: bool,
+    discovery_port: u16,
+    listen_port: u16,
     sequencer_http: Option<String>,
+    bootnodes: Vec<String>,
+    nat_dns: Option<String>,
+    net_if: Option<String>,
     log_format: String,
     extra_args: Vec<String>,
 }
@@ -31,16 +36,21 @@ impl OpRethCmdBuilder {
             datadir: datadir.as_ref().display().to_string(),
             http_addr: "0.0.0.0".to_string(),
             http_port: 8545,
-            http_api: "eth,net,web3,debug,trace,txpool".to_string(),
+            http_api: "eth,net,web3,debug,trace,txpool,admin".to_string(),
             ws_addr: "0.0.0.0".to_string(),
             ws_port: 8546,
-            ws_api: "eth,net,web3,debug,trace,txpool".to_string(),
+            ws_api: "eth,net,web3,debug,trace,txpool,admin".to_string(),
             authrpc_addr: "0.0.0.0".to_string(),
             authrpc_port: 8551,
             authrpc_jwtsecret: String::new(),
             metrics: None,
-            discovery_disabled: true,
+            discovery_disabled: false,
+            discovery_port: 30303,
+            listen_port: 30303,
             sequencer_http: None,
+            bootnodes: Vec::new(),
+            nat_dns: None,
+            net_if: None,
             log_format: "terminal".to_string(),
             extra_args: Vec::new(),
         }
@@ -49,6 +59,12 @@ impl OpRethCmdBuilder {
     /// Set the HTTP RPC address.
     pub fn http_addr(mut self, addr: impl Into<String>) -> Self {
         self.http_addr = addr.into();
+        self
+    }
+
+    /// Set the NAT DNS.
+    pub fn nat_dns(mut self, dns: impl Into<String>) -> Self {
+        self.nat_dns = Some(dns.into());
         self
     }
 
@@ -82,6 +98,12 @@ impl OpRethCmdBuilder {
         self
     }
 
+    /// Set the listen port.
+    pub fn listen_port(mut self, port: u16) -> Self {
+        self.listen_port = port;
+        self
+    }
+
     /// Set the Auth RPC address.
     pub fn authrpc_addr(mut self, addr: impl Into<String>) -> Self {
         self.authrpc_addr = addr.into();
@@ -112,9 +134,26 @@ impl OpRethCmdBuilder {
         self
     }
 
+    /// Set the P2P discovery port.
+    pub fn discovery_port(mut self, port: u16) -> Self {
+        self.discovery_port = port;
+        self
+    }
+
     /// Set the sequencer HTTP URL.
     pub fn sequencer_http(mut self, url: impl Into<String>) -> Self {
         self.sequencer_http = Some(url.into());
+        self
+    }
+
+    /// Set the bootnodes (enode URLs) for P2P peer discovery.
+    pub fn bootnodes(mut self, bootnodes: Vec<String>) -> Self {
+        self.bootnodes = bootnodes;
+        self
+    }
+
+    pub fn net_if(mut self, net_if: Option<String>) -> Self {
+        self.net_if = net_if;
         self
     }
 
@@ -161,7 +200,19 @@ impl OpRethCmdBuilder {
             self.authrpc_port.to_string(),
             "--authrpc.jwtsecret".to_string(),
             self.authrpc_jwtsecret,
+            "--port".to_string(),
+            self.listen_port.to_string(),
+            "-vvvvvv".to_string(),
         ];
+
+        if let Some(nat_dns) = self.nat_dns {
+            cmd.push(format!("--nat=dns:{}", nat_dns));
+        }
+
+        if let Some(net_if) = self.net_if {
+            cmd.push("--net-if.experimental".to_string());
+            cmd.push(net_if);
+        }
 
         if let Some(metrics) = self.metrics {
             cmd.push("--metrics".to_string());
@@ -170,6 +221,16 @@ impl OpRethCmdBuilder {
 
         if self.discovery_disabled {
             cmd.push("--disable-discovery".to_string());
+        } else {
+            cmd.push("--discovery.port".to_string());
+            cmd.push(self.discovery_port.to_string());
+            cmd.push("--enable-discv5-discovery".to_string());
+            cmd.push("--disable-discv4-discovery".to_string());
+        }
+
+        if !self.bootnodes.is_empty() {
+            cmd.push("--trusted-peers".to_string());
+            cmd.push(self.bootnodes.join(","));
         }
 
         if let Some(sequencer_http) = self.sequencer_http {

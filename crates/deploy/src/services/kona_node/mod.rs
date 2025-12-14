@@ -103,7 +103,7 @@ impl Default for KonaNodeBuilder {
             rpc_port: DEFAULT_RPC_PORT,
             metrics_port: DEFAULT_METRICS_PORT,
             rpc_host_port: Some(0),
-            metrics_host_port: None,
+            metrics_host_port: Some(0),
             l1_slot_duration: 12,
             extra_args: Vec::new(),
         }
@@ -244,16 +244,13 @@ impl KonaNodeBuilder {
         .p2p_priv_key(&p2p_keypair.private_key)
         .extra_args(self.extra_args.clone());
 
-        // Only sequencers need the block signer key
-        if role == L2NodeRole::Sequencer {
-            cmd_builder = cmd_builder.unsafe_block_signer_key(
-                anvil_handler
-                    .accounts
-                    .unsafe_block_signer
-                    .private_key
-                    .clone(),
-            );
-        }
+        cmd_builder = cmd_builder.unsafe_block_signer_key(
+            anvil_handler
+                .accounts
+                .unsafe_block_signer
+                .private_key
+                .clone(),
+        );
 
         let cmd = cmd_builder.build();
 
@@ -277,7 +274,6 @@ impl KonaNodeBuilder {
                 &self.container_name,
                 service_config,
                 CreateAndStartContainerOptions {
-                    stream_logs: true,
                     ..Default::default()
                 },
             )

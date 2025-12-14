@@ -49,15 +49,17 @@ impl L2StackBuilder {
         // First node is the sequencer
         nodes.push(L2NodeBuilder::sequencer());
 
-        // Additional nodes are validators
-        for i in 1..count {
-            nodes.push(L2NodeBuilder::validator().with_name_suffix(&format!("validator-{}", i)));
-        }
-
-        Self {
+        let mut nodes = Self {
             nodes,
             ..Default::default()
+        };
+
+        // Additional nodes are validators
+        for _ in 1..count {
+            nodes = nodes.add_validator();
         }
+
+        nodes
     }
 
     /// Add a validator node to the stack.
@@ -98,9 +100,10 @@ impl L2StackBuilder {
         // Start all L2 nodes (each generates its own JWT)
         let mut node_handlers: Vec<L2NodeHandler> = Vec::with_capacity(self.nodes.len());
 
-        // Mutable list of peer ENRs for P2P discovery
+        // Mutable lists of peer ENRs for P2P discovery
         // Each node adds its ENR after starting, so subsequent nodes can use it as a bootnode
-        let mut peer_enrs: Vec<String> = Vec::new();
+        let mut kona_node_enrs: Vec<String> = Vec::new();
+        let mut op_reth_enrs: Vec<String> = Vec::new();
 
         // Start the sequencer first (it must be first)
         tracing::info!("Starting sequencer node (op-reth + kona-node)...");
@@ -110,7 +113,8 @@ impl L2StackBuilder {
                 &host_config_path,
                 anvil_handler,
                 None,
-                &mut peer_enrs,
+                &mut kona_node_enrs,
+                &mut op_reth_enrs,
             )
             .await
             .context("Failed to start sequencer node")?;
@@ -128,7 +132,8 @@ impl L2StackBuilder {
                     &host_config_path,
                     anvil_handler,
                     Some(&sequencer_rpc),
-                    &mut peer_enrs,
+                    &mut kona_node_enrs,
+                    &mut op_reth_enrs,
                 )
                 .await
                 .context(format!("Failed to start validator node {}", i + 1))?;
@@ -137,7 +142,8 @@ impl L2StackBuilder {
         }
 
         tracing::info!(
-            peer_count = peer_enrs.len(),
+            kona_node_peer_count = kona_node_enrs.len(),
+            op_reth_peer_count = op_reth_enrs.len(),
             "All L2 nodes started with P2P peer discovery"
         );
 
