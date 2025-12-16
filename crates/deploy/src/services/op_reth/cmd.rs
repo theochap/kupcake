@@ -202,11 +202,10 @@ impl OpRethCmdBuilder {
             self.authrpc_jwtsecret,
             "--port".to_string(),
             self.listen_port.to_string(),
-            "-vvvvvv".to_string(),
         ];
 
         if let Some(nat_dns) = self.nat_dns {
-            cmd.push(format!("--nat=dns:{}", nat_dns));
+            cmd.push(format!("--nat=extaddr:{}", nat_dns));
         }
 
         if let Some(net_if) = self.net_if {

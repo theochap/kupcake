@@ -72,7 +72,7 @@ pub struct OpRethBuilder {
 /// Default Docker image for op-reth.
 pub const DEFAULT_DOCKER_IMAGE: &str = "op-reth";
 /// Default Docker tag for op-reth.
-pub const DEFAULT_DOCKER_TAG: &str = "nightly";
+pub const DEFAULT_DOCKER_TAG: &str = "local";
 
 impl Default for OpRethBuilder {
     fn default() -> Self {
@@ -230,7 +230,7 @@ impl OpRethBuilder {
         .extra_args(self.extra_args.clone())
         .net_if(self.net_if.clone())
         .listen_port(self.listen_port)
-        .nat_dns(format!("{}:0", self.container_name.clone()))
+        .nat_dns(self.container_name.clone())
         .build();
 
         // Build port mappings only for ports that should be published to host
