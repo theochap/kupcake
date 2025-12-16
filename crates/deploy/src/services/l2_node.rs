@@ -131,15 +131,15 @@ impl L2NodeBuilder {
         host_config_path: &PathBuf,
         anvil_handler: &AnvilHandler,
         sequencer_rpc: Option<&Url>,
-        kona_node_enrs: &mut Vec<String>,
-        op_reth_enrs: &mut Vec<String>,
+        kona_node_enodes: &mut Vec<String>,
+        op_reth_enodes: &mut Vec<String>,
     ) -> Result<L2NodeHandler, anyhow::Error> {
         // Generate a unique JWT secret for this node pair
         // Use the op-reth container name as the node ID for uniqueness
         let jwt_filename =
             Self::write_jwt_secret(host_config_path, &self.op_reth.container_name).await?;
 
-        // Start op-reth first, passing existing op-reth ENRs as bootnodes
+        // Start op-reth first, passing existing op-reth enodes as bootnodes
         let op_reth_handler = self
             .op_reth
             .start(
@@ -147,26 +147,21 @@ impl L2NodeBuilder {
                 host_config_path,
                 sequencer_rpc,
                 &jwt_filename,
-                op_reth_enrs,
+                op_reth_enodes,
             )
             .await?;
 
-        // Fetch op-reth's enode via the admin_nodeInfo RPC endpoint and add it to the peer list
-        // for subsequent op-reth nodes to use as a bootnode
-        let op_reth_enr = op_reth_handler
-            .fetch_enode(docker)
-            .await
-            .context("Failed to fetch enode from op-reth")?;
-
+        // Add op-reth's precomputed enode to the peer list for subsequent nodes
+        let op_reth_enode = op_reth_handler.enode();
         tracing::info!(
             container_name = %op_reth_handler.container_name,
-            enr = %op_reth_enr,
+            enode = %op_reth_enode,
             "Added op-reth enode to peer list"
         );
-        op_reth_enrs.push(op_reth_enr);
+        op_reth_enodes.push(op_reth_enode);
 
         // Start kona-node with the appropriate mode, using the same JWT
-        // Pass the current kona-node ENRs as bootnodes
+        // Pass the current kona-node enodes as bootnodes
         let kona_node_handler = self
             .kona_node
             .start(
@@ -176,23 +171,18 @@ impl L2NodeBuilder {
                 &op_reth_handler,
                 self.role,
                 &jwt_filename,
-                kona_node_enrs,
+                kona_node_enodes,
             )
             .await?;
 
-        // Fetch kona-node's ENR via the opp2p_self RPC endpoint and add it to the peer list
-        // for subsequent kona-nodes to use as a bootnode
-        let kona_node_enr = kona_node_handler
-            .fetch_enr(docker)
-            .await
-            .context("Failed to fetch ENR from kona-node")?;
-
+        // Add kona-node's precomputed enode to the peer list for subsequent nodes
+        let kona_node_enode = kona_node_handler.enode();
         tracing::info!(
             container_name = %kona_node_handler.container_name,
-            enr = %kona_node_enr,
-            "Added kona-node ENR to peer list"
+            enode = %kona_node_enode,
+            "Added kona-node enode to peer list"
         );
-        kona_node_enrs.push(kona_node_enr);
+        kona_node_enodes.push(kona_node_enode);
 
         Ok(L2NodeHandler {
             role: self.role,

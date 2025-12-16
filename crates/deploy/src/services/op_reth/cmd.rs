@@ -24,6 +24,8 @@ pub struct OpRethCmdBuilder {
     bootnodes: Vec<String>,
     nat_dns: Option<String>,
     net_if: Option<String>,
+    /// P2P secret key (32 bytes hex-encoded) for deterministic node identity.
+    p2p_secret_key: Option<String>,
     log_format: String,
     extra_args: Vec<String>,
 }
@@ -51,9 +53,18 @@ impl OpRethCmdBuilder {
             bootnodes: Vec::new(),
             nat_dns: None,
             net_if: None,
+            p2p_secret_key: None,
             log_format: "terminal".to_string(),
             extra_args: Vec::new(),
         }
+    }
+
+    /// Set the P2P secret key for deterministic node identity.
+    ///
+    /// The key should be 32 bytes hex-encoded (64 hex chars).
+    pub fn p2p_secret_key(mut self, key: impl Into<String>) -> Self {
+        self.p2p_secret_key = Some(key.into());
+        self
     }
 
     /// Set the HTTP RPC address.
@@ -223,6 +234,8 @@ impl OpRethCmdBuilder {
         } else {
             cmd.push("--discovery.port".to_string());
             cmd.push(self.discovery_port.to_string());
+            cmd.push("--discovery.v5.port".to_string());
+            cmd.push(self.discovery_port.to_string());
             cmd.push("--enable-discv5-discovery".to_string());
             cmd.push("--disable-discv4-discovery".to_string());
         }
@@ -235,6 +248,11 @@ impl OpRethCmdBuilder {
         if let Some(sequencer_http) = self.sequencer_http {
             cmd.push("--rollup.sequencer-http".to_string());
             cmd.push(sequencer_http);
+        }
+
+        if let Some(p2p_secret_key) = self.p2p_secret_key {
+            cmd.push("--p2p-secret-key-hex".to_string());
+            cmd.push(p2p_secret_key);
         }
 
         cmd.push("--log.stdout.format".to_string());

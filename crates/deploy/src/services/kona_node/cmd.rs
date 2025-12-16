@@ -199,6 +199,7 @@ impl KonaNodeCmdBuilder {
         cmd.push("--rpc.port".to_string());
         cmd.push(self.rpc_port.to_string());
 
+        cmd.push("-vvvv".to_string());
         cmd.extend(self.extra_args);
 
         cmd

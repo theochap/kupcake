@@ -2,7 +2,7 @@
 
 mod cmd;
 
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,7 @@ pub use cmd::OpRethCmdBuilder;
 use crate::{
     ExposedPort,
     docker::{CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig},
+    services::kona_node::P2pKeypair,
 };
 
 /// Default ports for op-reth.
@@ -64,6 +65,10 @@ pub struct OpRethBuilder {
     /// Port for listen. If None, not published to host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listen_host_port: Option<u16>,
+    /// P2P secret key (32 bytes hex-encoded) for deterministic node identity.
+    /// If None, a random key will be generated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p2p_secret_key: Option<String>,
     /// Extra arguments to pass to op-reth.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -94,6 +99,7 @@ impl Default for OpRethBuilder {
             listen_host_port: None,
             discovery_host_port: None,
             net_if: None,
+            p2p_secret_key: None,
             extra_args: Vec::new(),
         }
     }
@@ -101,12 +107,16 @@ impl Default for OpRethBuilder {
 
 /// Handler for a running op-reth instance.
 pub struct OpRethHandler {
+    /// Port for P2P discovery (container port).
+    pub discovery_port: u16,
     /// Docker container ID.
     pub container_id: String,
     /// Docker container name.
     pub container_name: String,
     /// The P2P listen port (used for enode URL construction).
     pub listen_port: u16,
+    /// P2P keypair for this node (used for enode computation).
+    pub p2p_keypair: P2pKeypair,
     /// The HTTP RPC URL for the L2 execution client (internal Docker network).
     pub http_rpc_url: Url,
     /// The WebSocket RPC URL for the L2 execution client (internal Docker network).
@@ -119,72 +129,14 @@ pub struct OpRethHandler {
     pub ws_host_url: Option<Url>,
 }
 
-/// Foundry Docker image used for cast commands.
-const FOUNDRY_IMAGE: &str = "ghcr.io/foundry-rs/foundry";
-const FOUNDRY_TAG: &str = "latest";
-
-/// Response from `admin_nodeInfo` RPC endpoint.
-#[derive(Debug, Deserialize)]
-struct AdminNodeInfo {
-    /// The enode (Ethereum Node Record) for the node.
-    enode: Option<String>,
-}
-
 impl OpRethHandler {
-    /// Query the node's enode from the `admin_nodeInfo` RPC endpoint.
+    /// Returns the enode URL for this node using the container name as hostname.
     ///
-    /// This uses cast inside a Docker container connected to the same network
-    /// to query the internal RPC URL.
-    ///
-    /// Retries with exponential backoff since the node may not be ready
-    /// to respond immediately after starting.
-    pub async fn fetch_enode(&self, docker: &mut KupDocker) -> Result<String, anyhow::Error> {
-        let rpc_url = self.http_rpc_url.to_string();
-
-        // Retry with exponential backoff
-        let max_retries = 10;
-        let mut delay = Duration::from_millis(500);
-        let max_delay = Duration::from_secs(5);
-
-        for attempt in 1..=max_retries {
-            let config = ServiceConfig::new(DockerImage::new(FOUNDRY_IMAGE, FOUNDRY_TAG))
-                .cmd(vec![
-                    "rpc".to_string(),
-                    "admin_nodeInfo".to_string(),
-                    "--rpc-url".to_string(),
-                    rpc_url.clone(),
-                ])
-                .entrypoint(vec!["cast".to_string()])
-                .env(vec!["FOUNDRY_DISABLE_NIGHTLY_WARNING=1".to_string()]);
-
-            match docker.run_command(config).await {
-                Ok(output) => {
-                    let node_info: AdminNodeInfo = serde_json::from_str(&output)
-                        .context("Failed to parse admin_nodeInfo response")?;
-
-                    if let Some(enode) = node_info.enode {
-                        return Ok(enode);
-                    }
-                    return Err(anyhow::anyhow!("Node returned empty enode"));
-                }
-                Err(e) => {
-                    if attempt == max_retries {
-                        return Err(e).context("Failed to fetch enode after max retries");
-                    }
-                    tracing::debug!(
-                        attempt,
-                        max_retries,
-                        error = %e,
-                        delay_ms = delay.as_millis(),
-                        "Failed to fetch op-reth enode, retrying..."
-                    );
-                    tokio::time::sleep(delay).await;
-                    delay = std::cmp::min(delay * 2, max_delay);
-                }
-            }
-        }
-
-        unreachable!()
+    /// This computes the enode from the precomputed P2P keypair, so it's available
+    /// immediately after the container is started without querying the node.
+    pub fn enode(&self) -> String {
+        self.p2p_keypair
+            .to_enode(&self.container_name, self.discovery_port)
     }
 }
 
@@ -209,6 +161,19 @@ impl OpRethBuilder {
     ) -> Result<OpRethHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
+        // Create or use the provided P2P keypair
+        let p2p_keypair = match &self.p2p_secret_key {
+            Some(key) => P2pKeypair::from_private_key(key)
+                .context("Failed to create P2P keypair from provided secret key")?,
+            None => P2pKeypair::generate(),
+        };
+
+        tracing::debug!(
+            container_name = %self.container_name,
+            node_id = %p2p_keypair.node_id,
+            "Using P2P keypair for op-reth"
+        );
+
         // For sequencer nodes, point to self. For validators, point to the sequencer.
         let sequencer_http = sequencer_rpc
             .map(|url| url.to_string())
@@ -231,6 +196,7 @@ impl OpRethBuilder {
         .net_if(self.net_if.clone())
         .listen_port(self.listen_port)
         .nat_dns(self.container_name.clone())
+        .p2p_secret_key(&p2p_keypair.private_key)
         .build();
 
         // Build port mappings only for ports that should be published to host
@@ -304,6 +270,8 @@ impl OpRethBuilder {
             container_id: handler.container_id,
             container_name: handler.container_name,
             listen_port: self.listen_port,
+            discovery_port: self.discovery_port,
+            p2p_keypair,
             http_rpc_url,
             ws_rpc_url,
             authrpc_url,
