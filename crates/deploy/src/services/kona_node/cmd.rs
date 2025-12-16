@@ -67,7 +67,7 @@ impl KonaNodeCmdBuilder {
 
     /// Set the unsafe block signer key.
     pub fn unsafe_block_signer_key(mut self, key: Bytes) -> Self {
-        self.unsafe_block_signer_key = Some(key.into());
+        self.unsafe_block_signer_key = Some(key);
         self
     }
 

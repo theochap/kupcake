@@ -104,7 +104,7 @@ impl OpDeployerConfig {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
-            let metadata = std::fs::metadata(&host_config_path)
+            let metadata = std::fs::metadata(host_config_path)
                 .context("Failed to get metadata for host config path")?;
             service_config = service_config.user(format!("{}:{}", metadata.uid(), metadata.gid()));
         }

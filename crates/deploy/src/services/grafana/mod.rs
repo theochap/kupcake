@@ -331,7 +331,7 @@ providers:
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "json") {
+            if path.extension().is_some_and(|ext| ext == "json") {
                 let file_name = path.file_name().unwrap();
                 let dest_path = dashboards_dest.join(file_name);
                 tokio::fs::copy(&path, &dest_path)
@@ -512,12 +512,11 @@ providers:
             .await?;
 
         // Copy dashboards if source is provided
-        if let Some(dashboards_path) = dashboards_source {
-            if dashboards_path.exists() {
+        if let Some(dashboards_path) = dashboards_source
+            && dashboards_path.exists() {
                 self.copy_dashboards(&host_config_path, &dashboards_path)
                     .await?;
             }
-        }
 
         tracing::info!("Starting Prometheus...");
         let prometheus_handler = self.start_prometheus(docker, &host_config_path).await?;

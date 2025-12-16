@@ -25,14 +25,14 @@ impl FsHandler {
     // Create a docker host data directory if it doesn't exist
     // This ensures the bind mount has proper permissions
     pub fn create_host_config_directory(host_config_path: &PathBuf) -> anyhow::Result<()> {
-        std::fs::create_dir_all(&host_config_path)
+        std::fs::create_dir_all(host_config_path)
             .context("Failed to create docker host data directory")?;
         tracing::debug!(
             "Created docker host data directory: {}",
             host_config_path.display()
         );
 
-        Self::set_writable(&host_config_path)
+        Self::set_writable(host_config_path)
             .context("Failed to set permissions on docker host data directory")?;
 
         Ok(())
@@ -70,7 +70,7 @@ impl FsHandler {
         let path_watcher = path.clone();
         let mut watcher =
             notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
-                Ok(event) if (event.kind.is_create() || event.kind.is_modify()) && event.paths.iter().any(|p| *p == path_watcher) => {
+                Ok(event) if (event.kind.is_create() || event.kind.is_modify()) && event.paths.contains(&path_watcher) => {
                     tracing::debug!(event = ?event, path = ?path_watcher.display(), "File detected");
 
                     if let Err(e) = tx.send(Some(event.clone())) {

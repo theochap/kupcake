@@ -439,7 +439,7 @@ impl KupDocker {
 
         // Use the network ID from the response, or fall back to the network name
         let network_id = (!response.id.is_empty())
-            .then(|| response.id)
+            .then_some(response.id)
             .unwrap_or(network_name.to_string());
 
         tracing::trace!(network_id, "Docker network created");
@@ -721,7 +721,7 @@ impl KupDocker {
         for pm in &config.port_bindings {
             exposed_ports
                 .entry(pm.display_container_with_protocol())
-                .or_insert_with(HashMap::new);
+                .or_default();
         }
 
         let has_port_bindings = !port_bindings.is_empty();
@@ -876,6 +876,7 @@ impl KupDocker {
     }
 }
 
+#[derive(Default)]
 pub struct CreateAndStartContainerOptions {
     pub start_options: Option<StartContainerOptions<String>>,
     pub wait_for_container: bool,
@@ -883,16 +884,6 @@ pub struct CreateAndStartContainerOptions {
     pub collect_logs: bool,
 }
 
-impl Default for CreateAndStartContainerOptions {
-    fn default() -> Self {
-        Self {
-            start_options: None,
-            wait_for_container: false,
-            stream_logs: false,
-            collect_logs: false,
-        }
-    }
-}
 
 /// Options for building a container configuration.
 #[derive(Default)]
