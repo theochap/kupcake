@@ -147,9 +147,6 @@ impl L2StackBuilder {
             "All L2 nodes started with P2P peer discovery"
         );
 
-        // Give nodes a moment to initialize before starting batcher
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
         // Get references to the sequencer handlers for the remaining components
         let sequencer = &node_handlers[0];
 

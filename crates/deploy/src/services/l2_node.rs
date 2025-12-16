@@ -165,9 +165,6 @@ impl L2NodeBuilder {
         );
         op_reth_enrs.push(op_reth_enr);
 
-        // Give op-reth a moment to initialize before starting kona-node
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
         // Start kona-node with the appropriate mode, using the same JWT
         // Pass the current kona-node ENRs as bootnodes
         let kona_node_handler = self

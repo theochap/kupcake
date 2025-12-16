@@ -522,9 +522,6 @@ providers:
         tracing::info!("Starting Prometheus...");
         let prometheus_handler = self.start_prometheus(docker, &host_config_path).await?;
 
-        // Give Prometheus a moment to start
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
         tracing::info!("Starting Grafana...");
         let grafana_handler = self.start_grafana(docker, &host_config_path).await?;
 
