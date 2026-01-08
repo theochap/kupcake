@@ -15,11 +15,11 @@ use crate::{
     GRAFANA_DEFAULT_IMAGE, GRAFANA_DEFAULT_TAG, GrafanaConfig, KONA_NODE_DEFAULT_IMAGE,
     KONA_NODE_DEFAULT_TAG, KonaNodeBuilder, KupDockerConfig, L2NodeBuilder, L2NodeRole,
     L2StackBuilder, MonitoringConfig, OP_BATCHER_DEFAULT_IMAGE, OP_BATCHER_DEFAULT_TAG,
-    OP_CHALLENGER_DEFAULT_IMAGE, OP_CHALLENGER_DEFAULT_TAG, OP_DEPLOYER_DEFAULT_IMAGE,
-    OP_DEPLOYER_DEFAULT_TAG, OP_PROPOSER_DEFAULT_IMAGE, OP_PROPOSER_DEFAULT_TAG,
-    OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG, OpBatcherBuilder, OpChallengerBuilder,
-    OpDeployerConfig, OpProposerBuilder, OpRethBuilder, PROMETHEUS_DEFAULT_IMAGE,
-    PROMETHEUS_DEFAULT_TAG, PrometheusConfig,
+    OP_CHALLENGER_DEFAULT_IMAGE, OP_CHALLENGER_DEFAULT_TAG, OP_CONDUCTOR_DEFAULT_IMAGE,
+    OP_CONDUCTOR_DEFAULT_TAG, OP_DEPLOYER_DEFAULT_IMAGE, OP_DEPLOYER_DEFAULT_TAG,
+    OP_PROPOSER_DEFAULT_IMAGE, OP_PROPOSER_DEFAULT_TAG, OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG,
+    OpBatcherBuilder, OpChallengerBuilder, OpConductorBuilder, OpDeployerConfig, OpProposerBuilder,
+    OpRethBuilder, PROMETHEUS_DEFAULT_IMAGE, PROMETHEUS_DEFAULT_TAG, PrometheusConfig,
 };
 
 /// Block header information from an RPC response.
@@ -121,8 +121,10 @@ pub struct DeployerBuilder {
     monitoring_enabled: bool,
     /// Block time in seconds for both L1 (Anvil) and L2 derivation.
     block_time: u64,
-    /// Number of L2 nodes (1 sequencer + N-1 validators).
+    /// Number of L2 nodes (sequencers + validators).
     l2_node_count: usize,
+    /// Number of sequencer nodes.
+    sequencer_count: usize,
 
     // Docker images
     anvil_docker: DockerImage,
@@ -131,6 +133,7 @@ pub struct DeployerBuilder {
     op_batcher_docker: DockerImage,
     op_proposer_docker: DockerImage,
     op_challenger_docker: DockerImage,
+    op_conductor_docker: DockerImage,
     op_deployer_docker: DockerImage,
     prometheus_docker: DockerImage,
     grafana_docker: DockerImage,
@@ -150,6 +153,7 @@ impl DeployerBuilder {
             monitoring_enabled: true,
             block_time: 12,
             l2_node_count: 1,
+            sequencer_count: 1,
             anvil_docker: DockerImage::new(ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG),
             op_reth_docker: DockerImage::new(OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG),
             kona_node_docker: DockerImage::new(KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG),
@@ -161,6 +165,10 @@ impl DeployerBuilder {
             op_challenger_docker: DockerImage::new(
                 OP_CHALLENGER_DEFAULT_IMAGE,
                 OP_CHALLENGER_DEFAULT_TAG,
+            ),
+            op_conductor_docker: DockerImage::new(
+                OP_CONDUCTOR_DEFAULT_IMAGE,
+                OP_CONDUCTOR_DEFAULT_TAG,
             ),
             op_deployer_docker: DockerImage::new(
                 OP_DEPLOYER_DEFAULT_IMAGE,
@@ -182,14 +190,23 @@ impl DeployerBuilder {
 
     /// Set the number of L2 nodes to deploy.
     ///
-    /// The first node is always the sequencer, additional nodes are validators.
+    /// This is the total number of nodes (sequencers + validators).
     /// Must be at least 1. Defaults to 1 (sequencer only).
     pub fn l2_node_count(mut self, count: usize) -> Self {
-        assert!(
-            count >= 1,
-            "At least one L2 node (the sequencer) is required"
-        );
+        assert!(count >= 1, "At least one L2 node is required");
         self.l2_node_count = count;
+        self
+    }
+
+    /// Set the number of sequencer nodes.
+    ///
+    /// If more than 1 sequencer is specified, op-conductor will be deployed
+    /// to coordinate the sequencers using Raft consensus.
+    /// Must be at least 1 and at most equal to l2_node_count.
+    /// Defaults to 1 (single sequencer).
+    pub fn sequencer_count(mut self, count: usize) -> Self {
+        assert!(count >= 1, "At least one sequencer is required");
+        self.sequencer_count = count;
         self
     }
 
@@ -264,6 +281,18 @@ impl DeployerBuilder {
     /// Set Docker tag for op-challenger.
     pub fn op_challenger_tag(mut self, tag: impl Into<String>) -> Self {
         self.op_challenger_docker.tag = tag.into();
+        self
+    }
+
+    /// Set Docker image for op-conductor.
+    pub fn op_conductor_image(mut self, image: impl Into<String>) -> Self {
+        self.op_conductor_docker.image = image.into();
+        self
+    }
+
+    /// Set Docker tag for op-conductor.
+    pub fn op_conductor_tag(mut self, tag: impl Into<String>) -> Self {
+        self.op_conductor_docker.tag = tag.into();
         self
     }
 
@@ -498,45 +527,71 @@ impl DeployerBuilder {
             },
 
             l2_stack: {
-                // Build L2 nodes: first is sequencer, rest are validators
-                let mut nodes = Vec::with_capacity(self.l2_node_count);
+                // Validate sequencer count
+                let sequencer_count = self.sequencer_count.min(self.l2_node_count);
+                let validator_count = self.l2_node_count.saturating_sub(sequencer_count);
 
-                // Sequencer node (always first)
-                nodes.push(L2NodeBuilder {
-                    role: L2NodeRole::Sequencer,
-                    op_reth: OpRethBuilder {
-                        docker_image: self.op_reth_docker.clone(),
-                        container_name: format!("{}-op-reth", network_name),
-                        ..Default::default()
-                    },
-                    kona_node: KonaNodeBuilder {
-                        docker_image: self.kona_node_docker.clone(),
-                        container_name: format!("{}-kona-node", network_name),
-                        l1_slot_duration: self.block_time,
-                        ..Default::default()
-                    },
-                });
-
-                // Validator nodes (if any)
-                for i in 1..self.l2_node_count {
-                    nodes.push(L2NodeBuilder {
-                        role: L2NodeRole::Validator,
+                // Build sequencer nodes
+                let mut sequencers = Vec::with_capacity(sequencer_count);
+                for i in 0..sequencer_count {
+                    let suffix = if i == 0 {
+                        String::new()
+                    } else {
+                        format!("-sequencer-{}", i)
+                    };
+                    sequencers.push(L2NodeBuilder {
+                        role: L2NodeRole::Sequencer,
                         op_reth: OpRethBuilder {
                             docker_image: self.op_reth_docker.clone(),
-                            container_name: format!("{}-op-reth-validator-{}", network_name, i),
+                            container_name: format!("{}-op-reth{}", network_name, suffix),
                             ..Default::default()
                         },
                         kona_node: KonaNodeBuilder {
                             docker_image: self.kona_node_docker.clone(),
-                            container_name: format!("{}-kona-node-validator-{}", network_name, i),
+                            container_name: format!("{}-kona-node{}", network_name, suffix),
                             l1_slot_duration: self.block_time,
                             ..Default::default()
                         },
                     });
                 }
 
+                // Build validator nodes
+                let mut validators = Vec::with_capacity(validator_count);
+                for i in 0..validator_count {
+                    validators.push(L2NodeBuilder {
+                        role: L2NodeRole::Validator,
+                        op_reth: OpRethBuilder {
+                            docker_image: self.op_reth_docker.clone(),
+                            container_name: format!("{}-op-reth-validator-{}", network_name, i + 1),
+                            ..Default::default()
+                        },
+                        kona_node: KonaNodeBuilder {
+                            docker_image: self.kona_node_docker.clone(),
+                            container_name: format!(
+                                "{}-kona-node-validator-{}",
+                                network_name,
+                                i + 1
+                            ),
+                            l1_slot_duration: self.block_time,
+                            ..Default::default()
+                        },
+                    });
+                }
+
+                // Create op-conductor config if multiple sequencers
+                let op_conductor = if sequencer_count > 1 {
+                    Some(OpConductorBuilder {
+                        docker_image: self.op_conductor_docker,
+                        container_name: format!("{}-op-conductor", network_name),
+                        ..Default::default()
+                    })
+                } else {
+                    None
+                };
+
                 L2StackBuilder {
-                    nodes,
+                    sequencers,
+                    validators,
                     op_batcher: OpBatcherBuilder {
                         docker_image: self.op_batcher_docker,
                         container_name: format!("{}-op-batcher", network_name),
@@ -552,6 +607,7 @@ impl DeployerBuilder {
                         container_name: format!("{}-op-challenger", network_name),
                         ..Default::default()
                     },
+                    op_conductor,
                 }
             },
 

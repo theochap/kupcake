@@ -10,6 +10,7 @@ pub mod kona_node;
 pub mod l2_node;
 pub mod op_batcher;
 pub mod op_challenger;
+pub mod op_conductor;
 pub mod op_deployer;
 pub mod op_proposer;
 pub mod op_reth;
@@ -38,6 +39,10 @@ pub use op_batcher::{
 pub use op_challenger::{
     DEFAULT_DOCKER_IMAGE as OP_CHALLENGER_DEFAULT_IMAGE,
     DEFAULT_DOCKER_TAG as OP_CHALLENGER_DEFAULT_TAG, OpChallengerBuilder, OpChallengerHandler,
+};
+pub use op_conductor::{
+    DEFAULT_DOCKER_IMAGE as OP_CONDUCTOR_DEFAULT_IMAGE,
+    DEFAULT_DOCKER_TAG as OP_CONDUCTOR_DEFAULT_TAG, OpConductorBuilder, OpConductorHandler,
 };
 pub use op_deployer::{
     DEFAULT_DOCKER_IMAGE as OP_DEPLOYER_DEFAULT_IMAGE,

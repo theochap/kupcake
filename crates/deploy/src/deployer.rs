@@ -13,22 +13,29 @@ pub const KUPCONF_FILENAME: &str = "Kupcake.toml";
 
 /// Handler for the complete L2 stack setup.
 pub struct L2StackHandler {
-    /// Handlers for all L2 nodes (sequencer first, then validators).
-    pub nodes: Vec<L2NodeHandler>,
+    /// Handlers for sequencer nodes.
+    pub sequencers: Vec<L2NodeHandler>,
+    /// Handlers for validator nodes.
+    pub validators: Vec<L2NodeHandler>,
     pub op_batcher: OpBatcherHandler,
     pub op_proposer: OpProposerHandler,
     pub op_challenger: OpChallengerHandler,
 }
 
 impl L2StackHandler {
-    /// Get the sequencer node handler (the first node).
-    pub fn sequencer(&self) -> &L2NodeHandler {
-        &self.nodes[0]
+    /// Get the primary sequencer node handler (the first sequencer).
+    pub fn primary_sequencer(&self) -> &L2NodeHandler {
+        &self.sequencers[0]
     }
 
-    /// Get validator node handlers (all nodes except the first).
-    pub fn validators(&self) -> Vec<&L2NodeHandler> {
-        self.nodes.iter().skip(1).collect()
+    /// Get the total number of L2 nodes (sequencers + validators).
+    pub fn node_count(&self) -> usize {
+        self.sequencers.len() + self.validators.len()
+    }
+
+    /// Iterate over all nodes (sequencers first, then validators).
+    pub fn all_nodes(&self) -> impl Iterator<Item = &L2NodeHandler> {
+        self.sequencers.iter().chain(self.validators.iter())
     }
 }
 
@@ -115,20 +122,19 @@ impl Deployer {
 
         let mut targets = Vec::new();
 
-        // Add metrics targets for all L2 nodes (sequencer + validators)
-        for (i, node) in l2_stack.nodes.iter().enumerate() {
-            let role = if i == 0 { "sequencer" } else { "validator" };
+        // Add metrics targets for sequencer nodes
+        for (i, node) in l2_stack.sequencers.iter().enumerate() {
             let suffix = if i == 0 {
                 String::new()
             } else {
-                format!("-{}", i)
+                format!("-sequencer-{}", i)
             };
 
             targets.push(MetricsTarget {
                 job_name: format!("op-reth{}", suffix),
                 container_name: node.op_reth.container_name.clone(),
                 port: RETH_METRICS_PORT,
-                service_label: format!("op-reth-{}", role),
+                service_label: "op-reth-sequencer".to_string(),
                 layer_label: "execution".to_string(),
             });
 
@@ -136,7 +142,28 @@ impl Deployer {
                 job_name: format!("kona-node{}", suffix),
                 container_name: node.kona_node.container_name.clone(),
                 port: KONA_METRICS_PORT,
-                service_label: format!("kona-node-{}", role),
+                service_label: "kona-node-sequencer".to_string(),
+                layer_label: "consensus".to_string(),
+            });
+        }
+
+        // Add metrics targets for validator nodes
+        for (i, node) in l2_stack.validators.iter().enumerate() {
+            let suffix = format!("-validator-{}", i + 1);
+
+            targets.push(MetricsTarget {
+                job_name: format!("op-reth{}", suffix),
+                container_name: node.op_reth.container_name.clone(),
+                port: RETH_METRICS_PORT,
+                service_label: "op-reth-validator".to_string(),
+                layer_label: "execution".to_string(),
+            });
+
+            targets.push(MetricsTarget {
+                job_name: format!("kona-node{}", suffix),
+                container_name: node.kona_node.container_name.clone(),
+                port: KONA_METRICS_PORT,
+                service_label: "kona-node-validator".to_string(),
                 layer_label: "consensus".to_string(),
             });
         }
@@ -208,9 +235,11 @@ impl Deployer {
             tracing::info!("L1 contracts already deployed, skipping deployment");
         }
 
-        let node_count = self.l2_stack.nodes.len();
+        let node_count = self.l2_stack.node_count();
         tracing::info!(
             node_count,
+            sequencer_count = self.l2_stack.sequencers.len(),
+            validator_count = self.l2_stack.validators.len(),
             "Starting L2 stack ({} node(s) + op-batcher + op-proposer + op-challenger)...",
             node_count
         );
@@ -250,17 +279,42 @@ impl Deployer {
             tracing::info!("L1 (Anvil) RPC:       {}", url);
         }
 
-        // Log endpoints for all L2 nodes
-        for (i, node) in l2_stack.nodes.iter().enumerate() {
-            let role = if i == 0 { "sequencer" } else { "validator" };
+        // Log endpoints for sequencer nodes
+        for (i, node) in l2_stack.sequencers.iter().enumerate() {
+            let label = if i == 0 {
+                "sequencer".to_string()
+            } else {
+                format!("sequencer-{}", i)
+            };
             if let Some(ref url) = node.op_reth.http_host_url {
-                tracing::info!("L2 {} (op-reth) HTTP:    {}", role, url);
+                tracing::info!("L2 {} (op-reth) HTTP:    {}", label, url);
             }
             if let Some(ref url) = node.op_reth.ws_host_url {
-                tracing::info!("L2 {} (op-reth) WS:      {}", role, url);
+                tracing::info!("L2 {} (op-reth) WS:      {}", label, url);
             }
             if let Some(ref url) = node.kona_node.rpc_host_url {
-                tracing::info!("L2 {} (kona-node) RPC:   {}", role, url);
+                tracing::info!("L2 {} (kona-node) RPC:   {}", label, url);
+            }
+
+            // Log op-conductor endpoints if present
+            if let Some(ref conductor) = node.op_conductor {
+                if let Some(ref url) = conductor.rpc_host_url {
+                    tracing::info!("L2 {} (op-conductor) RPC:     {}", label, url);
+                }
+            }
+        }
+
+        // Log endpoints for validator nodes
+        for (i, node) in l2_stack.validators.iter().enumerate() {
+            let label = format!("validator-{}", i + 1);
+            if let Some(ref url) = node.op_reth.http_host_url {
+                tracing::info!("L2 {} (op-reth) HTTP:    {}", label, url);
+            }
+            if let Some(ref url) = node.op_reth.ws_host_url {
+                tracing::info!("L2 {} (op-reth) WS:      {}", label, url);
+            }
+            if let Some(ref url) = node.kona_node.rpc_host_url {
+                tracing::info!("L2 {} (kona-node) RPC:   {}", label, url);
             }
         }
 
@@ -279,16 +333,45 @@ impl Deployer {
         tracing::info!("=== Internal Docker network endpoints ===");
         tracing::info!("L1 (Anvil) RPC:       {}", anvil.l1_rpc_url);
 
-        // Log internal endpoints for all L2 nodes
-        for (i, node) in l2_stack.nodes.iter().enumerate() {
-            let role = if i == 0 { "sequencer" } else { "validator" };
+        // Log internal endpoints for sequencer nodes
+        for (i, node) in l2_stack.sequencers.iter().enumerate() {
+            let label = if i == 0 {
+                "sequencer".to_string()
+            } else {
+                format!("sequencer-{}", i)
+            };
             tracing::info!(
                 "L2 {} (op-reth) HTTP:    {}",
-                role,
+                label,
                 node.op_reth.http_rpc_url
             );
-            tracing::info!("L2 {} (op-reth) WS:      {}", role, node.op_reth.ws_rpc_url);
-            tracing::info!("L2 {} (kona-node) RPC:   {}", role, node.kona_node.rpc_url);
+            tracing::info!(
+                "L2 {} (op-reth) WS:      {}",
+                label,
+                node.op_reth.ws_rpc_url
+            );
+            tracing::info!("L2 {} (kona-node) RPC:   {}", label, node.kona_node.rpc_url);
+
+            // Log op-conductor internal endpoints if present
+            if let Some(ref conductor) = node.op_conductor {
+                tracing::info!("L2 {} (op-conductor) RPC:     {}", label, conductor.rpc_url);
+            }
+        }
+
+        // Log internal endpoints for validator nodes
+        for (i, node) in l2_stack.validators.iter().enumerate() {
+            let label = format!("validator-{}", i + 1);
+            tracing::info!(
+                "L2 {} (op-reth) HTTP:    {}",
+                label,
+                node.op_reth.http_rpc_url
+            );
+            tracing::info!(
+                "L2 {} (op-reth) WS:      {}",
+                label,
+                node.op_reth.ws_rpc_url
+            );
+            tracing::info!("L2 {} (kona-node) RPC:   {}", label, node.kona_node.rpc_url);
         }
 
         tracing::info!("Op Batcher RPC:       {}", l2_stack.op_batcher.rpc_url);

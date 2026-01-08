@@ -3,9 +3,9 @@ use kupcake_deploy::{
     ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG, GRAFANA_DEFAULT_IMAGE, GRAFANA_DEFAULT_TAG,
     KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG, OP_BATCHER_DEFAULT_IMAGE,
     OP_BATCHER_DEFAULT_TAG, OP_CHALLENGER_DEFAULT_IMAGE, OP_CHALLENGER_DEFAULT_TAG,
-    OP_DEPLOYER_DEFAULT_IMAGE, OP_DEPLOYER_DEFAULT_TAG, OP_PROPOSER_DEFAULT_IMAGE,
-    OP_PROPOSER_DEFAULT_TAG, OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG, PROMETHEUS_DEFAULT_IMAGE,
-    PROMETHEUS_DEFAULT_TAG,
+    OP_CONDUCTOR_DEFAULT_IMAGE, OP_CONDUCTOR_DEFAULT_TAG, OP_DEPLOYER_DEFAULT_IMAGE,
+    OP_DEPLOYER_DEFAULT_TAG, OP_PROPOSER_DEFAULT_IMAGE, OP_PROPOSER_DEFAULT_TAG,
+    OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG, PROMETHEUS_DEFAULT_IMAGE, PROMETHEUS_DEFAULT_TAG,
 };
 use tracing::level_filters::LevelFilter;
 
@@ -140,12 +140,26 @@ pub struct Cli {
     #[arg(long, env = "KUP_BLOCK_TIME", default_value_t = 12)]
     pub block_time: u64,
 
-    /// The number of L2 nodes to deploy.
+    /// The total number of L2 nodes to deploy.
     ///
-    /// The first node is always the sequencer, additional nodes are validators.
-    /// Defaults to 3 (sequencer + 2 validators).
-    #[arg(long, alias = "nodes", env = "KUP_L2_NODES", default_value_t = 3)]
+    /// This is the sum of sequencers and validators.
+    /// Defaults to 5 (2 sequencers + 3 validators).
+    #[arg(long, alias = "nodes", env = "KUP_L2_NODES", default_value_t = 5)]
     pub l2_nodes: usize,
+
+    /// The number of sequencer nodes to deploy.
+    ///
+    /// If more than 1 sequencer is specified, op-conductor will be deployed
+    /// to coordinate the sequencers using Raft consensus.
+    /// Must be at least 1 and at most equal to l2_nodes.
+    /// Defaults to 2 (2 sequencers).
+    #[arg(
+        long,
+        alias = "sequencers",
+        env = "KUP_SEQUENCERS",
+        default_value_t = 2
+    )]
+    pub sequencer_count: usize,
 
     /// Path to an existing kupconf.toml configuration file to load.
     ///
@@ -209,6 +223,14 @@ pub struct DockerImageOverrides {
     /// Docker tag for op-challenger.
     #[arg(long, env = "KUP_OP_CHALLENGER_TAG", default_value = OP_CHALLENGER_DEFAULT_TAG)]
     pub op_challenger_tag: String,
+
+    /// Docker image for op-conductor.
+    #[arg(long, env = "KUP_OP_CONDUCTOR_IMAGE", default_value = OP_CONDUCTOR_DEFAULT_IMAGE)]
+    pub op_conductor_image: String,
+
+    /// Docker tag for op-conductor.
+    #[arg(long, env = "KUP_OP_CONDUCTOR_TAG", default_value = OP_CONDUCTOR_DEFAULT_TAG)]
+    pub op_conductor_tag: String,
 
     /// Docker image for op-deployer.
     #[arg(long, env = "KUP_OP_DEPLOYER_IMAGE", default_value = OP_DEPLOYER_DEFAULT_IMAGE)]

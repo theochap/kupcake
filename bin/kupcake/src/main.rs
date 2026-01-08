@@ -49,6 +49,7 @@ async fn main() -> Result<()> {
         .no_cleanup(cli.no_cleanup)
         .block_time(cli.block_time)
         .l2_node_count(cli.l2_nodes)
+        .sequencer_count(cli.sequencer_count)
         // Docker images
         .anvil_image(cli.docker_images.anvil_image)
         .anvil_tag(cli.docker_images.anvil_tag)
@@ -62,6 +63,8 @@ async fn main() -> Result<()> {
         .op_proposer_tag(cli.docker_images.op_proposer_tag)
         .op_challenger_image(cli.docker_images.op_challenger_image)
         .op_challenger_tag(cli.docker_images.op_challenger_tag)
+        .op_conductor_image(cli.docker_images.op_conductor_image)
+        .op_conductor_tag(cli.docker_images.op_conductor_tag)
         .op_deployer_image(cli.docker_images.op_deployer_image)
         .op_deployer_tag(cli.docker_images.op_deployer_tag)
         .prometheus_image(cli.docker_images.prometheus_image)

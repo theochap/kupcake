@@ -3,10 +3,11 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
+use derive_more::Display;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::docker::KupDocker;
+use crate::{OpConductorHandler, docker::KupDocker};
 
 use super::{
     anvil::AnvilHandler,
@@ -15,7 +16,7 @@ use super::{
 };
 
 /// Role of an L2 node in the network.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, Display)]
 #[serde(rename_all = "lowercase")]
 pub enum L2NodeRole {
     /// Sequencer node that produces blocks.
@@ -188,6 +189,7 @@ impl L2NodeBuilder {
             role: self.role,
             op_reth: op_reth_handler,
             kona_node: kona_node_handler,
+            op_conductor: None,
         })
     }
 }
@@ -200,6 +202,8 @@ pub struct L2NodeHandler {
     pub op_reth: OpRethHandler,
     /// Handler for the kona-node consensus client.
     pub kona_node: KonaNodeHandler,
+    /// Handler for the op-conductor instance (only present if this is a sequencer).
+    pub op_conductor: Option<OpConductorHandler>,
 }
 
 impl L2NodeHandler {
