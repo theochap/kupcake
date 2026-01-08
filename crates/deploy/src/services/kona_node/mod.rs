@@ -139,7 +139,7 @@ pub struct KonaNodeBuilder {
 }
 
 /// Default Docker image for kona-node.
-pub const DEFAULT_DOCKER_IMAGE: &str = "kona-node";
+pub const DEFAULT_DOCKER_IMAGE: &str = "kona";
 /// Default Docker tag for kona-node.
 pub const DEFAULT_DOCKER_TAG: &str = "local";
 
