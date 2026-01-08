@@ -102,7 +102,7 @@ impl KonaNodeCmdBuilder {
         self
     }
 
-    /// Set the P2P bootnodes (ENR addresses).
+    /// Set the P2P bootnodes (enode URLs).
     pub fn bootnodes(mut self, bootnodes: Vec<String>) -> Self {
         self.bootnodes = bootnodes;
         self

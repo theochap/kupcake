@@ -150,7 +150,7 @@ impl OpRethBuilder {
     ///   If None (for sequencer nodes), uses self as sequencer.
     ///   If Some (for validator nodes), connects to the specified sequencer.
     /// * `jwt_filename` - The JWT secret filename (shared with kona-node)
-    /// * `bootnodes` - List of ENR strings for P2P peer discovery
+    /// * `bootnodes` - List of enode URLs for P2P peer discovery
     pub async fn start(
         &self,
         docker: &mut KupDocker,

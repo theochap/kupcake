@@ -151,7 +151,7 @@ impl L2StackBuilder {
     /// optionally followed by op-conductor (if multiple sequencers),
     /// then op-batcher (batch submitter), op-proposer, and op-challenger.
     /// Each L2 node pair (op-reth + kona-node) generates its own JWT for authentication.
-    /// P2P peer discovery is enabled by passing ENRs between nodes.
+    /// P2P peer discovery is enabled by passing enodes between nodes.
     pub async fn start(
         &self,
         docker: &mut KupDocker,
@@ -162,10 +162,10 @@ impl L2StackBuilder {
             fs::FsHandler::create_host_config_directory(&host_config_path)?;
         }
 
-        // Mutable lists of peer ENRs for P2P discovery
-        // Each node adds its ENR after starting, so subsequent nodes can use it as a bootnode
-        let mut kona_node_enrs: Vec<String> = Vec::new();
-        let mut op_reth_enrs: Vec<String> = Vec::new();
+        // Mutable lists of peer enodes for P2P discovery
+        // Each node adds its enode after starting, so subsequent nodes can use it as a bootnode
+        let mut kona_node_enodes: Vec<String> = Vec::new();
+        let mut op_reth_enodes: Vec<String> = Vec::new();
 
         // Start all sequencer nodes
         let mut sequencer_handlers: Vec<L2NodeHandler> = Vec::with_capacity(self.sequencers.len());
@@ -182,8 +182,8 @@ impl L2StackBuilder {
                     &host_config_path,
                     anvil_handler,
                     None, // Sequencers don't follow another sequencer
-                    &mut kona_node_enrs,
-                    &mut op_reth_enrs,
+                    &mut kona_node_enodes,
+                    &mut op_reth_enodes,
                 )
                 .await
                 .context(format!("Failed to start sequencer node {}", i + 1))?;
@@ -205,8 +205,8 @@ impl L2StackBuilder {
                     &host_config_path,
                     anvil_handler,
                     Some(&sequencer_rpc),
-                    &mut kona_node_enrs,
-                    &mut op_reth_enrs,
+                    &mut kona_node_enodes,
+                    &mut op_reth_enodes,
                 )
                 .await
                 .context(format!("Failed to start validator node {}", i + 1))?;
@@ -215,8 +215,8 @@ impl L2StackBuilder {
         }
 
         tracing::info!(
-            kona_node_peer_count = kona_node_enrs.len(),
-            op_reth_peer_count = op_reth_enrs.len(),
+            kona_node_peer_count = kona_node_enodes.len(),
+            op_reth_peer_count = op_reth_enodes.len(),
             sequencer_count = self.sequencers.len(),
             validator_count = self.validators.len(),
             "All L2 nodes started with P2P peer discovery"

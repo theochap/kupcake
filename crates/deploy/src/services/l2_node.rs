@@ -116,7 +116,7 @@ impl L2NodeBuilder {
     /// For sequencer nodes, this starts with block production enabled.
     /// For validator nodes, this connects to the sequencer for block syncing.
     ///
-    /// After starting, this fetches the node's ENRs and adds them to the peer lists
+    /// After starting, this adds the node's enodes to the peer lists
     /// so that subsequent nodes can use them as bootnodes.
     ///
     /// # Arguments
@@ -124,8 +124,8 @@ impl L2NodeBuilder {
     /// * `host_config_path` - Path on host for config files
     /// * `anvil_handler` - Handler for the L1 Anvil instance
     /// * `sequencer_rpc` - Optional URL of the sequencer's kona-node RPC (required for validators)
-    /// * `kona_node_enrs` - Mutable list of kona-node ENRs for P2P discovery. The node's ENR will be added after startup.
-    /// * `op_reth_enrs` - Mutable list of op-reth ENRs for P2P discovery. The node's ENR will be added after startup.
+    /// * `kona_node_enodes` - Mutable list of kona-node enodes for P2P discovery. The node's enode will be added after startup.
+    /// * `op_reth_enodes` - Mutable list of op-reth enodes for P2P discovery. The node's enode will be added after startup.
     pub async fn start(
         &self,
         docker: &mut KupDocker,

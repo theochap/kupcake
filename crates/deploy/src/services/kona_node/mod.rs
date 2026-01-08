@@ -186,10 +186,9 @@ impl KonaNodeHandler {
         &self.p2p_keypair.node_id
     }
 
-    /// Returns an enode-style URL for this node (for compatibility/debugging).
+    /// Returns the enode URL for this node.
     ///
-    /// Note: kona-node actually uses ENR format for peer discovery, but the enode
-    /// format can be useful for identifying nodes.
+    /// kona-node uses enode format for peer discovery and bootstrap nodes.
     pub fn enode(&self) -> String {
         self.p2p_keypair
             .to_enode(&self.container_name, self.p2p_port)
@@ -206,7 +205,7 @@ impl KonaNodeBuilder {
     /// * `op_reth_handler` - Handler for the paired op-reth instance
     /// * `role` - Role of this node (sequencer or validator)
     /// * `jwt_filename` - The JWT secret filename (shared with op-reth)
-    /// * `bootnodes` - List of ENR strings for P2P peer discovery
+    /// * `bootnodes` - List of enode URLs for P2P peer discovery
     pub async fn start(
         &self,
         docker: &mut KupDocker,
