@@ -195,6 +195,9 @@ impl KonaNodeCmdBuilder {
         cmd.push("--p2p.listen.tcp".to_string());
         cmd.push(self.p2p_port.to_string());
 
+        cmd.push("--p2p.listen.udp".to_string());
+        cmd.push(self.p2p_port.to_string());
+
         // RPC
         cmd.push("--rpc.port".to_string());
         cmd.push(self.rpc_port.to_string());
