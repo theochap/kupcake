@@ -115,6 +115,8 @@ pub struct DeployerBuilder {
     l1_rpc_url: Option<String>,
     /// Whether to skip cleanup of docker containers.
     no_cleanup: bool,
+    /// Whether to run in detached mode (exit after deployment).
+    detach: bool,
     /// Path to custom dashboards directory.
     dashboards_path: Option<PathBuf>,
     /// Whether monitoring is enabled.
@@ -149,6 +151,7 @@ impl DeployerBuilder {
             outdata: None,
             l1_rpc_url: None,
             no_cleanup: false,
+            detach: false,
             dashboards_path: None,
             monitoring_enabled: true,
             block_time: 12,
@@ -418,6 +421,12 @@ impl DeployerBuilder {
         self
     }
 
+    /// Set detached mode (exit after deployment).
+    pub fn detach(mut self, detach: bool) -> Self {
+        self.detach = detach;
+        self
+    }
+
     /// Set the path to custom Grafana dashboards.
     pub fn dashboards_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.dashboards_path = Some(path.into());
@@ -518,7 +527,7 @@ impl DeployerBuilder {
 
             docker: KupDockerConfig {
                 net_name: format!("{}-network", network_name),
-                no_cleanup: self.no_cleanup,
+                no_cleanup: self.no_cleanup || self.detach,
             },
 
             op_deployer: OpDeployerConfig {
@@ -626,6 +635,7 @@ impl DeployerBuilder {
             },
 
             dashboards_path: self.dashboards_path,
+            detach: self.detach,
         };
 
         Ok(deployer)

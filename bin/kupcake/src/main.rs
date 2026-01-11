@@ -47,6 +47,7 @@ async fn main() -> Result<()> {
         }))
         .maybe_l1_rpc_url(cli.l1_rpc_provider.to_rpc_url(cli.l1_chain).ok())
         .no_cleanup(cli.no_cleanup)
+        .detach(cli.detach)
         .block_time(cli.block_time)
         .l2_node_count(cli.l2_nodes)
         .sequencer_count(cli.sequencer_count)

@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::{
-    AnvilConfig, KupDocker, KupDockerConfig, L2StackBuilder, MetricsTarget, MonitoringConfig,
-    OpBatcherHandler, OpChallengerHandler, OpDeployerConfig, OpProposerHandler, services,
-    services::l2_node::L2NodeHandler,
+    AnvilConfig, AnvilHandler, KupDocker, KupDockerConfig, L2StackBuilder, MetricsTarget,
+    MonitoringConfig, OpBatcherHandler, OpChallengerHandler, OpDeployerConfig, OpProposerHandler,
+    services, services::l2_node::L2NodeHandler, services::MonitoringHandler,
 };
 
 /// The default name for the kupcake configuration file.
@@ -67,6 +67,10 @@ pub struct Deployer {
     /// Path to the dashboards directory (optional).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dashboards_path: Option<PathBuf>,
+
+    /// Whether to run in detached mode (exit after deployment).
+    #[serde(default)]
+    pub detach: bool,
 }
 
 impl Deployer {
@@ -196,8 +200,73 @@ impl Deployer {
         targets
     }
 
+    /// Print detached mode information including container names and stop command.
+    fn print_detached_info(
+        outdata: &PathBuf,
+        anvil: &AnvilHandler,
+        l2_stack: &L2StackHandler,
+        monitoring: &Option<MonitoringHandler>,
+        network_id: &str,
+    ) {
+        let mut container_names = Vec::new();
+
+        // Add anvil container
+        container_names.push(anvil.container_name.clone());
+
+        // Add all L2 node containers (sequencers and validators)
+        for node in l2_stack.all_nodes() {
+            container_names.push(node.op_reth.container_name.clone());
+            container_names.push(node.kona_node.container_name.clone());
+
+            // Add op-conductor if present (for sequencer nodes)
+            if let Some(ref conductor) = node.op_conductor {
+                container_names.push(conductor.container_name.clone());
+            }
+        }
+
+        // Add L2 stack service containers
+        container_names.push(l2_stack.op_batcher.container_name.clone());
+        container_names.push(l2_stack.op_proposer.container_name.clone());
+        container_names.push(l2_stack.op_challenger.container_name.clone());
+
+        // Add monitoring containers if present
+        if let Some(mon) = monitoring {
+            container_names.push(mon.prometheus.container_name.clone());
+            container_names.push(mon.grafana.container_name.clone());
+        }
+
+        // Build the docker stop command
+        let stop_command = format!(
+            "docker stop {} && docker network rm {}",
+            container_names.join(" "),
+            network_id
+        );
+
+        // Print the detached mode information
+        tracing::info!("✓ Detached mode enabled. Containers are running in the background.");
+        tracing::info!("");
+        tracing::info!("Configuration saved to: {}", outdata.join(KUPCONF_FILENAME).display());
+        tracing::info!("");
+        tracing::info!("Running containers:");
+        for name in &container_names {
+            tracing::info!("  - {}", name);
+        }
+        tracing::info!("");
+        tracing::info!("Network: {}", network_id);
+        tracing::info!("");
+        tracing::info!("To stop all containers:");
+        tracing::info!("  {}", stop_command);
+        tracing::info!("");
+        tracing::info!("To view logs:");
+        tracing::info!("  docker logs <container-name>");
+    }
+
     pub async fn deploy(self, force_deploy: bool) -> Result<()> {
         tracing::info!("Starting deployment process...");
+
+        // Save values we'll need after self is consumed
+        let detach = self.detach;
+        let outdata = self.outdata.clone();
 
         // Initialize Docker client
         let mut docker = KupDocker::new(self.docker)
@@ -380,9 +449,14 @@ impl Deployer {
 
         tracing::info!("");
 
-        tracing::info!("Press Ctrl+C to stop all nodes and cleanup.");
-
-        tokio::signal::ctrl_c().await?;
+        if detach {
+            // Detached mode: print management info and exit
+            Self::print_detached_info(&outdata, &anvil, &l2_stack, &monitoring, &docker.network_id);
+        } else {
+            // Normal mode: wait for Ctrl+C
+            tracing::info!("Press Ctrl+C to stop all nodes and cleanup.");
+            tokio::signal::ctrl_c().await?;
+        }
 
         Ok(())
     }

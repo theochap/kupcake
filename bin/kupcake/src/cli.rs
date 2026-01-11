@@ -134,6 +134,10 @@ pub struct Cli {
     #[arg(long, env = "KUP_NO_CLEANUP")]
     pub no_cleanup: bool,
 
+    /// Run in detached mode. Deploy the network and exit, leaving containers running.
+    #[arg(long, env = "KUP_DETACH")]
+    pub detach: bool,
+
     /// The block time in seconds for the L1 chain (Anvil) and L2 derivation.
     ///
     /// Defaults to 12 seconds (Ethereum mainnet block time).

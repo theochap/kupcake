@@ -288,9 +288,6 @@ impl OpDeployerConfig {
 
         FsHandler::create_host_config_directory(&host_config_path)?;
 
-        // Pull the op-deployer image once and reuse it
-        self.docker_image.pull(docker).await?;
-
         let config_file_path = self
             .generate_intent_file(
                 docker,
