@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use bollard::{
     Docker,
     container::{
-        Config, CreateContainerOptions, LogsOptions, RemoveContainerOptions, StartContainerOptions,
-        StopContainerOptions, WaitContainerOptions,
+        Config, CreateContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
+        StartContainerOptions, StopContainerOptions, WaitContainerOptions,
     },
     image::CreateImageOptions,
     network::CreateNetworkOptions,
@@ -890,4 +890,119 @@ pub struct CreateAndStartContainerOptions {
 struct ContainerConfigOptions {
     /// Whether to auto-remove the container after it exits.
     auto_remove: bool,
+}
+
+/// Clean up containers and network by name prefix.
+///
+/// This is a standalone function that doesn't require a `KupDocker` instance.
+/// It finds all containers whose names start with the given prefix, stops and removes them,
+/// then removes the associated network.
+pub async fn cleanup_by_prefix(prefix: &str) -> Result<CleanupResult> {
+    let docker = Docker::connect_with_local_defaults()
+        .context("Failed to connect to Docker daemon")?;
+
+    let mut result = CleanupResult::default();
+
+    // List all containers (including stopped ones) that match the prefix
+    let filters: HashMap<String, Vec<String>> = HashMap::new();
+    let options = ListContainersOptions {
+        all: true,
+        filters,
+        ..Default::default()
+    };
+
+    let containers = docker
+        .list_containers(Some(options))
+        .await
+        .context("Failed to list containers")?;
+
+    // Filter containers by name prefix
+    let matching_containers: Vec<_> = containers
+        .into_iter()
+        .filter(|c| {
+            c.names.as_ref().is_some_and(|names| {
+                names.iter().any(|name| {
+                    // Container names from Docker API start with "/"
+                    let name = name.strip_prefix('/').unwrap_or(name);
+                    name.starts_with(prefix)
+                })
+            })
+        })
+        .collect();
+
+    if matching_containers.is_empty() {
+        tracing::info!("No containers found with prefix '{}'", prefix);
+    } else {
+        tracing::info!(
+            "Found {} container(s) with prefix '{}'",
+            matching_containers.len(),
+            prefix
+        );
+
+        // Stop and remove each container
+        for container in matching_containers {
+            let container_id = container.id.unwrap_or_default();
+            let container_name = container
+                .names
+                .as_ref()
+                .and_then(|n| n.first())
+                .map(|n| n.strip_prefix('/').unwrap_or(n))
+                .unwrap_or(&container_id)
+                .to_string();
+
+            tracing::debug!("Stopping and removing container: {}", container_name);
+
+            // Stop the container (ignore errors if already stopped)
+            docker
+                .stop_container(&container_id, Some(StopContainerOptions { t: 5 }))
+                .await
+                .ok();
+
+            // Remove the container
+            if let Err(e) = docker
+                .remove_container(
+                    &container_id,
+                    Some(RemoveContainerOptions {
+                        force: true,
+                        ..Default::default()
+                    }),
+                )
+                .await
+            {
+                tracing::warn!("Failed to remove container {}: {}", container_name, e);
+            } else {
+                result.containers_removed.push(container_name);
+            }
+        }
+    }
+
+    // Try to remove the network
+    let network_name = format!("{}-network", prefix);
+    tracing::debug!("Attempting to remove network: {}", network_name);
+
+    match docker.remove_network(&network_name).await {
+        Ok(_) => {
+            result.network_removed = Some(network_name);
+        }
+        Err(e) => {
+            // Only log if it's not a "not found" error
+            let err_str = e.to_string();
+            if !err_str.contains("No such network") && !err_str.contains("not found") {
+                tracing::warn!("Failed to remove network {}: {}", network_name, e);
+            } else {
+                tracing::debug!("Network '{}' does not exist", network_name);
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Result of a cleanup operation.
+#[derive(Debug, Default)]
+pub struct CleanupResult {
+    /// Names of containers that were removed.
+    pub containers_removed: Vec<String>,
+    /// Name of the network that was removed, if any.
+    pub network_removed: Option<String>,
 }

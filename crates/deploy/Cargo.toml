@@ -24,3 +24,6 @@ reqwest.workspace = true
 multiaddr.workspace = true
 k256.workspace = true
 
+[dev-dependencies]
+tracing-subscriber.workspace = true
+

@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use kupcake_deploy::{
     ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG, GRAFANA_DEFAULT_IMAGE, GRAFANA_DEFAULT_TAG,
     KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG, OP_BATCHER_DEFAULT_IMAGE,
@@ -13,9 +13,10 @@ use tracing::level_filters::LevelFilter;
 const DEFAULT_L1_CHAIN_INFO: L1Chain = L1Chain::Sepolia;
 /// The default L1 RPC URL (Sepolia public node).
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, strum::Display, strum::EnumString)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, strum::Display, strum::EnumString)]
 #[strum(serialize_all = "kebab-case")]
 pub enum L1Provider {
+    #[default]
     PublicNode,
     #[strum(default)]
     Custom(String),
@@ -38,9 +39,10 @@ impl L1Provider {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::EnumString)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, strum::Display, strum::EnumString)]
 #[strum(serialize_all = "kebab-case")]
 pub enum L1Chain {
+    #[default]
     Sepolia,
     Mainnet,
 }
@@ -94,9 +96,39 @@ pub enum OutData {
 )]
 pub struct Cli {
     /// The verbosity level.
-    #[arg(short, long, env = "KUP_VERBOSITY", default_value_t = LevelFilter::INFO)]
+    #[arg(short, long, env = "KUP_VERBOSITY", default_value_t = LevelFilter::INFO, global = true)]
     pub verbosity: LevelFilter,
 
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+pub enum Commands {
+    /// Deploy a new OP Stack network (default command).
+    Deploy(DeployArgs),
+
+    /// Clean up containers and network by prefix.
+    ///
+    /// Stops and removes all containers whose names start with the given prefix,
+    /// then removes the associated Docker network (<prefix>-network).
+    Cleanup(CleanupArgs),
+}
+
+/// Arguments for the cleanup command.
+#[derive(Parser)]
+pub struct CleanupArgs {
+    /// The network name prefix to clean up.
+    ///
+    /// All containers starting with this prefix will be stopped and removed,
+    /// and the network <prefix>-network will be removed.
+    #[arg(required = true)]
+    pub prefix: String,
+}
+
+/// Arguments for the deploy command.
+#[derive(Parser)]
+pub struct DeployArgs {
     /// A custom name for the network. If not provided, the network will be named:
     /// kup-<l1-chain-name>-<l2-chain-name>.
     #[arg(short, long, visible_alias = "name", env = "KUP_NETWORK_NAME")]
@@ -175,6 +207,26 @@ pub struct Cli {
     /// Docker image overrides for all services.
     #[clap(flatten)]
     pub docker_images: DockerImageOverrides,
+}
+
+impl Default for DeployArgs {
+    fn default() -> Self {
+        Self {
+            network: None,
+            l1_rpc_provider: L1Provider::PublicNode,
+            l1_chain: L1Chain::Sepolia,
+            l2_chain: None,
+            redeploy: false,
+            outdata: None,
+            no_cleanup: false,
+            detach: false,
+            block_time: 12,
+            l2_nodes: 5,
+            sequencer_count: 2,
+            config: None,
+            docker_images: DockerImageOverrides::default(),
+        }
+    }
 }
 
 /// Docker image overrides for all services.
@@ -259,4 +311,31 @@ pub struct DockerImageOverrides {
     /// Docker tag for Grafana.
     #[arg(long, env = "KUP_GRAFANA_TAG", default_value = GRAFANA_DEFAULT_TAG)]
     pub grafana_tag: String,
+}
+
+impl Default for DockerImageOverrides {
+    fn default() -> Self {
+        Self {
+            anvil_image: ANVIL_DEFAULT_IMAGE.to_string(),
+            anvil_tag: ANVIL_DEFAULT_TAG.to_string(),
+            op_reth_image: OP_RETH_DEFAULT_IMAGE.to_string(),
+            op_reth_tag: OP_RETH_DEFAULT_TAG.to_string(),
+            kona_node_image: KONA_NODE_DEFAULT_IMAGE.to_string(),
+            kona_node_tag: KONA_NODE_DEFAULT_TAG.to_string(),
+            op_batcher_image: OP_BATCHER_DEFAULT_IMAGE.to_string(),
+            op_batcher_tag: OP_BATCHER_DEFAULT_TAG.to_string(),
+            op_proposer_image: OP_PROPOSER_DEFAULT_IMAGE.to_string(),
+            op_proposer_tag: OP_PROPOSER_DEFAULT_TAG.to_string(),
+            op_challenger_image: OP_CHALLENGER_DEFAULT_IMAGE.to_string(),
+            op_challenger_tag: OP_CHALLENGER_DEFAULT_TAG.to_string(),
+            op_conductor_image: OP_CONDUCTOR_DEFAULT_IMAGE.to_string(),
+            op_conductor_tag: OP_CONDUCTOR_DEFAULT_TAG.to_string(),
+            op_deployer_image: OP_DEPLOYER_DEFAULT_IMAGE.to_string(),
+            op_deployer_tag: OP_DEPLOYER_DEFAULT_TAG.to_string(),
+            prometheus_image: PROMETHEUS_DEFAULT_IMAGE.to_string(),
+            prometheus_tag: PROMETHEUS_DEFAULT_TAG.to_string(),
+            grafana_image: GRAFANA_DEFAULT_IMAGE.to_string(),
+            grafana_tag: GRAFANA_DEFAULT_TAG.to_string(),
+        }
+    }
 }
