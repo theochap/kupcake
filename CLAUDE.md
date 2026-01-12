@@ -223,3 +223,107 @@ When changing configuration schema:
 - Update both Builder and Config types
 - Ensure serde attributes maintain backward compatibility
 - Test with existing `Kupcake.toml` files
+
+## Code Style
+
+### General Principles
+- Avoid nested loops/ifs/match statements as much as possible
+- Avoid `if/else` statements - use early returns with `if` when possible
+- Prefer functional programming style over imperative
+- Keep functions small and focused on a single responsibility
+
+### Error Handling
+- **NEVER use `.unwrap()`, `.expect()`, or anything that may panic** unless absolutely necessary (e.g., compile-time guarantees)
+- Use `?` operator for error propagation
+- Add context to errors with `.context("descriptive message")` or `.with_context(|| format!(...))`
+- Return `Result<T, anyhow::Error>` for fallible functions
+- Use `anyhow::bail!()` for early error returns
+
+```rust
+// Good
+let value = get_value().context("Failed to get value")?;
+
+// Bad
+let value = get_value().unwrap();
+let value = get_value().expect("should work");
+```
+
+### Iterators and Collections
+- Prefer iterator combinators over explicit loops
+- Use `.collect()` to gather results
+- Chain operations fluently
+
+```rust
+// Good
+let results: Vec<_> = items
+    .iter()
+    .filter(|x| x.is_valid())
+    .map(|x| x.transform())
+    .collect();
+
+// Bad
+let mut results = Vec::new();
+for item in items {
+    if item.is_valid() {
+        results.push(item.transform());
+    }
+}
+```
+
+### Option and Result Handling
+- Use combinators: `.map()`, `.and_then()`, `.ok_or()`, `.unwrap_or_default()`
+- Prefer `if let` over `match` for single-variant checks
+- Use `?` with `.ok_or_else()` to convert Options to Results
+
+```rust
+// Good
+let port = config.port.unwrap_or(8080);
+let value = opt.ok_or_else(|| anyhow::anyhow!("Value not found"))?;
+
+// Good - early return
+if let Some(cached) = cache.get(&key) {
+    return Ok(cached.clone());
+}
+
+// Bad
+match opt {
+    Some(v) => v,
+    None => panic!("missing value"),
+}
+```
+
+### Async Code
+- Use `tokio` for async runtime
+- Propagate errors with `?` in async functions
+- Use `.await` on the same line when chaining
+
+```rust
+// Good
+let response = client.get(url).send().await?.json().await?;
+
+// Also acceptable for readability
+let response = client
+    .get(url)
+    .send()
+    .await
+    .context("Failed to send request")?;
+```
+
+### Logging
+- Use `tracing` macros (`tracing::info!`, `tracing::debug!`, etc.) instead of `println!`
+- Include structured fields in log messages
+
+```rust
+tracing::info!(container_name = %name, port = %port, "Container started");
+```
+
+### Naming Conventions
+- Use descriptive names that reflect purpose
+- Builder pattern: `{Type}Builder` with `.build()` method
+- Handler pattern: `{Type}Handler` for runtime handles
+- Use `_` prefix for intentionally unused variables
+
+### Imports and Organization
+- Group imports: std, external crates, internal modules
+- Use `use crate::` for internal imports
+- Re-export public types in `mod.rs`

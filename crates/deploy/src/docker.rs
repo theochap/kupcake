@@ -462,7 +462,10 @@ impl KupDocker {
 
         // Wait for the container to exit
         let exit_code = if let Some(wait_result) = wait_stream.next().await {
-            let response = wait_result.context("Failed to wait for container")?;
+            let response = wait_result.map_err(|e| {
+                tracing::error!(container_id, error = ?e, "Docker wait_container error");
+                anyhow::anyhow!("Docker container wait error: {}", e)
+            })?;
             response.status_code
         } else {
             anyhow::bail!("Container wait stream ended without response");
