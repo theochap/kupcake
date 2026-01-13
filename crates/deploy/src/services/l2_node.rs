@@ -294,6 +294,9 @@ impl L2NodeBuilder {
             format!("http://{}:{}/", c.container_name, c.rpc_port)
         });
 
+        // Determine if this sequencer is the Raft leader (first sequencer starts active)
+        let is_conductor_leader = matches!(conductor_context, ConductorContext::Leader { .. });
+
         // Start kona-node with conductor RPC URL (if configured)
         // kona-node must have --conductor.rpc set for conductor to recognize it
         let kona_node_handler = self
@@ -308,6 +311,7 @@ impl L2NodeBuilder {
                 kona_node_enodes,
                 l1_chain_id,
                 conductor_rpc_url.as_deref(),
+                is_conductor_leader,
             )
             .await?;
 

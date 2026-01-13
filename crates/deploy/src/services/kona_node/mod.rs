@@ -258,8 +258,9 @@ impl KonaNodeBuilder {
     /// * `jwt_filename` - The JWT secret filename (shared with op-reth)
     /// * `bootnodes` - List of enode URLs for P2P peer discovery
     /// * `l1_chain_id` - L1 chain ID (used to determine if we need a custom L1 config)
-    /// * `conductor_rpc` - Optional conductor RPC URL. If provided, enables conductor control
-    ///   and starts the sequencer in stopped state.
+    /// * `conductor_rpc` - Optional conductor RPC URL. If provided, enables conductor control.
+    /// * `is_conductor_leader` - Whether this sequencer is the initial Raft leader. Leaders start
+    ///   active, while followers start in stopped state waiting for conductor to activate them.
     pub async fn start(
         &self,
         docker: &mut KupDocker,
@@ -271,6 +272,7 @@ impl KonaNodeBuilder {
         bootnodes: &[String],
         l1_chain_id: u64,
         conductor_rpc: Option<&str>,
+        is_conductor_leader: bool,
     ) -> Result<KonaNodeHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
@@ -312,16 +314,24 @@ impl KonaNodeBuilder {
         }
 
         // Configure conductor control if a conductor RPC URL is provided
-        // This enables conductor mode and starts the sequencer in stopped state
+        // Leader starts active, followers start stopped waiting for conductor to activate them
         if let Some(conductor_url) = conductor_rpc {
-            tracing::info!(
-                conductor_rpc = %conductor_url,
-                container_name = %self.container_name,
-                "Configuring kona-node with conductor control (sequencer will start stopped)"
-            );
-            cmd_builder = cmd_builder
-                .conductor_rpc(conductor_url)
-                .sequencer_stopped(true);
+            cmd_builder = cmd_builder.conductor_rpc(conductor_url);
+
+            if is_conductor_leader {
+                tracing::info!(
+                    conductor_rpc = %conductor_url,
+                    container_name = %self.container_name,
+                    "Configuring kona-node with conductor control (leader, starting active)"
+                );
+            } else {
+                tracing::info!(
+                    conductor_rpc = %conductor_url,
+                    container_name = %self.container_name,
+                    "Configuring kona-node with conductor control (follower, starting stopped)"
+                );
+                cmd_builder = cmd_builder.sequencer_stopped(true);
+            }
         }
 
         cmd_builder = cmd_builder.unsafe_block_signer_key(
