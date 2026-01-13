@@ -26,6 +26,10 @@ pub struct KonaNodeCmdBuilder {
     /// P2P private key (32 bytes hex-encoded)
     p2p_priv_key: Option<String>,
     unsafe_block_signer_key: Option<Bytes>,
+    /// Conductor RPC URL (enables conductor control when set)
+    conductor_rpc: Option<String>,
+    /// Start sequencer in stopped state (for conductor-managed sequencers)
+    sequencer_stopped: bool,
     extra_args: Vec<String>,
     /// Path to L1 chain config file (for custom/local L1 chains)
     l1_config_file: Option<String>,
@@ -57,6 +61,8 @@ impl KonaNodeCmdBuilder {
             p2p_priv_key: None,
             p2p_ip: p2p_ip.into(),
             unsafe_block_signer_key: None,
+            conductor_rpc: None,
+            sequencer_stopped: false,
             extra_args: Vec::new(),
             l1_config_file: None,
         }
@@ -120,6 +126,24 @@ impl KonaNodeCmdBuilder {
     /// Set the P2P private key (32 bytes hex-encoded).
     pub fn p2p_priv_key(mut self, key: impl Into<String>) -> Self {
         self.p2p_priv_key = Some(key.into());
+        self
+    }
+
+    /// Set the conductor RPC URL for conductor-managed sequencers.
+    ///
+    /// When set, enables conductor control mode (`--conductor.enabled`)
+    /// and configures the conductor RPC endpoint.
+    pub fn conductor_rpc(mut self, url: impl Into<String>) -> Self {
+        self.conductor_rpc = Some(url.into());
+        self
+    }
+
+    /// Start the sequencer in stopped state (for conductor-managed sequencers).
+    ///
+    /// When true, the sequencer will not produce blocks until the conductor
+    /// activates it. Used with `conductor_rpc` for high-availability setups.
+    pub fn sequencer_stopped(mut self, stopped: bool) -> Self {
+        self.sequencer_stopped = stopped;
         self
     }
 
@@ -206,6 +230,17 @@ impl KonaNodeCmdBuilder {
 
         cmd.push("--p2p.listen.udp".to_string());
         cmd.push(self.p2p_port.to_string());
+
+        // Conductor configuration (for sequencer high-availability)
+        if let Some(conductor_rpc) = self.conductor_rpc {
+            cmd.push("--conductor.rpc".to_string());
+            cmd.push(conductor_rpc);
+        }
+
+        // Start sequencer in stopped state (for conductor control)
+        if self.sequencer_stopped {
+            cmd.push("--sequencer.stopped".to_string());
+        }
 
         // RPC
         cmd.push("--rpc.port".to_string());

@@ -10,14 +10,17 @@ use crate::{
     OpProposerBuilder,
     deployer::L2StackHandler,
     fs,
-    services::l2_node::{L2NodeBuilder, L2NodeHandler},
+    services::l2_node::{ConductorContext, L2NodeBuilder, L2NodeHandler},
 };
 
 /// Combined configuration for all L2 components for the op-stack.
+///
+/// Each sequencer node can optionally have an op-conductor attached for
+/// multi-sequencer Raft consensus coordination.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct L2StackBuilder {
     /// Configuration for sequencer nodes (op-reth + kona-node pairs).
-    /// When there are multiple sequencers, op-conductor is deployed for coordination.
+    /// When there are multiple sequencers, each has an op-conductor for coordination.
     pub sequencers: Vec<L2NodeBuilder>,
     /// Configuration for validator nodes (op-reth + kona-node pairs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -28,9 +31,6 @@ pub struct L2StackBuilder {
     pub op_proposer: OpProposerBuilder,
     /// Configuration for op-challenger.
     pub op_challenger: OpChallengerBuilder,
-    /// Configuration for op-conductor (only used when there are multiple sequencers).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub op_conductor: Option<OpConductorBuilder>,
 }
 
 impl Default for L2StackBuilder {
@@ -41,7 +41,6 @@ impl Default for L2StackBuilder {
             op_batcher: OpBatcherBuilder::default(),
             op_proposer: OpProposerBuilder::default(),
             op_challenger: OpChallengerBuilder::default(),
-            op_conductor: None,
         }
     }
 }
@@ -53,37 +52,41 @@ impl L2StackBuilder {
     /// * `sequencer_count` - Number of sequencer nodes to deploy
     /// * `validator_count` - Number of validator nodes to deploy
     ///
-    /// When `sequencer_count > 1`, op-conductor will be deployed automatically.
+    /// When `sequencer_count > 1`, each sequencer gets an op-conductor for Raft coordination.
     pub fn with_counts(sequencer_count: usize, validator_count: usize) -> Self {
         assert!(
             sequencer_count >= 1,
             "At least one sequencer node is required"
         );
 
+        let needs_conductor = sequencer_count > 1;
         let mut sequencers = Vec::with_capacity(sequencer_count);
         let mut validators = Vec::with_capacity(validator_count);
 
-        // Add sequencer nodes
+        // Add sequencer nodes, each with optional conductor config
         for i in 0..sequencer_count {
             let mut node = L2NodeBuilder::sequencer();
             if i > 0 {
                 node = node.with_name_suffix(&format!("sequencer-{}", i));
             }
+
+            // Attach conductor config if multi-sequencer setup
+            if needs_conductor {
+                let mut conductor = OpConductorBuilder::default();
+                if i > 0 {
+                    conductor.container_name = format!("{}-{}", conductor.container_name, i);
+                }
+                node.op_conductor = Some(conductor);
+            }
+
             sequencers.push(node);
         }
 
-        // Add validator nodes
+        // Add validator nodes (no conductors)
         for i in 0..validator_count {
             validators
                 .push(L2NodeBuilder::validator().with_name_suffix(&format!("validator-{}", i + 1)));
         }
-
-        // Create op-conductor config if multiple sequencers
-        let op_conductor = if sequencer_count > 1 {
-            Some(OpConductorBuilder::default())
-        } else {
-            None
-        };
 
         Self {
             sequencers,
@@ -91,7 +94,6 @@ impl L2StackBuilder {
             op_batcher: OpBatcherBuilder::default(),
             op_proposer: OpProposerBuilder::default(),
             op_challenger: OpChallengerBuilder::default(),
-            op_conductor,
         }
     }
 
@@ -115,18 +117,38 @@ impl L2StackBuilder {
 
     /// Add a sequencer node to the stack.
     ///
-    /// If this creates multiple sequencers, op-conductor config is automatically added.
+    /// If this creates multiple sequencers, op-conductor configs are automatically added
+    /// to all sequencers for Raft coordination.
     pub fn add_sequencer(mut self) -> Self {
         let sequencer_index = self.sequencers.len();
-        self.sequencers.push(
-            L2NodeBuilder::sequencer().with_name_suffix(&format!("sequencer-{}", sequencer_index)),
-        );
+        let mut new_sequencer =
+            L2NodeBuilder::sequencer().with_name_suffix(&format!("sequencer-{}", sequencer_index));
 
-        // Ensure op-conductor is configured if we now have multiple sequencers
-        if self.sequencers.len() > 1 && self.op_conductor.is_none() {
-            self.op_conductor = Some(OpConductorBuilder::default());
+        // If we're adding a second sequencer, we need conductors for all
+        let needs_conductor = self.sequencers.len() >= 1; // Will have 2+ after adding
+
+        if needs_conductor {
+            // Add conductor to existing first sequencer if it doesn't have one
+            if self.sequencers[0].op_conductor.is_none() {
+                self.sequencers[0].op_conductor = Some(OpConductorBuilder::default());
+            }
+
+            // Add conductors to any other existing sequencers
+            for (i, seq) in self.sequencers.iter_mut().enumerate().skip(1) {
+                if seq.op_conductor.is_none() {
+                    let mut conductor = OpConductorBuilder::default();
+                    conductor.container_name = format!("{}-{}", conductor.container_name, i);
+                    seq.op_conductor = Some(conductor);
+                }
+            }
+
+            // Add conductor to the new sequencer
+            let mut conductor = OpConductorBuilder::default();
+            conductor.container_name = format!("{}-{}", conductor.container_name, sequencer_index);
+            new_sequencer.op_conductor = Some(conductor);
         }
 
+        self.sequencers.push(new_sequencer);
         self
     }
 
@@ -140,16 +162,15 @@ impl L2StackBuilder {
         self.sequencers.len() + self.validators.len()
     }
 
-    /// Returns true if op-conductor should be deployed (multiple sequencers).
+    /// Returns true if op-conductor should be deployed (any sequencer has conductor config).
     pub fn needs_conductor(&self) -> bool {
-        self.sequencers.len() > 1
+        self.sequencers.iter().any(|s| s.op_conductor.is_some())
     }
 
     /// Start all L2 node components.
     ///
-    /// This starts sequencer nodes first, then validator nodes,
-    /// optionally followed by op-conductor (if multiple sequencers),
-    /// then op-batcher (batch submitter), op-proposer, and op-challenger.
+    /// This starts sequencer nodes first (with their op-conductors if configured),
+    /// then validator nodes, then op-batcher, op-proposer, and op-challenger.
     /// Each L2 node pair (op-reth + kona-node) generates its own JWT for authentication.
     /// P2P peer discovery is enabled by passing enodes between nodes.
     ///
@@ -174,13 +195,34 @@ impl L2StackBuilder {
         let mut kona_node_enodes: Vec<String> = Vec::new();
         let mut op_reth_enodes: Vec<String> = Vec::new();
 
-        // Start all sequencer nodes
+        // Determine if we need conductor coordination
+        let needs_conductor = self.needs_conductor();
+
+        // Start all sequencer nodes (with conductors if configured)
         let mut sequencer_handlers: Vec<L2NodeHandler> = Vec::with_capacity(self.sequencers.len());
         for (i, sequencer) in self.sequencers.iter().enumerate() {
-            if i == 0 {
-                tracing::info!("Starting primary sequencer node (op-reth + kona-node)...");
+            // Determine conductor context for this sequencer
+            let conductor_context = if needs_conductor && sequencer.op_conductor.is_some() {
+                if i == 0 {
+                    ConductorContext::Leader { index: i }
+                } else {
+                    ConductorContext::Follower { index: i }
+                }
             } else {
-                tracing::info!("Starting sequencer node {} (op-reth + kona-node)...", i + 1);
+                ConductorContext::None
+            };
+
+            if i == 0 {
+                tracing::info!(
+                    has_conductor = sequencer.op_conductor.is_some(),
+                    "Starting primary sequencer node (op-reth + kona-node)..."
+                );
+            } else {
+                tracing::info!(
+                    index = i + 1,
+                    has_conductor = sequencer.op_conductor.is_some(),
+                    "Starting sequencer node (op-reth + kona-node)..."
+                );
             }
 
             let sequencer_handler = sequencer
@@ -192,6 +234,7 @@ impl L2StackBuilder {
                     &mut kona_node_enodes,
                     &mut op_reth_enodes,
                     l1_chain_id,
+                    conductor_context,
                 )
                 .await
                 .context(format!("Failed to start sequencer node {}", i + 1))?;
@@ -202,7 +245,7 @@ impl L2StackBuilder {
         // Get the primary sequencer's RPC URL for validators to follow
         let sequencer_rpc = sequencer_handlers[0].op_reth.http_rpc_url.clone();
 
-        // Start validator nodes
+        // Start validator nodes (no conductors)
         let mut validator_handlers: Vec<L2NodeHandler> = Vec::with_capacity(self.validators.len());
         for (i, validator) in self.validators.iter().enumerate() {
             tracing::info!("Starting validator node {} (op-reth + kona-node)...", i + 1);
@@ -216,6 +259,7 @@ impl L2StackBuilder {
                     &mut kona_node_enodes,
                     &mut op_reth_enodes,
                     l1_chain_id,
+                    ConductorContext::None,
                 )
                 .await
                 .context(format!("Failed to start validator node {}", i + 1))?;
@@ -228,72 +272,9 @@ impl L2StackBuilder {
             op_reth_peer_count = op_reth_enodes.len(),
             sequencer_count = self.sequencers.len(),
             validator_count = self.validators.len(),
+            conductors_started = sequencer_handlers.iter().filter(|s| s.op_conductor.is_some()).count(),
             "All L2 nodes started with P2P peer discovery"
         );
-
-        // Start op-conductor if we have multiple sequencers
-        let op_conductor_handlers = if let Some(ref conductor_config) = self.op_conductor {
-            tracing::info!(
-                sequencer_count = self.sequencers.len(),
-                "Starting op-conductor for sequencer consensus..."
-            );
-
-            let mut conductor_handlers = Vec::with_capacity(self.sequencers.len());
-
-            for (i, sequencer) in sequencer_handlers.iter().enumerate() {
-                let server_id = format!("sequencer-{}", i);
-                let is_leader = i == 0;
-
-                // Create a conductor config with unique container name for each sequencer
-                let mut conductor = conductor_config.clone();
-                if i > 0 {
-                    conductor.container_name = format!("{}-{}", conductor.container_name, i);
-                }
-
-                let conductor_handler = if is_leader {
-                    conductor
-                        .start_leader(
-                            docker,
-                            &host_config_path,
-                            &server_id,
-                            &sequencer.op_reth,
-                            &sequencer.kona_node,
-                        )
-                        .await
-                        .context(format!(
-                            "Failed to start op-conductor leader for {}",
-                            server_id
-                        ))?
-                } else {
-                    conductor
-                        .start_follower(
-                            docker,
-                            &host_config_path,
-                            &server_id,
-                            &sequencer.op_reth,
-                            &sequencer.kona_node,
-                        )
-                        .await
-                        .context(format!(
-                            "Failed to start op-conductor follower for {}",
-                            server_id
-                        ))?
-                };
-
-                tracing::info!(
-                    server_id = %server_id,
-                    is_leader = is_leader,
-                    rpc_url = %conductor_handler.rpc_url,
-                    "op-conductor instance started"
-                );
-
-                conductor_handlers.push(conductor_handler);
-            }
-
-            Some(conductor_handlers)
-        } else {
-            None
-        };
 
         // Get references to the primary sequencer for the remaining components
         let primary_sequencer = &sequencer_handlers[0];
@@ -377,5 +358,172 @@ impl L2StackBuilder {
             op_proposer: op_proposer_handler,
             op_challenger: op_challenger_handler,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_single_sequencer_no_conductor() {
+        let stack = L2StackBuilder::with_counts(1, 0);
+
+        assert_eq!(stack.sequencers.len(), 1);
+        assert_eq!(stack.validators.len(), 0);
+        assert!(!stack.needs_conductor());
+        assert!(stack.sequencers[0].op_conductor.is_none());
+    }
+
+    #[test]
+    fn test_multi_sequencer_has_conductors() {
+        let stack = L2StackBuilder::with_counts(2, 0);
+
+        assert_eq!(stack.sequencers.len(), 2);
+        assert!(stack.needs_conductor());
+
+        // Both sequencers should have conductor configs
+        assert!(stack.sequencers[0].op_conductor.is_some());
+        assert!(stack.sequencers[1].op_conductor.is_some());
+
+        // Verify unique conductor container names
+        let conductor_0 = stack.sequencers[0].op_conductor.as_ref().unwrap();
+        let conductor_1 = stack.sequencers[1].op_conductor.as_ref().unwrap();
+        assert_ne!(conductor_0.container_name, conductor_1.container_name);
+    }
+
+    #[test]
+    fn test_three_sequencers_all_have_conductors() {
+        let stack = L2StackBuilder::with_counts(3, 0);
+
+        assert_eq!(stack.sequencers.len(), 3);
+        assert!(stack.needs_conductor());
+
+        // All sequencers should have conductor configs
+        for sequencer in &stack.sequencers {
+            assert!(sequencer.op_conductor.is_some());
+        }
+
+        // Verify all conductor container names are unique
+        let conductor_names: Vec<_> = stack
+            .sequencers
+            .iter()
+            .map(|s| s.op_conductor.as_ref().unwrap().container_name.clone())
+            .collect();
+        let unique_names: std::collections::HashSet<_> = conductor_names.iter().collect();
+        assert_eq!(conductor_names.len(), unique_names.len());
+    }
+
+    #[test]
+    fn test_validators_never_have_conductors() {
+        let stack = L2StackBuilder::with_counts(2, 3);
+
+        assert_eq!(stack.sequencers.len(), 2);
+        assert_eq!(stack.validators.len(), 3);
+
+        // Sequencers should have conductors
+        for sequencer in &stack.sequencers {
+            assert!(sequencer.op_conductor.is_some());
+        }
+
+        // Validators should never have conductors
+        for validator in &stack.validators {
+            assert!(validator.op_conductor.is_none());
+        }
+    }
+
+    #[test]
+    fn test_add_sequencer_adds_conductors_retroactively() {
+        // Start with single sequencer (no conductor)
+        let stack = L2StackBuilder::default();
+        assert_eq!(stack.sequencers.len(), 1);
+        assert!(!stack.needs_conductor());
+        assert!(stack.sequencers[0].op_conductor.is_none());
+
+        // Add a second sequencer - should retroactively add conductors to all
+        let stack = stack.add_sequencer();
+        assert_eq!(stack.sequencers.len(), 2);
+        assert!(stack.needs_conductor());
+
+        // Both sequencers should now have conductors
+        assert!(stack.sequencers[0].op_conductor.is_some());
+        assert!(stack.sequencers[1].op_conductor.is_some());
+    }
+
+    #[test]
+    fn test_add_validator_no_conductor() {
+        let stack = L2StackBuilder::default().add_validator();
+
+        assert_eq!(stack.sequencers.len(), 1);
+        assert_eq!(stack.validators.len(), 1);
+        assert!(!stack.needs_conductor());
+
+        // Validator should not have conductor
+        assert!(stack.validators[0].op_conductor.is_none());
+    }
+
+    #[test]
+    fn test_with_node_count_single_node() {
+        let stack = L2StackBuilder::with_node_count(1);
+
+        assert_eq!(stack.sequencers.len(), 1);
+        assert_eq!(stack.validators.len(), 0);
+        assert!(!stack.needs_conductor());
+    }
+
+    #[test]
+    fn test_with_node_count_multiple_nodes() {
+        let stack = L2StackBuilder::with_node_count(4);
+
+        // 1 sequencer + 3 validators
+        assert_eq!(stack.sequencers.len(), 1);
+        assert_eq!(stack.validators.len(), 3);
+        assert_eq!(stack.node_count(), 4);
+        assert!(!stack.needs_conductor());
+    }
+
+    #[test]
+    fn test_primary_sequencer() {
+        let stack = L2StackBuilder::with_counts(3, 2);
+
+        let primary = stack.primary_sequencer();
+        assert_eq!(primary.op_reth.container_name, "kupcake-op-reth");
+    }
+
+    #[test]
+    fn test_sequencer_container_name_suffixes() {
+        let stack = L2StackBuilder::with_counts(3, 0);
+
+        // First sequencer has no suffix
+        assert_eq!(stack.sequencers[0].op_reth.container_name, "kupcake-op-reth");
+
+        // Subsequent sequencers have suffixes
+        assert!(stack.sequencers[1]
+            .op_reth
+            .container_name
+            .contains("sequencer-1"));
+        assert!(stack.sequencers[2]
+            .op_reth
+            .container_name
+            .contains("sequencer-2"));
+    }
+
+    #[test]
+    fn test_validator_container_name_suffixes() {
+        let stack = L2StackBuilder::with_counts(1, 3);
+
+        // All validators have numbered suffixes
+        assert!(stack.validators[0]
+            .op_reth
+            .container_name
+            .contains("validator-1"));
+        assert!(stack.validators[1]
+            .op_reth
+            .container_name
+            .contains("validator-2"));
+        assert!(stack.validators[2]
+            .op_reth
+            .container_name
+            .contains("validator-3"));
     }
 }

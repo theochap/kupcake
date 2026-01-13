@@ -11,9 +11,11 @@ pub struct OpConductorCmdBuilder {
     raft_server_id: String,
     /// Directory for storing Raft data.
     raft_storage_dir: String,
+    /// Path to rollup configuration file.
+    rollup_config: String,
     /// Whether to bootstrap a new Raft cluster.
     raft_bootstrap: bool,
-    /// Consensus listen address.
+    /// Consensus listen/advertise address (must be resolvable by other nodes).
     consensus_addr: String,
     /// Consensus port.
     consensus_port: u16,
@@ -23,6 +25,10 @@ pub struct OpConductorCmdBuilder {
     rpc_port: u16,
     /// Health check interval.
     healthcheck_interval: String,
+    /// Unsafe interval - interval allowed between unsafe head and now measured in seconds.
+    healthcheck_unsafe_interval: String,
+    /// Minimum number of peers required to be considered healthy.
+    healthcheck_min_peer_count: String,
     /// Paused mode - start with sequencer paused.
     paused: bool,
     /// Log level.
@@ -38,18 +44,22 @@ impl OpConductorCmdBuilder {
         execution_rpc: impl Into<String>,
         raft_server_id: impl Into<String>,
         raft_storage_dir: impl Into<String>,
+        rollup_config: impl Into<String>,
     ) -> Self {
         Self {
             node_rpc: node_rpc.into(),
             execution_rpc: execution_rpc.into(),
             raft_server_id: raft_server_id.into(),
             raft_storage_dir: raft_storage_dir.into(),
+            rollup_config: rollup_config.into(),
             raft_bootstrap: false,
             consensus_addr: "0.0.0.0".to_string(),
             consensus_port: 50050,
             rpc_addr: "0.0.0.0".to_string(),
             rpc_port: 8547,
-            healthcheck_interval: "1s".to_string(),
+            healthcheck_interval: "5".to_string(),
+            healthcheck_unsafe_interval: "600".to_string(),
+            healthcheck_min_peer_count: "1".to_string(),
             paused: false,
             log_level: "DEBUG".to_string(),
             extra_args: Vec::new(),
@@ -94,6 +104,18 @@ impl OpConductorCmdBuilder {
         self
     }
 
+    /// Set the unsafe interval.
+    pub fn healthcheck_unsafe_interval(mut self, interval: impl Into<String>) -> Self {
+        self.healthcheck_unsafe_interval = interval.into();
+        self
+    }
+
+    /// Set the minimum peer count.
+    pub fn healthcheck_min_peer_count(mut self, count: impl Into<String>) -> Self {
+        self.healthcheck_min_peer_count = count.into();
+        self
+    }
+
     /// Set whether to start in paused mode.
     pub fn paused(mut self, paused: bool) -> Self {
         self.paused = paused;
@@ -127,6 +149,9 @@ impl OpConductorCmdBuilder {
             self.raft_server_id,
             "--raft.storage.dir".to_string(),
             self.raft_storage_dir,
+            // Rollup config
+            "--rollup.config".to_string(),
+            self.rollup_config,
             // Consensus network
             "--consensus.addr".to_string(),
             self.consensus_addr,
@@ -140,6 +165,10 @@ impl OpConductorCmdBuilder {
             // Health check
             "--healthcheck.interval".to_string(),
             self.healthcheck_interval,
+            "--healthcheck.unsafe-interval".to_string(),
+            self.healthcheck_unsafe_interval,
+            "--healthcheck.min-peer-count".to_string(),
+            self.healthcheck_min_peer_count,
             // Log level
             "--log.level".to_string(),
             self.log_level,
@@ -170,6 +199,7 @@ mod tests {
             "http://localhost:8545",
             "sequencer-0",
             "/data/raft",
+            "/data/rollup.json",
         )
         .raft_bootstrap(true)
         .rpc_port(8547)
@@ -187,6 +217,7 @@ mod tests {
             "http://localhost:8545",
             "sequencer-1",
             "/data/raft",
+            "/data/rollup.json",
         )
         .rpc_port(8547)
         .build();

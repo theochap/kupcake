@@ -258,6 +258,8 @@ impl KonaNodeBuilder {
     /// * `jwt_filename` - The JWT secret filename (shared with op-reth)
     /// * `bootnodes` - List of enode URLs for P2P peer discovery
     /// * `l1_chain_id` - L1 chain ID (used to determine if we need a custom L1 config)
+    /// * `conductor_rpc` - Optional conductor RPC URL. If provided, enables conductor control
+    ///   and starts the sequencer in stopped state.
     pub async fn start(
         &self,
         docker: &mut KupDocker,
@@ -268,6 +270,7 @@ impl KonaNodeBuilder {
         jwt_filename: &str,
         bootnodes: &[String],
         l1_chain_id: u64,
+        conductor_rpc: Option<&str>,
     ) -> Result<KonaNodeHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
@@ -306,6 +309,19 @@ impl KonaNodeBuilder {
                 .context("Failed to generate L1 config for local chain")?;
             cmd_builder = cmd_builder
                 .l1_config_file(container_config_path.join("l1-config.json").display().to_string());
+        }
+
+        // Configure conductor control if a conductor RPC URL is provided
+        // This enables conductor mode and starts the sequencer in stopped state
+        if let Some(conductor_url) = conductor_rpc {
+            tracing::info!(
+                conductor_rpc = %conductor_url,
+                container_name = %self.container_name,
+                "Configuring kona-node with conductor control (sequencer will start stopped)"
+            );
+            cmd_builder = cmd_builder
+                .conductor_rpc(conductor_url)
+                .sequencer_stopped(true);
         }
 
         cmd_builder = cmd_builder.unsafe_block_signer_key(

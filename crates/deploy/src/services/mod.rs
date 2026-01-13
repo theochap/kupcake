@@ -31,7 +31,7 @@ pub use kona_node::{
     DEFAULT_DOCKER_IMAGE as KONA_NODE_DEFAULT_IMAGE, DEFAULT_DOCKER_TAG as KONA_NODE_DEFAULT_TAG,
     KonaNodeBuilder, KonaNodeHandler,
 };
-pub use l2_node::{L2NodeBuilder, L2NodeHandler, L2NodeRole};
+pub use l2_node::{ConductorContext, L2NodeBuilder, L2NodeHandler, L2NodeRole};
 pub use op_batcher::{
     DEFAULT_DOCKER_IMAGE as OP_BATCHER_DEFAULT_IMAGE, DEFAULT_DOCKER_TAG as OP_BATCHER_DEFAULT_TAG,
     OpBatcherBuilder, OpBatcherHandler,

@@ -544,8 +544,9 @@ impl DeployerBuilder {
                 // Validate sequencer count
                 let sequencer_count = self.sequencer_count.min(self.l2_node_count);
                 let validator_count = self.l2_node_count.saturating_sub(sequencer_count);
+                let needs_conductor = sequencer_count > 1;
 
-                // Build sequencer nodes
+                // Build sequencer nodes, each with optional conductor config
                 let mut sequencers = Vec::with_capacity(sequencer_count);
                 for i in 0..sequencer_count {
                     let suffix = if i == 0 {
@@ -553,6 +554,26 @@ impl DeployerBuilder {
                     } else {
                         format!("-sequencer-{}", i)
                     };
+
+                    // Create conductor config for each sequencer if multi-sequencer setup
+                    let op_conductor = if needs_conductor {
+                        let conductor_suffix = if i == 0 {
+                            String::new()
+                        } else {
+                            format!("-{}", i)
+                        };
+                        Some(OpConductorBuilder {
+                            docker_image: self.op_conductor_docker.clone(),
+                            container_name: format!(
+                                "{}-op-conductor{}",
+                                network_name, conductor_suffix
+                            ),
+                            ..Default::default()
+                        })
+                    } else {
+                        None
+                    };
+
                     sequencers.push(L2NodeBuilder {
                         role: L2NodeRole::Sequencer,
                         op_reth: OpRethBuilder {
@@ -566,10 +587,11 @@ impl DeployerBuilder {
                             l1_slot_duration: self.block_time,
                             ..Default::default()
                         },
+                        op_conductor,
                     });
                 }
 
-                // Build validator nodes
+                // Build validator nodes (no conductors)
                 let mut validators = Vec::with_capacity(validator_count);
                 for i in 0..validator_count {
                     validators.push(L2NodeBuilder {
@@ -589,19 +611,9 @@ impl DeployerBuilder {
                             l1_slot_duration: self.block_time,
                             ..Default::default()
                         },
+                        op_conductor: None,
                     });
                 }
-
-                // Create op-conductor config if multiple sequencers
-                let op_conductor = if sequencer_count > 1 {
-                    Some(OpConductorBuilder {
-                        docker_image: self.op_conductor_docker,
-                        container_name: format!("{}-op-conductor", network_name),
-                        ..Default::default()
-                    })
-                } else {
-                    None
-                };
 
                 L2StackBuilder {
                     sequencers,
@@ -621,7 +633,6 @@ impl DeployerBuilder {
                         container_name: format!("{}-op-challenger", network_name),
                         ..Default::default()
                     },
-                    op_conductor,
                 }
             },
 

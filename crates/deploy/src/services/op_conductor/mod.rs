@@ -17,7 +17,7 @@ use crate::docker::{
     CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig,
 };
 
-use super::{kona_node::KonaNodeHandler, op_reth::OpRethHandler};
+use super::op_reth::OpRethHandler;
 
 /// Default ports for op-conductor.
 pub const DEFAULT_RPC_PORT: u16 = 8547;
@@ -61,6 +61,10 @@ pub struct OpConductorBuilder {
     pub consensus_host_port: Option<u16>,
     /// Health check interval.
     pub healthcheck_interval: String,
+    /// Unsafe interval - interval allowed between unsafe head and now measured in seconds.
+    pub healthcheck_unsafe_interval: String,
+    /// Minimum number of peers required to be considered healthy.
+    pub healthcheck_min_peer_count: String,
     /// Extra arguments to pass to op-conductor.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -76,7 +80,9 @@ impl Default for OpConductorBuilder {
             consensus_port: DEFAULT_CONSENSUS_PORT,
             rpc_host_port: Some(0),
             consensus_host_port: None,
-            healthcheck_interval: "1s".to_string(),
+            healthcheck_interval: "5".to_string(),
+            healthcheck_unsafe_interval: "600".to_string(),
+            healthcheck_min_peer_count: "1".to_string(),
             extra_args: Vec::new(),
         }
     }
@@ -104,14 +110,14 @@ impl OpConductorBuilder {
         host_config_path: &PathBuf,
         server_id: &str,
         op_reth_handler: &OpRethHandler,
-        kona_node_handler: &KonaNodeHandler,
+        kona_node_rpc_url: &str,
     ) -> Result<OpConductorHandler, anyhow::Error> {
         self.start_internal(
             docker,
             host_config_path,
             server_id,
             op_reth_handler,
-            kona_node_handler,
+            kona_node_rpc_url,
             true, // bootstrap
         )
         .await
@@ -126,14 +132,14 @@ impl OpConductorBuilder {
         host_config_path: &PathBuf,
         server_id: &str,
         op_reth_handler: &OpRethHandler,
-        kona_node_handler: &KonaNodeHandler,
+        kona_node_rpc_url: &str,
     ) -> Result<OpConductorHandler, anyhow::Error> {
         self.start_internal(
             docker,
             host_config_path,
             server_id,
             op_reth_handler,
-            kona_node_handler,
+            kona_node_rpc_url,
             false, // not bootstrap
         )
         .await
@@ -146,24 +152,28 @@ impl OpConductorBuilder {
         host_config_path: &PathBuf,
         server_id: &str,
         op_reth_handler: &OpRethHandler,
-        kona_node_handler: &KonaNodeHandler,
+        kona_node_rpc_url: &str,
         bootstrap: bool,
     ) -> Result<OpConductorHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
         let raft_storage_dir = container_config_path.join("raft");
+        let rollup_config_path = container_config_path.join("rollup.json");
 
         let cmd = OpConductorCmdBuilder::new(
-            kona_node_handler.rpc_url.to_string(),
+            kona_node_rpc_url.to_string(),
             op_reth_handler.http_rpc_url.to_string(),
             server_id,
             raft_storage_dir.display().to_string(),
+            rollup_config_path.display().to_string(),
         )
         .raft_bootstrap(bootstrap)
         .rpc_addr(&self.host)
         .rpc_port(self.rpc_port)
-        .consensus_addr(&self.host)
+        .consensus_addr(&self.container_name) // Must be resolvable by other nodes
         .consensus_port(self.consensus_port)
         .healthcheck_interval(&self.healthcheck_interval)
+        .healthcheck_unsafe_interval(&self.healthcheck_unsafe_interval)
+        .healthcheck_min_peer_count(&self.healthcheck_min_peer_count)
         .extra_args(self.extra_args.clone())
         .build();
 
