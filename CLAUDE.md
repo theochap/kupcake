@@ -75,6 +75,8 @@ When `sequencer_count > 1`:
 - Op-conductor is automatically deployed to coordinate sequencers using Raft consensus
 - Each sequencer gets a unique container name suffix (e.g., `-sequencer-1`, `-sequencer-2`)
 - Validators are numbered separately (e.g., `-validator-1`, `-validator-2`)
+- The first sequencer (index 0) is the initial Raft leader and starts active
+- Subsequent sequencers start in stopped state, waiting for conductor to activate them
 
 ### Component Hierarchy
 
