@@ -20,16 +20,29 @@ use crate::{
 
 use super::{anvil::AnvilHandler, l2_node::L2NodeRole, op_reth::OpRethHandler};
 
-/// Local Anvil chain ID.
-pub const LOCAL_CHAIN_ID: u64 = 31337;
+/// Ethereum Mainnet chain ID.
+pub const MAINNET_CHAIN_ID: u64 = 1;
+/// Ethereum Sepolia testnet chain ID.
+pub const SEPOLIA_CHAIN_ID: u64 = 11155111;
 
-/// Generate an L1 chain config file for local Anvil chains.
+/// Returns true if the chain ID is a known L1 chain (Mainnet or Sepolia).
 ///
-/// This is needed because kona-node doesn't have chain ID 31337 in its registry.
+/// Known chains have pre-deployed OPCM contracts and are in kona-node's registry.
+/// Unknown chains are treated as local/custom chains that need custom configuration.
+pub fn is_known_l1_chain(chain_id: u64) -> bool {
+    chain_id == MAINNET_CHAIN_ID || chain_id == SEPOLIA_CHAIN_ID
+}
+
+/// Generate an L1 chain config file for local/custom Anvil chains.
+///
+/// This is needed because kona-node doesn't have custom chain IDs in its registry.
 /// The config specifies that all hardforks are activated from genesis.
-fn generate_local_l1_config(host_config_path: &PathBuf) -> Result<PathBuf, anyhow::Error> {
+fn generate_local_l1_config(
+    host_config_path: &PathBuf,
+    chain_id: u64,
+) -> Result<PathBuf, anyhow::Error> {
     let config = json!({
-        "chain_id": LOCAL_CHAIN_ID,
+        "chain_id": chain_id,
         "genesis_time": 0,
         "block_time": 2,
         "hardforks": {
@@ -53,7 +66,7 @@ fn generate_local_l1_config(host_config_path: &PathBuf) -> Result<PathBuf, anyho
         serde_json::to_string_pretty(&config).context("Failed to serialize L1 config")?;
     std::fs::write(&config_path, config_content).context("Failed to write L1 config file")?;
 
-    tracing::debug!(path = %config_path.display(), "Generated L1 config file for local chain");
+    tracing::debug!(path = %config_path.display(), chain_id, "Generated L1 config file for local chain");
     Ok(config_path)
 }
 
@@ -287,12 +300,12 @@ impl KonaNodeBuilder {
         .p2p_priv_key(&p2p_keypair.private_key)
         .extra_args(self.extra_args.clone());
 
-        // For local chains, generate and use a custom L1 config file
-        if l1_chain_id == LOCAL_CHAIN_ID {
-            generate_local_l1_config(host_config_path)
+        // For local/custom chains (not Mainnet or Sepolia), generate and use a custom L1 config file
+        if !is_known_l1_chain(l1_chain_id) {
+            generate_local_l1_config(host_config_path, l1_chain_id)
                 .context("Failed to generate L1 config for local chain")?;
-            cmd_builder =
-                cmd_builder.l1_config_file(container_config_path.join("l1-config.json").display().to_string());
+            cmd_builder = cmd_builder
+                .l1_config_file(container_config_path.join("l1-config.json").display().to_string());
         }
 
         cmd_builder = cmd_builder.unsafe_block_signer_key(

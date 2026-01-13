@@ -10,7 +10,7 @@ use crate::{
     fs::FsHandler,
 };
 
-use super::anvil::{AnvilAccounts, AnvilHandler};
+use super::{anvil::{AnvilAccounts, AnvilHandler}, kona_node::is_known_l1_chain};
 
 /// Default Docker image for op-deployer.
 pub const DEFAULT_DOCKER_IMAGE: &str =
@@ -159,12 +159,12 @@ impl OpDeployerConfig {
         l1_chain_id: u64,
         l2_chain_id: u64,
     ) -> Result<PathBuf, anyhow::Error> {
-        // Use "custom" intent type for local chains (no pre-deployed OPCM)
-        // Use "standard-overrides" for chains with pre-deployed OPCM (Sepolia, Mainnet)
-        let intent_type = if l1_chain_id == 31337 {
-            "custom"
-        } else {
+        // Use "standard-overrides" for known chains with pre-deployed OPCM (Sepolia, Mainnet)
+        // Use "custom" intent type for local/custom chains (no pre-deployed OPCM)
+        let intent_type = if is_known_l1_chain(l1_chain_id) {
             "standard-overrides"
+        } else {
+            "custom"
         };
 
         let cmd = vec![

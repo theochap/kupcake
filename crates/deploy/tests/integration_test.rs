@@ -2,6 +2,7 @@
 //!
 //! These tests require Docker to be running and will deploy actual networks.
 //! They run in local mode without forking, which deploys all contracts from scratch.
+//! Each test uses a unique random L1 chain ID to avoid conflicts when running in parallel.
 //! Run with: cargo test --test integration_test
 
 use std::path::PathBuf;
@@ -10,9 +11,18 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use kupcake_deploy::{cleanup_by_prefix, DeployerBuilder, OutDataPath};
+use rand::Rng;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{sleep, timeout};
+
+/// Generate a random L1 chain ID for local testing.
+///
+/// Uses a range that doesn't conflict with known chains (Mainnet=1, Sepolia=11155111)
+/// and is different for each test run. Range: 100000-999999
+fn generate_random_l1_chain_id() -> u64 {
+    rand::rng().random_range(100000..=999999)
+}
 
 /// Response from optimism_syncStatus RPC call.
 #[derive(Debug, Deserialize)]
@@ -326,13 +336,17 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
         .try_init()
         .ok();
 
-    let network_name = format!("kup-test-{}", std::process::id());
+    let l1_chain_id = generate_random_l1_chain_id();
+    let network_name = format!("kup-test-{}", l1_chain_id);
     let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
 
-    println!("=== Starting test deployment with network: {} ===", network_name);
+    println!(
+        "=== Starting test deployment with network: {} (L1 chain ID: {}) ===",
+        network_name, l1_chain_id
+    );
 
     // Build the deployer - use local mode (no forking, deploys all contracts from scratch)
-    let deployer = DeployerBuilder::new(31337) // Local Anvil chain ID
+    let deployer = DeployerBuilder::new(l1_chain_id)
         .network_name(&network_name)
         .outdata(OutDataPath::Path(outdata_path.clone()))
         // No l1_rpc_url - this triggers local mode
@@ -483,13 +497,17 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
         .try_init()
         .ok();
 
-    let network_name = format!("kup-reth-test-{}", std::process::id());
+    let l1_chain_id = generate_random_l1_chain_id();
+    let network_name = format!("kup-reth-test-{}", l1_chain_id);
     let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
 
-    println!("=== Starting op-reth test deployment with network: {} ===", network_name);
+    println!(
+        "=== Starting op-reth test deployment with network: {} (L1 chain ID: {}) ===",
+        network_name, l1_chain_id
+    );
 
     // Use local mode (no forking, deploys all contracts from scratch)
-    let deployer = DeployerBuilder::new(31337) // Local Anvil chain ID
+    let deployer = DeployerBuilder::new(l1_chain_id)
         .network_name(&network_name)
         .outdata(OutDataPath::Path(outdata_path.clone()))
         // No l1_rpc_url - this triggers local mode
@@ -632,13 +650,17 @@ async fn test_op_batcher_health() -> Result<()> {
         .try_init()
         .ok();
 
-    let network_name = format!("kup-batcher-test-{}", std::process::id());
+    let l1_chain_id = generate_random_l1_chain_id();
+    let network_name = format!("kup-batcher-test-{}", l1_chain_id);
     let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
 
-    println!("=== Starting op-batcher test deployment with network: {} ===", network_name);
+    println!(
+        "=== Starting op-batcher test deployment with network: {} (L1 chain ID: {}) ===",
+        network_name, l1_chain_id
+    );
 
     // Use local mode (no forking, deploys all contracts from scratch)
-    let deployer = DeployerBuilder::new(31337) // Local Anvil chain ID
+    let deployer = DeployerBuilder::new(l1_chain_id)
         .network_name(&network_name)
         .outdata(OutDataPath::Path(outdata_path.clone()))
         // No l1_rpc_url - this triggers local mode
