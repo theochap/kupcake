@@ -27,6 +27,8 @@ pub struct KonaNodeCmdBuilder {
     p2p_priv_key: Option<String>,
     unsafe_block_signer_key: Option<Bytes>,
     extra_args: Vec<String>,
+    /// Path to L1 chain config file (for custom/local L1 chains)
+    l1_config_file: Option<String>,
 }
 
 impl KonaNodeCmdBuilder {
@@ -56,7 +58,14 @@ impl KonaNodeCmdBuilder {
             p2p_ip: p2p_ip.into(),
             unsafe_block_signer_key: None,
             extra_args: Vec::new(),
+            l1_config_file: None,
         }
+    }
+
+    /// Set the L1 chain config file path (for custom/local L1 chains like Anvil).
+    pub fn l1_config_file(mut self, path: impl Into<String>) -> Self {
+        self.l1_config_file = Some(path.into());
+        self
     }
 
     /// Set the operating mode (sequencer, follower, etc.).
@@ -201,6 +210,12 @@ impl KonaNodeCmdBuilder {
         // RPC
         cmd.push("--rpc.port".to_string());
         cmd.push(self.rpc_port.to_string());
+
+        // L1 chain config file (for custom/local L1 chains)
+        if let Some(l1_config_file) = self.l1_config_file {
+            cmd.push("--l1-config-file".to_string());
+            cmd.push(l1_config_file);
+        }
 
         cmd.push("-vvvv".to_string());
         cmd.extend(self.extra_args);

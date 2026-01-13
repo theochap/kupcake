@@ -126,6 +126,7 @@ impl L2NodeBuilder {
     /// * `sequencer_rpc` - Optional URL of the sequencer's kona-node RPC (required for validators)
     /// * `kona_node_enodes` - Mutable list of kona-node enodes for P2P discovery. The node's enode will be added after startup.
     /// * `op_reth_enodes` - Mutable list of op-reth enodes for P2P discovery. The node's enode will be added after startup.
+    /// * `l1_chain_id` - L1 chain ID (used to determine if we need a custom L1 config for kona-node)
     pub async fn start(
         &self,
         docker: &mut KupDocker,
@@ -134,6 +135,7 @@ impl L2NodeBuilder {
         sequencer_rpc: Option<&Url>,
         kona_node_enodes: &mut Vec<String>,
         op_reth_enodes: &mut Vec<String>,
+        l1_chain_id: u64,
     ) -> Result<L2NodeHandler, anyhow::Error> {
         // Generate a unique JWT secret for this node pair
         // Use the op-reth container name as the node ID for uniqueness
@@ -173,6 +175,7 @@ impl L2NodeBuilder {
                 self.role,
                 &jwt_filename,
                 kona_node_enodes,
+                l1_chain_id,
             )
             .await?;
 

@@ -1,6 +1,7 @@
 //! Integration tests for kupcake-deploy.
 //!
 //! These tests require Docker to be running and will deploy actual networks.
+//! They run in local mode without forking, which deploys all contracts from scratch.
 //! Run with: cargo test --test integration_test
 
 use std::path::PathBuf;
@@ -330,12 +331,11 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
 
     println!("=== Starting test deployment with network: {} ===", network_name);
 
-    // Build the deployer
-    // Note: We need to provide an L1 RPC URL so Anvil can fork the L1 state
-    let deployer = DeployerBuilder::new(11155111) // Sepolia
+    // Build the deployer - use local mode (no forking, deploys all contracts from scratch)
+    let deployer = DeployerBuilder::new(31337) // Local Anvil chain ID
         .network_name(&network_name)
         .outdata(OutDataPath::Path(outdata_path.clone()))
-        .l1_rpc_url("https://ethereum-sepolia-rpc.publicnode.com")
+        // No l1_rpc_url - this triggers local mode
         .l2_node_count(2) // 1 sequencer + 1 validator (minimum for faster testing)
         .sequencer_count(1)
         .block_time(2) // Fast block time for testing
@@ -488,10 +488,11 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
 
     println!("=== Starting op-reth test deployment with network: {} ===", network_name);
 
-    let deployer = DeployerBuilder::new(11155111)
+    // Use local mode (no forking, deploys all contracts from scratch)
+    let deployer = DeployerBuilder::new(31337) // Local Anvil chain ID
         .network_name(&network_name)
         .outdata(OutDataPath::Path(outdata_path.clone()))
-        .l1_rpc_url("https://ethereum-sepolia-rpc.publicnode.com")
+        // No l1_rpc_url - this triggers local mode
         .l2_node_count(2)
         .sequencer_count(1)
         .block_time(2)
@@ -636,10 +637,11 @@ async fn test_op_batcher_health() -> Result<()> {
 
     println!("=== Starting op-batcher test deployment with network: {} ===", network_name);
 
-    let deployer = DeployerBuilder::new(11155111)
+    // Use local mode (no forking, deploys all contracts from scratch)
+    let deployer = DeployerBuilder::new(31337) // Local Anvil chain ID
         .network_name(&network_name)
         .outdata(OutDataPath::Path(outdata_path.clone()))
-        .l1_rpc_url("https://ethereum-sepolia-rpc.publicnode.com")
+        // No l1_rpc_url - this triggers local mode
         .l2_node_count(2)
         .sequencer_count(1)
         .block_time(2)

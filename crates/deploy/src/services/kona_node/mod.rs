@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use url::Url;
 
 pub use cmd::KonaNodeCmdBuilder;
@@ -18,6 +19,43 @@ use crate::{
 };
 
 use super::{anvil::AnvilHandler, l2_node::L2NodeRole, op_reth::OpRethHandler};
+
+/// Local Anvil chain ID.
+pub const LOCAL_CHAIN_ID: u64 = 31337;
+
+/// Generate an L1 chain config file for local Anvil chains.
+///
+/// This is needed because kona-node doesn't have chain ID 31337 in its registry.
+/// The config specifies that all hardforks are activated from genesis.
+fn generate_local_l1_config(host_config_path: &PathBuf) -> Result<PathBuf, anyhow::Error> {
+    let config = json!({
+        "chain_id": LOCAL_CHAIN_ID,
+        "genesis_time": 0,
+        "block_time": 2,
+        "hardforks": {
+            "bedrock": 0,
+            "regolith": 0,
+            "canyon": 0,
+            "delta": 0,
+            "ecotone": 0,
+            "fjord": 0,
+            "granite": 0,
+            "holocene": 0,
+            "isthmus": 0,
+            "merge": 0,
+            "shanghai": 0,
+            "cancun": 0
+        }
+    });
+
+    let config_path = host_config_path.join("l1-config.json");
+    let config_content =
+        serde_json::to_string_pretty(&config).context("Failed to serialize L1 config")?;
+    std::fs::write(&config_path, config_content).context("Failed to write L1 config file")?;
+
+    tracing::debug!(path = %config_path.display(), "Generated L1 config file for local chain");
+    Ok(config_path)
+}
 
 /// P2P keypair for kona-node identity.
 #[derive(Debug, Clone)]
@@ -206,6 +244,7 @@ impl KonaNodeBuilder {
     /// * `role` - Role of this node (sequencer or validator)
     /// * `jwt_filename` - The JWT secret filename (shared with op-reth)
     /// * `bootnodes` - List of enode URLs for P2P peer discovery
+    /// * `l1_chain_id` - L1 chain ID (used to determine if we need a custom L1 config)
     pub async fn start(
         &self,
         docker: &mut KupDocker,
@@ -215,6 +254,7 @@ impl KonaNodeBuilder {
         role: L2NodeRole,
         jwt_filename: &str,
         bootnodes: &[String],
+        l1_chain_id: u64,
     ) -> Result<KonaNodeHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
@@ -246,6 +286,14 @@ impl KonaNodeBuilder {
         .bootnodes(bootnodes.to_vec())
         .p2p_priv_key(&p2p_keypair.private_key)
         .extra_args(self.extra_args.clone());
+
+        // For local chains, generate and use a custom L1 config file
+        if l1_chain_id == LOCAL_CHAIN_ID {
+            generate_local_l1_config(host_config_path)
+                .context("Failed to generate L1 config for local chain")?;
+            cmd_builder =
+                cmd_builder.l1_config_file(container_config_path.join("l1-config.json").display().to_string());
+        }
 
         cmd_builder = cmd_builder.unsafe_block_signer_key(
             anvil_handler

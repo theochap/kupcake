@@ -25,11 +25,26 @@ struct IntentFile {
     // op_deployer_version: String,
     #[serde(rename = "l1ChainID")]
     l1_chain_id: u64,
-    opcm_address: String,
+    /// OPCM address - only present in "standard-overrides" mode
+    #[serde(skip_serializing_if = "Option::is_none")]
+    opcm_address: Option<String>,
     fund_dev_accounts: bool,
     l1_contracts_locator: String,
     l2_contracts_locator: String,
+    /// Superchain roles - only present in "custom" mode
+    #[serde(skip_serializing_if = "Option::is_none")]
+    superchain_roles: Option<SuperchainRoles>,
     chains: Vec<ChainConfig>,
+}
+
+/// Superchain-level roles for custom intent type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct SuperchainRoles {
+    superchain_proxy_admin_owner: String,
+    superchain_guardian: String,
+    protocol_versions_owner: String,
+    challenger: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +159,14 @@ impl OpDeployerConfig {
         l1_chain_id: u64,
         l2_chain_id: u64,
     ) -> Result<PathBuf, anyhow::Error> {
+        // Use "custom" intent type for local chains (no pre-deployed OPCM)
+        // Use "standard-overrides" for chains with pre-deployed OPCM (Sepolia, Mainnet)
+        let intent_type = if l1_chain_id == 31337 {
+            "custom"
+        } else {
+            "standard-overrides"
+        };
+
         let cmd = vec![
             "op-deployer".to_string(),
             "--cache-dir".to_string(),
@@ -156,7 +179,7 @@ impl OpDeployerConfig {
             "--workdir".to_string(),
             container_config_path.display().to_string(),
             "--intent-type".to_string(),
-            "standard-overrides".to_string(),
+            intent_type.to_string(),
         ];
 
         tracing::debug!(l2_chain_id, "Deploying contracts");
@@ -372,6 +395,17 @@ impl OpDeployerConfig {
             chain.roles.proposer = format_address(&accounts.proposer.address);
             chain.roles.challenger = format_address(&accounts.challenger.address);
 
+            // Set EIP-1559 parameters if not already set (custom intent type has zeros)
+            if chain.eip1559_denominator == 0 {
+                chain.eip1559_denominator = 50; // OP Mainnet default
+            }
+            if chain.eip1559_denominator_canyon == 0 {
+                chain.eip1559_denominator_canyon = 250; // Canyon upgrade default
+            }
+            if chain.eip1559_elasticity == 0 {
+                chain.eip1559_elasticity = 6; // Standard elasticity
+            }
+
             tracing::debug!(
                 chain_id = chain.id,
                 base_fee_vault_recipient = chain.base_fee_vault_recipient,
@@ -385,6 +419,23 @@ impl OpDeployerConfig {
                 proposer = chain.roles.proposer,
                 challenger = chain.roles.challenger,
                 "Updated chain roles with Anvil account addresses"
+            );
+        }
+
+        // Update superchain roles if present (custom intent type)
+        if let Some(ref mut superchain_roles) = intent.superchain_roles {
+            superchain_roles.superchain_proxy_admin_owner =
+                format_address(&accounts.deployer.address);
+            superchain_roles.superchain_guardian = format_address(&accounts.deployer.address);
+            superchain_roles.protocol_versions_owner = format_address(&accounts.deployer.address);
+            superchain_roles.challenger = format_address(&accounts.challenger.address);
+
+            tracing::debug!(
+                superchain_proxy_admin_owner = superchain_roles.superchain_proxy_admin_owner,
+                superchain_guardian = superchain_roles.superchain_guardian,
+                protocol_versions_owner = superchain_roles.protocol_versions_owner,
+                challenger = superchain_roles.challenger,
+                "Updated superchain roles with Anvil account addresses"
             );
         }
 

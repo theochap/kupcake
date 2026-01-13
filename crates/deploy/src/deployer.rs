@@ -315,7 +315,12 @@ impl Deployer {
 
         let l2_stack = self
             .l2_stack
-            .start(&mut docker, l2_nodes_data_path.clone(), &anvil)
+            .start(
+                &mut docker,
+                l2_nodes_data_path.clone(),
+                &anvil,
+                self.l1_chain_id,
+            )
             .await
             .context("Failed to start L2 stack")?;
 

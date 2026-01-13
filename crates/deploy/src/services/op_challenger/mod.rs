@@ -16,8 +16,9 @@ use crate::docker::{
 
 use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethBuilder};
 
-/// Default ports for op-challenger.
+/// Default port for op-challenger (for internal URL reference only - op-challenger has no RPC server).
 pub const DEFAULT_RPC_PORT: u16 = 8561;
+/// Default metrics port for op-challenger.
 pub const DEFAULT_METRICS_PORT: u16 = 7303;
 
 /// Configuration for the op-challenger component.
@@ -27,15 +28,10 @@ pub struct OpChallengerBuilder {
     pub docker_image: DockerImage,
     /// Container name for op-challenger.
     pub container_name: String,
-    /// Host for the RPC endpoint.
+    /// Host for the metrics endpoint.
     pub host: String,
-    /// Port for the op-challenger RPC server (container port).
-    pub rpc_port: u16,
     /// Port for metrics (container port).
     pub metrics_port: u16,
-    /// Host port for RPC. If None, not published to host.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rpc_host_port: Option<u16>,
     /// Host port for metrics. If None, not published to host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics_host_port: Option<u16>,
@@ -56,9 +52,7 @@ impl Default for OpChallengerBuilder {
             docker_image: DockerImage::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
             container_name: "kupcake-op-challenger".to_string(),
             host: "0.0.0.0".to_string(),
-            rpc_port: DEFAULT_RPC_PORT,
             metrics_port: DEFAULT_METRICS_PORT,
-            rpc_host_port: Some(0),
             metrics_host_port: Some(0),
             extra_args: Vec::new(),
         }
@@ -114,7 +108,6 @@ impl OpChallengerBuilder {
         )
         .trace_type("permissioned")
         .game_allowlist([254]) // Permissioned game type
-        .rpc_port(self.rpc_port)
         .metrics(true, "0.0.0.0", self.metrics_port)
         .extra_args(self.extra_args.clone())
         .build();
@@ -122,13 +115,12 @@ impl OpChallengerBuilder {
         self.docker_image.pull(docker).await?;
 
         // Build port mappings only for ports that should be published to host
-        let port_mappings: Vec<PortMapping> = [
-            PortMapping::tcp_optional(self.rpc_port, self.rpc_host_port),
-            PortMapping::tcp_optional(self.metrics_port, self.metrics_host_port),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        // op-challenger doesn't have an RPC server, only metrics
+        let port_mappings: Vec<PortMapping> =
+            [PortMapping::tcp_optional(self.metrics_port, self.metrics_host_port)]
+                .into_iter()
+                .flatten()
+                .collect();
 
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
@@ -153,7 +145,8 @@ impl OpChallengerBuilder {
             "op-challenger container started"
         );
 
-        let rpc_url = KupDocker::build_http_url(&handler.container_name, self.rpc_port)?;
+        // op-challenger doesn't have an RPC server, use metrics URL as reference
+        let rpc_url = KupDocker::build_http_url(&handler.container_name, self.metrics_port)?;
 
         Ok(OpChallengerHandler {
             container_id: handler.container_id,

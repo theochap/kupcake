@@ -498,7 +498,12 @@ impl DeployerBuilder {
                 Some(block.number),
             )
         } else {
-            (None, None)
+            // Local mode: use current time as genesis timestamp
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            (Some(now), None)
         };
 
         tracing::info!(

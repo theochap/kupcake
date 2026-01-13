@@ -152,11 +152,18 @@ impl L2StackBuilder {
     /// then op-batcher (batch submitter), op-proposer, and op-challenger.
     /// Each L2 node pair (op-reth + kona-node) generates its own JWT for authentication.
     /// P2P peer discovery is enabled by passing enodes between nodes.
+    ///
+    /// # Arguments
+    /// * `docker` - Docker client
+    /// * `host_config_path` - Path on host for config files
+    /// * `anvil_handler` - Handler for the L1 Anvil instance
+    /// * `l1_chain_id` - L1 chain ID (used to determine if we need a custom L1 config for kona-node)
     pub async fn start(
         &self,
         docker: &mut KupDocker,
         host_config_path: PathBuf,
         anvil_handler: &AnvilHandler,
+        l1_chain_id: u64,
     ) -> Result<L2StackHandler, anyhow::Error> {
         if !host_config_path.exists() {
             fs::FsHandler::create_host_config_directory(&host_config_path)?;
@@ -184,6 +191,7 @@ impl L2StackBuilder {
                     None, // Sequencers don't follow another sequencer
                     &mut kona_node_enodes,
                     &mut op_reth_enodes,
+                    l1_chain_id,
                 )
                 .await
                 .context(format!("Failed to start sequencer node {}", i + 1))?;
@@ -207,6 +215,7 @@ impl L2StackBuilder {
                     Some(&sequencer_rpc),
                     &mut kona_node_enodes,
                     &mut op_reth_enodes,
+                    l1_chain_id,
                 )
                 .await
                 .context(format!("Failed to start validator node {}", i + 1))?;

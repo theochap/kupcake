@@ -24,6 +24,11 @@ pub enum L1Provider {
 
 impl L1Provider {
     pub fn to_rpc_url(&self, chain: L1Chain) -> anyhow::Result<String> {
+        // Local chain runs vanilla anvil without forking
+        if chain == L1Chain::Local {
+            anyhow::bail!("Local chain does not use fork mode");
+        }
+
         match self {
             L1Provider::PublicNode if chain == L1Chain::Sepolia => {
                 Ok("https://ethereum-sepolia-rpc.publicnode.com".to_string())
@@ -45,6 +50,8 @@ pub enum L1Chain {
     #[default]
     Sepolia,
     Mainnet,
+    /// Local anvil chain without forking from an external RPC.
+    Local,
 }
 
 impl L1Chain {
@@ -52,6 +59,7 @@ impl L1Chain {
         match self {
             L1Chain::Sepolia => 11155111,
             L1Chain::Mainnet => 1,
+            L1Chain::Local => 31337, // Anvil's default chain ID
         }
     }
 }

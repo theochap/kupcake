@@ -10,8 +10,6 @@ pub struct OpChallengerCmdBuilder {
     game_factory_address: String,
     trace_type: String,
     game_allowlist: Vec<u8>,
-    rpc_addr: String,
-    rpc_port: u16,
     metrics_enabled: bool,
     metrics_addr: String,
     metrics_port: u16,
@@ -35,8 +33,6 @@ impl OpChallengerCmdBuilder {
             game_factory_address: game_factory_address.into(),
             trace_type: "permissioned".to_string(),
             game_allowlist: vec![254], // Permissioned game type
-            rpc_addr: "0.0.0.0".to_string(),
-            rpc_port: 8561,
             metrics_enabled: true,
             metrics_addr: "0.0.0.0".to_string(),
             metrics_port: 7303,
@@ -53,18 +49,6 @@ impl OpChallengerCmdBuilder {
     /// Set the game allowlist.
     pub fn game_allowlist(mut self, games: impl IntoIterator<Item = u8>) -> Self {
         self.game_allowlist = games.into_iter().collect();
-        self
-    }
-
-    /// Set the RPC server address.
-    pub fn rpc_addr(mut self, addr: impl Into<String>) -> Self {
-        self.rpc_addr = addr.into();
-        self
-    }
-
-    /// Set the RPC server port.
-    pub fn rpc_port(mut self, port: u16) -> Self {
-        self.rpc_port = port;
         self
     }
 
@@ -106,12 +90,6 @@ impl OpChallengerCmdBuilder {
             cmd.push(game.to_string());
         }
 
-        // RPC
-        cmd.push("--rpc.addr".to_string());
-        cmd.push(self.rpc_addr);
-        cmd.push("--rpc.port".to_string());
-        cmd.push(self.rpc_port.to_string());
-
         // Metrics
         if self.metrics_enabled {
             cmd.push("--metrics.enabled".to_string());
@@ -140,7 +118,6 @@ mod tests {
             "0xdeadbeef",
             "0x1234567890abcdef",
         )
-        .rpc_port(8561)
         .build();
 
         assert!(cmd.contains(&"op-challenger".to_string()));
