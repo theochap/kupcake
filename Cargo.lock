@@ -1784,6 +1784,7 @@ dependencies = [
  "anyhow",
  "clap",
  "kupcake-deploy",
+ "rand 0.9.2",
  "strum",
  "tokio",
  "tracing",

@@ -9,10 +9,6 @@ use kupcake_deploy::{
 };
 use tracing::level_filters::LevelFilter;
 
-/// The default L1 chain ID (Sepolia).
-const DEFAULT_L1_CHAIN_INFO: L1Chain = L1Chain::Sepolia;
-/// The default L1 RPC URL (Sepolia public node).
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, strum::Display, strum::EnumString)]
 #[strum(serialize_all = "kebab-case")]
 pub enum L1Provider {
@@ -24,11 +20,6 @@ pub enum L1Provider {
 
 impl L1Provider {
     pub fn to_rpc_url(&self, chain: L1Chain) -> anyhow::Result<String> {
-        // Local chain runs vanilla anvil without forking
-        if chain == L1Chain::Local {
-            anyhow::bail!("Local chain does not use fork mode");
-        }
-
         match self {
             L1Provider::PublicNode if chain == L1Chain::Sepolia => {
                 Ok("https://ethereum-sepolia-rpc.publicnode.com".to_string())
@@ -44,22 +35,24 @@ impl L1Provider {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, strum::Display, strum::EnumString)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, strum::Display, strum::EnumString)]
 #[strum(serialize_all = "kebab-case")]
 pub enum L1Chain {
     #[default]
     Sepolia,
     Mainnet,
-    /// Local anvil chain without forking from an external RPC.
-    Local,
+    #[strum(default)]
+    Custom(String),
 }
 
 impl L1Chain {
-    pub fn to_chain_id(&self) -> u64 {
+    pub fn to_chain_id(&self) -> anyhow::Result<u64> {
         match self {
-            L1Chain::Sepolia => 11155111,
-            L1Chain::Mainnet => 1,
-            L1Chain::Local => 31337, // Anvil's default chain ID
+            L1Chain::Sepolia => Ok(11155111),
+            L1Chain::Mainnet => Ok(1),
+            L1Chain::Custom(id) => id
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid L1 chain ID: {}", id)),
         }
     }
 }
@@ -144,15 +137,19 @@ pub struct DeployArgs {
 
     /// The URL of an L1 RPC endpoint.
     ///
-    /// If not provided, the L1 chain will be started with a public node endpoint.
+    /// If neither this nor --l1-chain is provided, the L1 chain will run in local mode
+    /// without forking and with a random chain ID.
     ///
-    /// If public node is selected, anvil will be started in fork-mode using a node from `<https://publicnode.com/>`
-    #[arg(long, alias = "l1-rpc", env = "KUP_L1_RPC_URL", default_value_t = L1Provider::PublicNode)]
-    pub l1_rpc_provider: L1Provider,
+    /// If public-node is selected (default when --l1-chain is provided),
+    /// anvil will be started in fork-mode using a node from `<https://publicnode.com/>`
+    #[arg(long, alias = "l1-rpc", env = "KUP_L1_RPC_URL")]
+    pub l1_rpc_provider: Option<L1Provider>,
 
     /// The L1 chain info (chain ID or name).
-    #[arg(long, alias = "l1", env = "KUP_L1_CHAIN", default_value_t = DEFAULT_L1_CHAIN_INFO)]
-    pub l1_chain: L1Chain,
+    ///
+    /// If not provided, the L1 chain will be started with a local anvil chain with a random chain ID.
+    #[arg(long, alias = "l1", env = "KUP_L1_CHAIN")]
+    pub l1_chain: Option<L1Chain>,
 
     /// The L2 chain info (chain ID or name).
     /// If not provided, the L2 chain id will be generated randomly.
@@ -221,8 +218,8 @@ impl Default for DeployArgs {
     fn default() -> Self {
         Self {
             network: None,
-            l1_rpc_provider: L1Provider::PublicNode,
-            l1_chain: L1Chain::Sepolia,
+            l1_rpc_provider: None, // Local mode by default
+            l1_chain: None,        // Random chain ID by default
             l2_chain: None,
             redeploy: false,
             outdata: None,
