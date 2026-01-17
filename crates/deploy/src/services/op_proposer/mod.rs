@@ -11,7 +11,8 @@ use url::Url;
 pub use cmd::OpProposerCmdBuilder;
 
 use crate::docker::{
-    CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig,
+    CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping,
+    ServiceConfig,
 };
 
 use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler};
@@ -128,10 +129,17 @@ impl OpProposerBuilder {
         .flatten()
         .collect();
 
-        let service_config = ServiceConfig::new(self.docker_image.clone())
+        // When publish_all_ports is enabled, expose all ports (Docker will publish them automatically)
+        let mut service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports(port_mappings)
             .bind(host_config_path, &container_config_path, "rw");
+
+        if docker.config.publish_all_ports {
+            service_config = service_config
+                .expose(ExposedPort::tcp(self.rpc_port))
+                .expose(ExposedPort::tcp(self.metrics_port));
+        }
 
         let handler = docker
             .start_service(

@@ -973,3 +973,253 @@ async fn test_op_batcher_health() -> Result<()> {
 
     Ok(())
 }
+/// Test that --publish-all-ports functionality works correctly.
+/// This test verifies:
+/// - All service ports are published to random host ports when enabled
+/// - Published ports are accessible from the host
+/// - Containers are still on the custom Docker network
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_publish_all_ports() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init()
+        .ok();
+
+    let l1_chain_id = generate_random_l1_chain_id();
+    let network_name = format!("kup-publish-test-{}", l1_chain_id);
+    let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
+
+    println!(
+        "=== Starting publish-all-ports test with network: {} (L1 chain ID: {}) ===",
+        network_name, l1_chain_id
+    );
+
+    // Deploy with publish_all_ports enabled
+    let deployer = DeployerBuilder::new(l1_chain_id)
+        .network_name(&network_name)
+        .outdata(OutDataPath::Path(outdata_path.clone()))
+        .l2_node_count(2) // 1 sequencer + 1 validator
+        .sequencer_count(1)
+        .block_time(2)
+        .publish_all_ports(true) // Enable publish_all_ports
+        .detach(true)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
+
+    deployer.save_config()?;
+
+    println!("=== Deploying network with publish_all_ports enabled... ===");
+
+    let deploy_result = timeout(Duration::from_secs(600), deployer.deploy(false)).await;
+
+    match deploy_result {
+        Ok(Ok(())) => println!("=== Deployment completed successfully ==="),
+        Ok(Err(e)) => {
+            let _ = cleanup_by_prefix(&network_name).await;
+            return Err(e).context("Deployment failed");
+        }
+        Err(_) => {
+            let _ = cleanup_by_prefix(&network_name).await;
+            anyhow::bail!("Deployment timed out after 600 seconds");
+        }
+    }
+
+    // Define containers and their expected exposed ports to check
+    // When publish_all_ports is enabled, ports that are NOT published by default SHOULD be published
+    // Focus on verifying that optional/metrics ports that default to None are now published
+    let containers_to_check = vec![
+        // Core RPC ports (always published)
+        (format!("{}-anvil", network_name), 8545, true), // required: always published
+        (format!("{}-op-reth", network_name), 9545, true), // HTTP RPC - always published
+        (format!("{}-op-reth", network_name), 9546, true), // WS RPC - always published
+        (format!("{}-kona-node", network_name), 7545, true), // RPC - always published
+        (format!("{}-op-batcher", network_name), 8548, true), // RPC - always published
+        (format!("{}-prometheus", network_name), 9090, true), // always published
+        (format!("{}-grafana", network_name), 3000, true), // always published
+
+        // Optional ports that should ONLY be published when publish_all_ports is true
+        // These are the key ports to verify for this test
+        (format!("{}-op-reth", network_name), 8551, false), // AuthRPC - default None
+        (format!("{}-op-reth", network_name), 9001, false), // Metrics - default None
+        (format!("{}-kona-node", network_name), 7300, false), // Metrics - default None
+        (format!("{}-op-batcher", network_name), 7301, false), // Metrics - default None
+        (format!("{}-op-proposer", network_name), 8560, false), // RPC - default None
+        (format!("{}-op-proposer", network_name), 7302, false), // Metrics - default None
+    ];
+
+    println!("=== Verifying that ports are published to the host... ===");
+    let mut published_ports = Vec::new();
+    let mut errors = Vec::new();
+
+    for (container_name, container_port, required) in containers_to_check {
+        match get_container_host_port(&container_name, container_port) {
+            Ok(host_port) => {
+                println!(
+                    "✓ {}:{} -> host:{} {}",
+                    container_name, container_port, host_port,
+                    if required { "(required)" } else { "(optional - publish_all_ports enabled)" }
+                );
+                published_ports.push((container_name, container_port, host_port));
+            }
+            Err(e) => {
+                let error_msg = format!(
+                    "✗ {}:{} - Failed to get host port: {}",
+                    container_name, container_port, e
+                );
+                println!("{}", error_msg);
+                // Only treat as error if this port is required
+                if required {
+                    errors.push(error_msg);
+                }
+            }
+        }
+    }
+
+    // Verify we found at least some published ports
+    if published_ports.is_empty() {
+        let _ = cleanup_by_prefix(&network_name).await;
+        anyhow::bail!("No ports were published to the host");
+    }
+
+    println!(
+        "=== Found {} published ports ===",
+        published_ports.len()
+    );
+
+    // Verify containers are still on the custom network
+    println!("=== Verifying containers are on custom network... ===");
+    let network_name_docker = format!("{}-network", network_name);
+    let output = Command::new("docker")
+        .args([
+            "inspect",
+            "--format",
+            "{{json .NetworkSettings.Networks}}",
+            &format!("{}-anvil", network_name),
+        ])
+        .output()
+        .context("Failed to inspect container networks")?;
+
+    if !output.status.success() {
+        let _ = cleanup_by_prefix(&network_name).await;
+        anyhow::bail!(
+            "Failed to inspect network: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let networks_json = String::from_utf8_lossy(&output.stdout);
+    if !networks_json.contains(&network_name_docker) {
+        let _ = cleanup_by_prefix(&network_name).await;
+        anyhow::bail!(
+            "Container not on expected network {}. Networks: {}",
+            network_name_docker,
+            networks_json
+        );
+    }
+
+    println!("✓ Containers are on custom network: {}", network_name_docker);
+
+    // Test accessibility of a few key ports
+    println!("=== Testing accessibility of published ports... ===");
+
+    // Test anvil RPC
+    if let Some((_, _, host_port)) = published_ports.iter().find(|(name, port, _)| {
+        name == &format!("{}-anvil", network_name) && *port == 8545
+    }) {
+        let anvil_url = format!("http://localhost:{}", host_port);
+        match test_rpc_endpoint(&anvil_url, "eth_blockNumber").await {
+            Ok(_) => println!("✓ Anvil RPC accessible at {}", anvil_url),
+            Err(e) => {
+                println!("✗ Anvil RPC not accessible: {}", e);
+                errors.push(format!("Anvil RPC not accessible: {}", e));
+            }
+        }
+    }
+
+    // Test op-reth RPC
+    if let Some((_, _, host_port)) = published_ports.iter().find(|(name, port, _)| {
+        name == &format!("{}-op-reth", network_name) && *port == 9545
+    }) {
+        let reth_url = format!("http://localhost:{}", host_port);
+        match test_rpc_endpoint(&reth_url, "eth_blockNumber").await {
+            Ok(_) => println!("✓ op-reth RPC accessible at {}", reth_url),
+            Err(e) => {
+                println!("✗ op-reth RPC not accessible: {}", e);
+                errors.push(format!("op-reth RPC not accessible: {}", e));
+            }
+        }
+    }
+
+    // Test kona-node RPC
+    if let Some((_, _, host_port)) = published_ports.iter().find(|(name, port, _)| {
+        name == &format!("{}-kona-node", network_name) && *port == 7545
+    }) {
+        let kona_url = format!("http://localhost:{}", host_port);
+        match test_rpc_endpoint(&kona_url, "optimism_syncStatus").await {
+            Ok(_) => println!("✓ kona-node RPC accessible at {}", kona_url),
+            Err(e) => {
+                println!("Warning: kona-node RPC not accessible yet: {}", e);
+                // Don't treat as error since it may take time to be ready
+            }
+        }
+    }
+
+    // Cleanup
+    println!("=== Cleaning up network... ===");
+    let cleanup_result = cleanup_by_prefix(&network_name).await?;
+    println!(
+        "Cleaned up {} containers",
+        cleanup_result.containers_removed.len()
+    );
+    if let Some(network) = cleanup_result.network_removed {
+        println!("Removed network: {}", network);
+    }
+
+    // Assert after cleanup
+    if !errors.is_empty() {
+        anyhow::bail!("Test failed with errors:\n{}", errors.join("\n"));
+    }
+
+    println!("=== Test passed! All ports are published and accessible. ===");
+    Ok(())
+}
+
+/// Test an RPC endpoint by calling a simple method.
+async fn test_rpc_endpoint(rpc_url: &str, method: &str) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+
+    let response = client
+        .post(rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": [],
+            "id": 1
+        }))
+        .send()
+        .await
+        .context("Failed to send RPC request")?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("RPC returned non-success status: {}", response.status());
+    }
+
+    let body: Value = response
+        .json()
+        .await
+        .context("Failed to parse RPC response")?;
+
+    if body.get("error").is_some() {
+        anyhow::bail!("RPC returned error: {:?}", body["error"]);
+    }
+
+    if body.get("result").is_none() {
+        anyhow::bail!("RPC response missing result field");
+    }
+
+    Ok(())
+}

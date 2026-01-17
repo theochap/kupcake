@@ -117,6 +117,8 @@ pub struct DeployerBuilder {
     no_cleanup: bool,
     /// Whether to run in detached mode (exit after deployment).
     detach: bool,
+    /// Whether to publish all exposed ports to random host ports.
+    publish_all_ports: bool,
     /// Path to custom dashboards directory.
     dashboards_path: Option<PathBuf>,
     /// Whether monitoring is enabled.
@@ -152,6 +154,7 @@ impl DeployerBuilder {
             l1_rpc_url: None,
             no_cleanup: false,
             detach: false,
+            publish_all_ports: false,
             dashboards_path: None,
             monitoring_enabled: true,
             block_time: 12,
@@ -427,6 +430,12 @@ impl DeployerBuilder {
         self
     }
 
+    /// Set whether to publish all exposed ports to random host ports.
+    pub fn publish_all_ports(mut self, publish_all_ports: bool) -> Self {
+        self.publish_all_ports = publish_all_ports;
+        self
+    }
+
     /// Set the path to custom Grafana dashboards.
     pub fn dashboards_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.dashboards_path = Some(path.into());
@@ -533,6 +542,7 @@ impl DeployerBuilder {
             docker: KupDockerConfig {
                 net_name: format!("{}-network", network_name),
                 no_cleanup: self.no_cleanup || self.detach,
+                publish_all_ports: self.publish_all_ports,
             },
 
             op_deployer: OpDeployerConfig {

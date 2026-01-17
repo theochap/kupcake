@@ -160,6 +160,14 @@ pub struct DeployArgs {
     #[arg(long, env = "KUP_DETACH")]
     pub detach: bool,
 
+    /// Publish all exposed container ports to random host ports.
+    ///
+    /// When enabled, Docker will automatically assign random available ports on the host
+    /// for all exposed container ports (equivalent to `docker run -P`).
+    /// The custom Docker network is still used for container-to-container communication.
+    #[arg(long, env = "KUP_PUBLISH_ALL_PORTS")]
+    pub publish_all_ports: bool,
+
     /// The block time in seconds for the L1 chain (Anvil) and L2 derivation.
     ///
     /// Defaults to 12 seconds (Ethereum mainnet block time).
@@ -209,6 +217,7 @@ impl Default for DeployArgs {
             outdata: None,
             no_cleanup: false,
             detach: false,
+            publish_all_ports: false,
             block_time: 12,
             l2_nodes: 5,
             sequencer_count: 2,

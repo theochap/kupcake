@@ -297,6 +297,9 @@ pub struct KupDockerConfig {
     pub net_name: String,
     /// Whether to skip cleanup of containers on exit.
     pub no_cleanup: bool,
+    /// Whether to publish all exposed ports to random host ports.
+    #[serde(default)]
+    pub publish_all_ports: bool,
 }
 
 /// Docker client wrapper for Foundry operations.
@@ -735,6 +738,7 @@ impl KupDocker {
             binds: (!config.binds.is_empty()).then_some(config.binds),
             network_mode: Some(self.network_id.clone()),
             auto_remove: options.auto_remove.then_some(true),
+            publish_all_ports: self.config.publish_all_ports.then_some(true),
             ..Default::default()
         };
 
