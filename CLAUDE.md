@@ -54,14 +54,14 @@ cargo clippy --fix
 
 1. **DeployerBuilder** (`crates/deploy/src/builder.rs`) - Constructs deployment configuration
 2. **Deployer** (`crates/deploy/src/deployer.rs`) - Orchestrates the deployment sequence
-3. **KupDocker** (`crates/deploy/src/docker.rs`) - Docker client wrapper for container management
+3. **KupDocker** (`crates/deploy/src/docker.rs`) - Docker client wrapper using [bollard](https://crates.io/crates/bollard) for container management
 4. **Services** (`crates/deploy/src/services/`) - Individual service handlers for each component
 
 ### Service Architecture
 
 Each service follows a consistent pattern with two files:
 - `mod.rs` - Contains Config/Builder structs, Handler struct, and deployment logic
-- `cmd.rs` - Command builder that generates Docker CLI arguments
+- `cmd.rs` - Command builder that generates container arguments (passed to bollard's `Config::cmd`)
 
 Services are organized as L2 node pairs (op-reth + kona-node):
 - **L2NodeBuilder** - Combines OpRethBuilder + KonaNodeBuilder with a role (Sequencer/Validator)
@@ -211,13 +211,14 @@ When adding new services:
 1. Create module in `crates/deploy/src/services/{service_name}/`
 2. Define `{Service}Config` or `{Service}Builder` (serializable)
 3. Define `{Service}Handler` (runtime handle)
-4. Create `cmd.rs` with command builder
+4. Create `cmd.rs` with container argument builder
 5. Add default image/tag constants
 6. Export types in `services/mod.rs`
 7. Integrate into `Deployer` or `L2StackBuilder`
 
-When modifying Docker commands:
-- Commands are built in `cmd.rs` files using the builder pattern
+When modifying container configuration:
+- Container arguments are built in `cmd.rs` files using the builder pattern
+- Containers are managed via bollard (not CLI) - see `KupDocker` in `docker.rs`
 - Test locally with `--no-cleanup` to inspect containers
 - Use `docker logs {container-name}` to debug
 
