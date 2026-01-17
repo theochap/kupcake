@@ -120,14 +120,27 @@ pub const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/foundry-rs/foundry";
 /// Default Docker tag for Anvil (Foundry).
 pub const DEFAULT_DOCKER_TAG: &str = "latest";
 
-/// Host port configuration for Anvil (used in Bridge mode).
+/// Container port configuration for Anvil.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AnvilContainerPorts {
+    pub rpc: u16,
+}
+
+impl Default for AnvilContainerPorts {
+    fn default() -> Self {
+        Self {
+            rpc: DEFAULT_PORT,
+        }
+    }
+}
+
+/// Bound host port configuration for Anvil.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct AnvilHostPorts {
-    /// Host port for RPC endpoint.
+pub struct AnvilBoundPorts {
     pub rpc: Option<u16>,
 }
 
-impl Default for AnvilHostPorts {
+impl Default for AnvilBoundPorts {
     fn default() -> Self {
         Self {
             rpc: Some(0), // Let OS pick an available port
@@ -135,28 +148,24 @@ impl Default for AnvilHostPorts {
     }
 }
 
-/// Runtime port information for Anvil containers.
-pub enum AnvilContainerPorts {
-    /// Host network mode - all communication via localhost with dynamically assigned ports.
-    Host {
-        /// Bound host ports for this container.
-        bound_ports: AnvilHostPorts,
-    },
-    /// Bridge network mode - internal communication via container name, host access via mapped ports.
+/// Unified port configuration for Anvil.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum AnvilPorts {
+    Host { bound_ports: AnvilBoundPorts },
     Bridge {
-        /// Container name for internal Docker network URLs.
         container_name: String,
-        /// Bound host ports for this container (for host access).
-        bound_ports: AnvilHostPorts,
+        container_ports: AnvilContainerPorts,
+        bound_ports: AnvilBoundPorts,
     },
 }
 
-impl AnvilContainerPorts {
+impl AnvilPorts {
     /// Get the HTTP URL for internal container-to-container communication.
     ///
     /// In host mode, returns localhost with the bound port.
     /// In bridge mode, returns the container name with the container port.
-    pub fn internal_http_url(&self, container_port: u16) -> anyhow::Result<Url> {
+    pub fn internal_http_url(&self) -> anyhow::Result<Url> {
         let url_str = match self {
             Self::Host { bound_ports } => {
                 let port = bound_ports
@@ -164,8 +173,8 @@ impl AnvilContainerPorts {
                     .ok_or_else(|| anyhow::anyhow!("RPC port not bound"))?;
                 format!("http://localhost:{}/", port)
             }
-            Self::Bridge { container_name, .. } => {
-                format!("http://{}:{}/", container_name, container_port)
+            Self::Bridge { container_name, container_ports, .. } => {
+                format!("http://{}:{}/", container_name, container_ports.rpc)
             }
         };
         Url::parse(&url_str).context("Failed to parse HTTP URL")
@@ -193,11 +202,8 @@ pub struct AnvilConfig {
     pub docker_image: DockerImage,
     /// Host address for Anvil.
     pub host: String,
-    /// Port for Anvil RPC (container port).
-    pub port: u16,
-    /// Host ports configuration. Only populated in Bridge mode.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_ports: Option<AnvilHostPorts>,
+    /// Unified port configuration.
+    pub ports: AnvilPorts,
     /// Block time in seconds.
     pub block_time: u64,
     /// URL to fork from (optional, if not provided Anvil runs without forking).
@@ -231,7 +237,7 @@ pub struct AnvilHandler {
     /// Docker container name.
     pub container_name: String,
     /// Port information for this container.
-    pub ports: AnvilContainerPorts,
+    pub ports: AnvilPorts,
     /// Named accounts from Anvil matching the OP Stack participant roles.
     pub accounts: AnvilAccounts,
 }
@@ -239,7 +245,7 @@ pub struct AnvilHandler {
 impl AnvilHandler {
     /// Get the internal RPC URL for container-to-container communication.
     pub fn internal_rpc_url(&self) -> anyhow::Result<Url> {
-        self.ports.internal_http_url(ANVIL_INTERNAL_PORT)
+        self.ports.internal_http_url()
     }
 
     /// Get the host-accessible RPC URL (if published).
@@ -271,9 +277,15 @@ impl AnvilConfig {
         // Container path where anvil will write the config
         let container_config_path = PathBuf::from("/data");
 
+        // Extract ports from self.ports
+        let (container_ports, bound_ports) = match &self.ports {
+            AnvilPorts::Host { bound_ports } => (AnvilContainerPorts::default(), bound_ports.clone()),
+            AnvilPorts::Bridge { container_ports, bound_ports, .. } => (*container_ports, bound_ports.clone()),
+        };
+
         let mut cmd_builder = AnvilCmdBuilder::new(chain_id)
             .host("0.0.0.0")
-            .port(ANVIL_INTERNAL_PORT)
+            .port(container_ports.rpc)
             .block_time(self.block_time)
             .timestamp(self.timestamp)
             .fork_block_number(self.fork_block_number)
@@ -287,12 +299,9 @@ impl AnvilConfig {
 
         let cmd = cmd_builder.build();
 
-        // Extract port value for PortMapping from host_ports
-        let rpc_port = self.host_ports.as_ref().and_then(|hp| hp.rpc);
-
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> =
-            PortMapping::tcp_optional(ANVIL_INTERNAL_PORT, rpc_port)
+            PortMapping::tcp_optional(container_ports.rpc, bound_ports.rpc)
                 .into_iter()
                 .collect();
 
@@ -348,23 +357,23 @@ impl AnvilConfig {
         let accounts = AnvilAccounts::from_account_infos(account_infos)
             .context("Failed to create named accounts from Anvil")?;
 
-        // Convert HashMap bound_ports to AnvilHostPorts
-        let bound_host_ports = AnvilHostPorts {
-            rpc: service_handler.ports.get_tcp_host_port(ANVIL_INTERNAL_PORT),
+        // Build runtime ports with actual bound ports
+        let actual_bound_ports = AnvilBoundPorts {
+            rpc: service_handler.ports.get_tcp_host_port(container_ports.rpc),
         };
 
-        // Create typed ContainerPorts
-        let typed_ports = match &service_handler.ports {
-            ContainerPorts::Host { .. } => AnvilContainerPorts::Host {
-                bound_ports: bound_host_ports,
+        let runtime_ports = match &service_handler.ports {
+            ContainerPorts::Host { .. } => AnvilPorts::Host {
+                bound_ports: actual_bound_ports,
             },
-            ContainerPorts::Bridge { container_name, .. } => AnvilContainerPorts::Bridge {
+            ContainerPorts::Bridge { container_name, .. } => AnvilPorts::Bridge {
                 container_name: container_name.clone(),
-                bound_ports: bound_host_ports,
+                container_ports,
+                bound_ports: actual_bound_ports,
             },
         };
 
-        let host_rpc_url = typed_ports.host_http_url();
+        let host_rpc_url = runtime_ports.host_http_url();
 
         tracing::info!(
             container_id = %service_handler.container_id,
@@ -376,7 +385,7 @@ impl AnvilConfig {
         Ok(AnvilHandler {
             container_id: service_handler.container_id,
             container_name: service_handler.container_name,
-            ports: typed_ports,
+            ports: runtime_ports,
             accounts,
         })
     }
@@ -388,8 +397,11 @@ impl Default for AnvilConfig {
             docker_image: DockerImage::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
             container_name: "kupcake-anvil".to_string(),
             host: "0.0.0.0".to_string(),
-            port: DEFAULT_PORT,
-            host_ports: Some(AnvilHostPorts::default()),
+            ports: AnvilPorts::Bridge {
+                container_name: "kupcake-anvil".to_string(),
+                container_ports: AnvilContainerPorts::default(),
+                bound_ports: AnvilBoundPorts::default(),
+            },
             block_time: 12,
             fork_url: None,
             timestamp: None,

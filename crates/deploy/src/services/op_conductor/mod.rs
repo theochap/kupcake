@@ -306,8 +306,16 @@ impl OpConductorBuilder {
 
         // Convert HashMap bound_ports to OpConductorHostPorts
         let bound_host_ports = OpConductorHostPorts {
-            rpc: service_handler.ports.get_tcp_host_port(self.rpc_port),
-            consensus: service_handler.ports.get_tcp_host_port(self.consensus_port),
+            rpc: service_handler.ports.get_tcp_host_port(self.rpc_port)
+                .or(match &service_handler.ports {
+                    ContainerPorts::Host { .. } => Some(self.rpc_port),
+                    _ => None,
+                }),
+            consensus: service_handler.ports.get_tcp_host_port(self.consensus_port)
+                .or(match &service_handler.ports {
+                    ContainerPorts::Host { .. } => Some(self.consensus_port),
+                    _ => None,
+                }),
         };
 
         // Create typed ContainerPorts

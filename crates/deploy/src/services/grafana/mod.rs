@@ -543,7 +543,11 @@ providers:
 
         // Convert HashMap bound_ports to PrometheusHostPorts
         let bound_host_ports = PrometheusHostPorts {
-            server: service_handler.ports.get_tcp_host_port(self.prometheus.port),
+            server: service_handler.ports.get_tcp_host_port(self.prometheus.port)
+                .or(match &service_handler.ports {
+                    ContainerPorts::Host { .. } => Some(self.prometheus.port),
+                    _ => None,
+                }),
         };
 
         // Create typed ContainerPorts
@@ -630,7 +634,11 @@ providers:
 
         // Convert HashMap bound_ports to GrafanaHostPorts
         let bound_host_ports = GrafanaHostPorts {
-            server: service_handler.ports.get_tcp_host_port(GRAFANA_INTERNAL_PORT),
+            server: service_handler.ports.get_tcp_host_port(GRAFANA_INTERNAL_PORT)
+                .or(match &service_handler.ports {
+                    ContainerPorts::Host { .. } => Some(GRAFANA_INTERNAL_PORT),
+                    _ => None,
+                }),
         };
 
         // Create typed ContainerPorts

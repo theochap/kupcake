@@ -158,14 +158,26 @@ impl ContainerPorts {
     #[must_use]
     pub fn get_tcp_host_port(&self, container_port: u16) -> Option<u16> {
         let key = format!("{}/tcp", container_port);
-        self.bound_ports().get(&key).copied()
+        self.bound_ports().get(&key).copied().or_else(|| {
+            // In host network mode, container port = host port
+            match self {
+                ContainerPorts::Host { .. } => Some(container_port),
+                _ => None,
+            }
+        })
     }
 
     /// Get the bound host port for a UDP container port.
     #[must_use]
     pub fn get_udp_host_port(&self, container_port: u16) -> Option<u16> {
         let key = format!("{}/udp", container_port);
-        self.bound_ports().get(&key).copied()
+        self.bound_ports().get(&key).copied().or_else(|| {
+            // In host network mode, container port = host port
+            match self {
+                ContainerPorts::Host { .. } => Some(container_port),
+                _ => None,
+            }
+        })
     }
 
     /// Get the container name (only available in Bridge mode).

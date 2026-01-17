@@ -1062,15 +1062,11 @@ async fn test_host_network_mode_deployment() -> Result<()> {
         println!("Container {} is running", container_name);
     }
 
-    // Get dynamically bound ports for testing
-    let anvil_port = get_container_host_port(&format!("{}-anvil", network_name), 8545)
-        .context("Failed to get Anvil port in host mode")?;
-    let kona_port = get_container_host_port(&format!("{}-kona-node", network_name), 7545)
-        .context("Failed to get kona-node port in host mode")?;
-    let op_reth_port = get_container_host_port(&format!("{}-op-reth", network_name), 9545)
-        .context("Failed to get op-reth port in host mode")?;
-    let batcher_port = get_container_host_port(&format!("{}-op-batcher", network_name), 8548)
-        .context("Failed to get op-batcher port in host mode")?;
+    // In host network mode, container ports ARE the host ports (no port mapping)
+    let anvil_port = 8545;
+    let kona_port = 7545;
+    let op_reth_port = 9545;
+    let batcher_port = 8548;
 
     println!("=== Host mode dynamic ports ===");
     println!("Anvil (L1): http://localhost:{}", anvil_port);

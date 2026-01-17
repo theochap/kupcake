@@ -279,7 +279,7 @@ impl L2NodeBuilder {
             .await?;
 
         // Add op-reth's precomputed enode to the peer list for subsequent nodes
-        let op_reth_enode = op_reth_handler.enode();
+        let op_reth_enode = op_reth_handler.enode()?;
         tracing::info!(
             container_name = %op_reth_handler.container_name,
             enode = %op_reth_enode,

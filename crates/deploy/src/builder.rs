@@ -12,10 +12,13 @@ use serde::Deserialize;
 
 use crate::{
     services::{
-        anvil::AnvilHostPorts, grafana::GrafanaHostPorts, grafana::PrometheusHostPorts,
-        kona_node::KonaNodeHostPorts, op_batcher::OpBatcherHostPorts,
+        anvil::{AnvilPorts, AnvilContainerPorts, AnvilBoundPorts},
+        grafana::GrafanaHostPorts, grafana::PrometheusHostPorts,
+        kona_node::{KonaNodePorts, KonaNodeContainerPorts, KonaNodeBoundPorts},
+        op_batcher::{OpBatcherPorts, OpBatcherContainerPorts, OpBatcherBoundPorts},
         op_challenger::OpChallengerHostPorts, op_conductor::OpConductorHostPorts,
-        op_proposer::OpProposerHostPorts, op_reth::OpRethHostPorts,
+        op_proposer::{OpProposerPorts, OpProposerContainerPorts, OpProposerBoundPorts},
+        op_reth::{OpRethPorts, OpRethContainerPorts, OpRethBoundPorts},
     },
     ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG, AnvilConfig, Deployer, DockerImage,
     GRAFANA_DEFAULT_IMAGE, GRAFANA_DEFAULT_TAG, GrafanaConfig, KONA_NODE_DEFAULT_IMAGE,
@@ -544,20 +547,28 @@ impl DeployerBuilder {
             outdata: outdata_path,
 
             anvil: {
-                let mut config = AnvilConfig {
+                let container_name = format!("{}-anvil", network_name);
+                let ports = match self.network_mode {
+                    NetworkMode::Bridge => AnvilPorts::Bridge {
+                        container_name: container_name.clone(),
+                        container_ports: AnvilContainerPorts::default(),
+                        bound_ports: AnvilBoundPorts::default(),
+                    },
+                    NetworkMode::Host => AnvilPorts::Host {
+                        bound_ports: AnvilBoundPorts::default(),
+                    },
+                };
+
+                AnvilConfig {
                     docker_image: self.anvil_docker,
-                    container_name: format!("{}-anvil", network_name),
+                    container_name,
                     fork_url: self.l1_rpc_url,
                     timestamp: genesis_timestamp,
                     fork_block_number,
                     block_time: self.block_time,
+                    ports,
                     ..Default::default()
-                };
-                config.host_ports = match self.network_mode {
-                    NetworkMode::Bridge => Some(AnvilHostPorts::default()),
-                    NetworkMode::Host => None,
-                };
-                config
+                }
             },
 
             docker: KupDockerConfig {
@@ -610,29 +621,43 @@ impl DeployerBuilder {
                     sequencers.push(L2NodeBuilder {
                         role: L2NodeRole::Sequencer,
                         op_reth: {
+                            let container_name = format!("{}-op-reth{}", network_name, suffix);
                             let mut builder = OpRethBuilder {
                                 docker_image: self.op_reth_docker.clone(),
-                                container_name: format!("{}-op-reth{}", network_name, suffix),
+                                container_name: container_name.clone(),
                                 ..Default::default()
                             };
-                            builder.host_ports = match self.network_mode {
-                                NetworkMode::Bridge => Some(OpRethHostPorts::default()),
-                                NetworkMode::Host => None,
+                            builder.ports = match self.network_mode {
+                                NetworkMode::Bridge => OpRethPorts::Bridge {
+                                    container_name,
+                                    container_ports: OpRethContainerPorts::default(),
+                                    bound_ports: OpRethBoundPorts::default(),
+                                },
+                                NetworkMode::Host => OpRethPorts::Host {
+                                    bound_ports: OpRethBoundPorts::default(),
+                                },
                             };
                             builder
                         },
                         kona_node: {
-                            let mut builder = KonaNodeBuilder {
+                            let container_name = format!("{}-kona-node{}", network_name, suffix);
+                            let ports = match self.network_mode {
+                                NetworkMode::Bridge => KonaNodePorts::Bridge {
+                                    container_name: container_name.clone(),
+                                    container_ports: KonaNodeContainerPorts::default(),
+                                    bound_ports: KonaNodeBoundPorts::default(),
+                                },
+                                NetworkMode::Host => KonaNodePorts::Host {
+                                    bound_ports: KonaNodeBoundPorts::default(),
+                                },
+                            };
+                            KonaNodeBuilder {
                                 docker_image: self.kona_node_docker.clone(),
-                                container_name: format!("{}-kona-node{}", network_name, suffix),
+                                container_name,
                                 l1_slot_duration: self.block_time,
+                                ports,
                                 ..Default::default()
-                            };
-                            builder.host_ports = match self.network_mode {
-                                NetworkMode::Bridge => Some(KonaNodeHostPorts::default()),
-                                NetworkMode::Host => None,
-                            };
-                            builder
+                            }
                         },
                         op_conductor: {
                             op_conductor.map(|mut conductor| {
@@ -652,33 +677,47 @@ impl DeployerBuilder {
                     validators.push(L2NodeBuilder {
                         role: L2NodeRole::Validator,
                         op_reth: {
+                            let container_name = format!("{}-op-reth-validator-{}", network_name, i + 1);
                             let mut builder = OpRethBuilder {
                                 docker_image: self.op_reth_docker.clone(),
-                                container_name: format!("{}-op-reth-validator-{}", network_name, i + 1),
+                                container_name: container_name.clone(),
                                 ..Default::default()
                             };
-                            builder.host_ports = match self.network_mode {
-                                NetworkMode::Bridge => Some(OpRethHostPorts::default()),
-                                NetworkMode::Host => None,
+                            builder.ports = match self.network_mode {
+                                NetworkMode::Bridge => OpRethPorts::Bridge {
+                                    container_name,
+                                    container_ports: OpRethContainerPorts::default(),
+                                    bound_ports: OpRethBoundPorts::default(),
+                                },
+                                NetworkMode::Host => OpRethPorts::Host {
+                                    bound_ports: OpRethBoundPorts::default(),
+                                },
                             };
                             builder
                         },
                         kona_node: {
-                            let mut builder = KonaNodeBuilder {
+                            let container_name = format!(
+                                "{}-kona-node-validator-{}",
+                                network_name,
+                                i + 1
+                            );
+                            let ports = match self.network_mode {
+                                NetworkMode::Bridge => KonaNodePorts::Bridge {
+                                    container_name: container_name.clone(),
+                                    container_ports: KonaNodeContainerPorts::default(),
+                                    bound_ports: KonaNodeBoundPorts::default(),
+                                },
+                                NetworkMode::Host => KonaNodePorts::Host {
+                                    bound_ports: KonaNodeBoundPorts::default(),
+                                },
+                            };
+                            KonaNodeBuilder {
                                 docker_image: self.kona_node_docker.clone(),
-                                container_name: format!(
-                                    "{}-kona-node-validator-{}",
-                                    network_name,
-                                    i + 1
-                                ),
+                                container_name,
                                 l1_slot_duration: self.block_time,
+                                ports,
                                 ..Default::default()
-                            };
-                            builder.host_ports = match self.network_mode {
-                                NetworkMode::Bridge => Some(KonaNodeHostPorts::default()),
-                                NetworkMode::Host => None,
-                            };
-                            builder
+                            }
                         },
                         op_conductor: None,
                     });
@@ -688,28 +727,42 @@ impl DeployerBuilder {
                     sequencers,
                     validators,
                     op_batcher: {
-                        let mut builder = OpBatcherBuilder {
+                        let container_name = format!("{}-op-batcher", network_name);
+                        let ports = match self.network_mode {
+                            NetworkMode::Bridge => OpBatcherPorts::Bridge {
+                                container_name: container_name.clone(),
+                                container_ports: OpBatcherContainerPorts::default(),
+                                bound_ports: OpBatcherBoundPorts::default(),
+                            },
+                            NetworkMode::Host => OpBatcherPorts::Host {
+                                bound_ports: OpBatcherBoundPorts::default(),
+                            },
+                        };
+                        OpBatcherBuilder {
                             docker_image: self.op_batcher_docker,
-                            container_name: format!("{}-op-batcher", network_name),
+                            container_name,
+                            ports,
                             ..Default::default()
-                        };
-                        builder.host_ports = match self.network_mode {
-                            NetworkMode::Bridge => Some(OpBatcherHostPorts::default()),
-                            NetworkMode::Host => None,
-                        };
-                        builder
+                        }
                     },
                     op_proposer: {
-                        let mut builder = OpProposerBuilder {
+                        let container_name = format!("{}-op-proposer", network_name);
+                        let ports = match self.network_mode {
+                            NetworkMode::Bridge => OpProposerPorts::Bridge {
+                                container_name: container_name.clone(),
+                                container_ports: OpProposerContainerPorts::default(),
+                                bound_ports: OpProposerBoundPorts::default(),
+                            },
+                            NetworkMode::Host => OpProposerPorts::Host {
+                                bound_ports: OpProposerBoundPorts::default(),
+                            },
+                        };
+                        OpProposerBuilder {
                             docker_image: self.op_proposer_docker,
-                            container_name: format!("{}-op-proposer", network_name),
+                            container_name,
+                            ports,
                             ..Default::default()
-                        };
-                        builder.host_ports = match self.network_mode {
-                            NetworkMode::Bridge => Some(OpProposerHostPorts::default()),
-                            NetworkMode::Host => None,
-                        };
-                        builder
+                        }
                     },
                     op_challenger: {
                         let mut builder = OpChallengerBuilder {
@@ -805,11 +858,11 @@ mod host_ports_tests {
             .await
             .expect("Failed to build deployer");
 
-        // Verify all services have host_ports in Bridge mode
-        assert!(deployer.anvil.host_ports.is_some(), "Anvil should have host_ports in Bridge mode");
-        assert!(deployer.l2_stack.sequencers[0].op_reth.host_ports.is_some(), "OpReth should have host_ports in Bridge mode");
-        assert!(deployer.l2_stack.sequencers[0].kona_node.host_ports.is_some(), "KonaNode should have host_ports in Bridge mode");
-        assert!(deployer.l2_stack.op_batcher.host_ports.is_some(), "OpBatcher should have host_ports in Bridge mode");
+        // Verify all services have Bridge ports in Bridge mode
+        assert!(matches!(deployer.anvil.ports, AnvilPorts::Bridge { .. }), "Anvil should have Bridge ports in Bridge mode");
+        assert!(matches!(deployer.l2_stack.sequencers[0].op_reth.ports, OpRethPorts::Bridge { .. }), "OpReth should have Bridge ports in Bridge mode");
+        assert!(matches!(deployer.l2_stack.sequencers[0].kona_node.ports, KonaNodePorts::Bridge { .. }), "KonaNode should have Bridge ports in Bridge mode");
+        assert!(matches!(deployer.l2_stack.op_batcher.ports, OpBatcherPorts::Bridge { .. }), "OpBatcher should have Bridge ports in Bridge mode");
         assert!(deployer.monitoring.prometheus.host_ports.is_some(), "Prometheus should have host_ports in Bridge mode");
     }
 
@@ -821,11 +874,11 @@ mod host_ports_tests {
             .await
             .expect("Failed to build deployer");
 
-        // Verify all services have None for host_ports in Host mode
-        assert!(deployer.anvil.host_ports.is_none(), "Anvil should not have host_ports in Host mode");
-        assert!(deployer.l2_stack.sequencers[0].op_reth.host_ports.is_none(), "OpReth should not have host_ports in Host mode");
-        assert!(deployer.l2_stack.sequencers[0].kona_node.host_ports.is_none(), "KonaNode should not have host_ports in Host mode");
-        assert!(deployer.l2_stack.op_batcher.host_ports.is_none(), "OpBatcher should not have host_ports in Host mode");
+        // Verify all services have Host ports in Host mode
+        assert!(matches!(deployer.anvil.ports, AnvilPorts::Host { .. }), "Anvil should have Host ports in Host mode");
+        assert!(matches!(deployer.l2_stack.sequencers[0].op_reth.ports, OpRethPorts::Host { .. }), "OpReth should have Host ports in Host mode");
+        assert!(matches!(deployer.l2_stack.sequencers[0].kona_node.ports, KonaNodePorts::Host { .. }), "KonaNode should have Host ports in Host mode");
+        assert!(matches!(deployer.l2_stack.op_batcher.ports, OpBatcherPorts::Host { .. }), "OpBatcher should have Host ports in Host mode");
         assert!(deployer.monitoring.prometheus.host_ports.is_none(), "Prometheus should not have host_ports in Host mode");
     }
 }

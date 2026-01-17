@@ -162,46 +162,60 @@ impl P2pKeypair {
 pub const DEFAULT_RPC_PORT: u16 = 7545;
 pub const DEFAULT_METRICS_PORT: u16 = 7300;
 
-/// Host port configuration for kona-node (used in Bridge mode).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct KonaNodeHostPorts {
-    /// Host port for RPC endpoint.
-    pub rpc: Option<u16>,
-    /// Host port for metrics.
-    pub metrics: Option<u16>,
+/// Container port configuration for kona-node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct KonaNodeContainerPorts {
+    pub rpc: u16,
+    pub metrics: u16,
+    pub p2p: u16,
 }
 
-impl Default for KonaNodeHostPorts {
+impl Default for KonaNodeContainerPorts {
     fn default() -> Self {
         Self {
-            rpc: Some(0),
-            metrics: Some(0),
+            rpc: DEFAULT_RPC_PORT,
+            metrics: DEFAULT_METRICS_PORT,
+            p2p: DEFAULT_P2P_PORT,
         }
     }
 }
 
-/// Runtime port information for kona-node containers.
-pub enum KonaNodeContainerPorts {
-    /// Host network mode - all communication via localhost with dynamically assigned ports.
-    Host {
-        /// Bound host ports for this container.
-        bound_ports: KonaNodeHostPorts,
-    },
-    /// Bridge network mode - internal communication via container name, host access via mapped ports.
+/// Bound host port configuration for kona-node.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct KonaNodeBoundPorts {
+    pub rpc: Option<u16>,
+    pub metrics: Option<u16>,
+    pub p2p: Option<u16>,
+}
+
+impl Default for KonaNodeBoundPorts {
+    fn default() -> Self {
+        Self {
+            rpc: Some(0),
+            metrics: Some(0),
+            p2p: None, // P2P is only exposed internally, not published to host
+        }
+    }
+}
+
+/// Unified port configuration for kona-node.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum KonaNodePorts {
+    Host { bound_ports: KonaNodeBoundPorts },
     Bridge {
-        /// Container name for internal Docker network URLs.
         container_name: String,
-        /// Bound host ports for this container (for host access).
-        bound_ports: KonaNodeHostPorts,
+        container_ports: KonaNodeContainerPorts,
+        bound_ports: KonaNodeBoundPorts,
     },
 }
 
-impl KonaNodeContainerPorts {
+impl KonaNodePorts {
     /// Get the HTTP URL for internal container-to-container communication.
     ///
     /// In host mode, returns localhost with the bound port.
     /// In bridge mode, returns the container name with the container port.
-    pub fn internal_http_url(&self, container_rpc_port: u16) -> anyhow::Result<Url> {
+    pub fn internal_http_url(&self) -> anyhow::Result<Url> {
         let url_str = match self {
             Self::Host { bound_ports } => {
                 let port = bound_ports
@@ -209,8 +223,8 @@ impl KonaNodeContainerPorts {
                     .ok_or_else(|| anyhow::anyhow!("RPC port not bound"))?;
                 format!("http://localhost:{}/", port)
             }
-            Self::Bridge { container_name, .. } => {
-                format!("http://{}:{}/", container_name, container_rpc_port)
+            Self::Bridge { container_name, container_ports, .. } => {
+                format!("http://{}:{}/", container_name, container_ports.rpc)
             }
         };
         Url::parse(&url_str).context("Failed to parse HTTP URL")
@@ -240,13 +254,8 @@ pub struct KonaNodeBuilder {
     pub container_name: String,
     /// Host for the RPC endpoint.
     pub host: String,
-    /// Port for the kona-node RPC server (container port).
-    pub rpc_port: u16,
-    /// Port for metrics (container port).
-    pub metrics_port: u16,
-    /// Host ports configuration. Only populated in Bridge mode.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host_ports: Option<KonaNodeHostPorts>,
+    /// Unified port configuration.
+    pub ports: KonaNodePorts,
     /// L1 slot duration in seconds (block time).
     pub l1_slot_duration: u64,
     /// P2P secret key (32 bytes hex-encoded) for deterministic node identity.
@@ -269,9 +278,11 @@ impl Default for KonaNodeBuilder {
             docker_image: DockerImage::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
             container_name: "kupcake-kona-node".to_string(),
             host: "0.0.0.0".to_string(),
-            rpc_port: DEFAULT_RPC_PORT,
-            metrics_port: DEFAULT_METRICS_PORT,
-            host_ports: Some(KonaNodeHostPorts::default()),
+            ports: KonaNodePorts::Bridge {
+                container_name: "kupcake-kona-node".to_string(),
+                container_ports: KonaNodeContainerPorts::default(),
+                bound_ports: KonaNodeBoundPorts::default(),
+            },
             l1_slot_duration: 12,
             p2p_secret_key: None,
             extra_args: Vec::new(),
@@ -285,14 +296,10 @@ pub struct KonaNodeHandler {
     pub container_id: String,
     /// Docker container name.
     pub container_name: String,
-    /// P2P port for peer discovery.
-    pub p2p_port: u16,
-    /// RPC port (container port).
-    pub rpc_port: u16,
     /// P2P keypair for this node.
     pub p2p_keypair: P2pKeypair,
     /// Port information for this container.
-    pub ports: KonaNodeContainerPorts,
+    pub ports: KonaNodePorts,
 }
 
 impl KonaNodeHandler {
@@ -307,13 +314,15 @@ impl KonaNodeHandler {
     ///
     /// kona-node uses enode format for peer discovery and bootstrap nodes.
     pub fn enode(&self) -> String {
-        self.p2p_keypair
-            .to_enode(&self.container_name, self.p2p_port)
+        let p2p_port = match &self.ports {
+            KonaNodePorts::Host { .. } | KonaNodePorts::Bridge { .. } => DEFAULT_P2P_PORT,
+        };
+        self.p2p_keypair.to_enode(&self.container_name, p2p_port)
     }
 
     /// Get the internal RPC URL for container-to-container communication.
     pub fn internal_rpc_url(&self) -> anyhow::Result<Url> {
-        self.ports.internal_http_url(self.rpc_port)
+        self.ports.internal_http_url()
     }
 
     /// Get the host-accessible RPC URL (if published).
@@ -352,6 +361,12 @@ impl KonaNodeBuilder {
     ) -> Result<KonaNodeHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
+        // Extract ports from self.ports
+        let (container_ports, bound_ports) = match &self.ports {
+            KonaNodePorts::Host { bound_ports } => (KonaNodeContainerPorts::default(), bound_ports.clone()),
+            KonaNodePorts::Bridge { container_ports, bound_ports, .. } => (*container_ports, bound_ports.clone()),
+        };
+
         // Create or use the provided P2P keypair
         let p2p_keypair = match &self.p2p_secret_key {
             Some(key) => P2pKeypair::from_private_key(key)
@@ -365,17 +380,24 @@ impl KonaNodeBuilder {
             "Using P2P keypair for kona-node"
         );
 
+        // In host network mode, use 0.0.0.0 for P2P listen IP
+        // In bridge mode, use the container name for P2P advertise IP
+        let p2p_ip = match &self.ports {
+            KonaNodePorts::Host { .. } => "0.0.0.0",
+            KonaNodePorts::Bridge { container_name, .. } => container_name.as_str(),
+        };
+
         let mut cmd_builder = KonaNodeCmdBuilder::new(
             anvil_handler.internal_rpc_url()?.to_string(),
             op_reth_handler.internal_authrpc_url()?.to_string(),
-            self.container_name.clone(),
+            p2p_ip,
             container_config_path.join("rollup.json"),
             container_config_path.join(jwt_filename),
         )
         .mode(role.as_kona_mode())
         .l1_slot_duration(self.l1_slot_duration)
-        .rpc_port(self.rpc_port)
-        .metrics(true, self.metrics_port)
+        .rpc_port(container_ports.rpc)
+        .metrics(true, container_ports.metrics)
         .discovery(true)
         .bootnodes(bootnodes.to_vec())
         .p2p_priv_key(&p2p_keypair.private_key)
@@ -420,17 +442,10 @@ impl KonaNodeBuilder {
 
         let cmd = cmd_builder.build();
 
-        // Extract port values for PortMapping from host_ports
-        let (rpc, metrics) = self
-            .host_ports
-            .as_ref()
-            .map(|hp| (hp.rpc, hp.metrics))
-            .unwrap_or((None, None));
-
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> = [
-            PortMapping::tcp_optional(self.rpc_port, rpc),
-            PortMapping::tcp_optional(self.metrics_port, metrics),
+            PortMapping::tcp_optional(container_ports.rpc, bound_ports.rpc),
+            PortMapping::tcp_optional(container_ports.metrics, bound_ports.metrics),
         ]
         .into_iter()
         .flatten()
@@ -439,8 +454,8 @@ impl KonaNodeBuilder {
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports(port_mappings)
-            .expose(ExposedPort::tcp(DEFAULT_P2P_PORT))
-            .expose(ExposedPort::udp(DEFAULT_P2P_PORT))
+            .expose(ExposedPort::tcp(container_ports.p2p))
+            .expose(ExposedPort::udp(container_ports.p2p))
             .bind(host_config_path, &container_config_path, "rw");
 
         let service_handler = docker
@@ -454,24 +469,25 @@ impl KonaNodeBuilder {
             .await
             .context("Failed to start kona-node container")?;
 
-        // Convert HashMap bound_ports to KonaNodeHostPorts
-        let bound_host_ports = KonaNodeHostPorts {
-            rpc: service_handler.ports.get_tcp_host_port(self.rpc_port),
-            metrics: service_handler.ports.get_tcp_host_port(self.metrics_port),
+        // Build runtime ports with actual bound ports
+        let actual_bound_ports = KonaNodeBoundPorts {
+            rpc: service_handler.ports.get_tcp_host_port(container_ports.rpc),
+            metrics: service_handler.ports.get_tcp_host_port(container_ports.metrics),
+            p2p: None, // P2P is only exposed internally, not published to host
         };
 
-        // Create typed ContainerPorts
-        let typed_ports = match &service_handler.ports {
-            ContainerPorts::Host { .. } => KonaNodeContainerPorts::Host {
-                bound_ports: bound_host_ports,
+        let runtime_ports = match &service_handler.ports {
+            ContainerPorts::Host { .. } => KonaNodePorts::Host {
+                bound_ports: actual_bound_ports,
             },
-            ContainerPorts::Bridge { container_name, .. } => KonaNodeContainerPorts::Bridge {
+            ContainerPorts::Bridge { container_name, .. } => KonaNodePorts::Bridge {
                 container_name: container_name.clone(),
-                bound_ports: bound_host_ports,
+                container_ports,
+                bound_ports: actual_bound_ports,
             },
         };
 
-        let rpc_host_url = typed_ports.host_http_url();
+        let rpc_host_url = runtime_ports.host_http_url();
 
         tracing::info!(
             container_id = %service_handler.container_id,
@@ -483,10 +499,8 @@ impl KonaNodeBuilder {
         Ok(KonaNodeHandler {
             container_id: service_handler.container_id,
             container_name: service_handler.container_name,
-            p2p_port: DEFAULT_P2P_PORT,
-            rpc_port: self.rpc_port,
             p2p_keypair,
-            ports: typed_ports,
+            ports: runtime_ports,
         })
     }
 }

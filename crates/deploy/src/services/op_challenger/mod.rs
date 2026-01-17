@@ -155,10 +155,7 @@ impl OpChallengerBuilder {
 
         let cmd = OpChallengerCmdBuilder::new(
             anvil_handler.internal_rpc_url()?.to_string(),
-            format!(
-                "http://{}:{}",
-                op_reth_config.container_name, op_reth_config.http_port
-            ),
+            op_reth_config.ports.internal_http_url()?.to_string(),
             kona_node_handler.internal_rpc_url()?.to_string(),
             challenger_private_key.to_string(),
             dgf_address,
@@ -204,7 +201,11 @@ impl OpChallengerBuilder {
 
         // Convert HashMap bound_ports to OpChallengerHostPorts
         let bound_host_ports = OpChallengerHostPorts {
-            metrics: service_handler.ports.get_tcp_host_port(self.metrics_port),
+            metrics: service_handler.ports.get_tcp_host_port(self.metrics_port)
+                .or(match &service_handler.ports {
+                    ContainerPorts::Host { .. } => Some(self.metrics_port),
+                    _ => None,
+                }),
         };
 
         // Create typed ContainerPorts
