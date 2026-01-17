@@ -14,12 +14,13 @@ use crate::{
     ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG, AnvilConfig, Deployer, DockerImage,
     GRAFANA_DEFAULT_IMAGE, GRAFANA_DEFAULT_TAG, GrafanaConfig, KONA_NODE_DEFAULT_IMAGE,
     KONA_NODE_DEFAULT_TAG, KonaNodeBuilder, KupDockerConfig, L2NodeBuilder, L2NodeRole,
-    L2StackBuilder, MonitoringConfig, NetworkMode, OP_BATCHER_DEFAULT_IMAGE, OP_BATCHER_DEFAULT_TAG,
-    OP_CHALLENGER_DEFAULT_IMAGE, OP_CHALLENGER_DEFAULT_TAG, OP_CONDUCTOR_DEFAULT_IMAGE,
-    OP_CONDUCTOR_DEFAULT_TAG, OP_DEPLOYER_DEFAULT_IMAGE, OP_DEPLOYER_DEFAULT_TAG,
-    OP_PROPOSER_DEFAULT_IMAGE, OP_PROPOSER_DEFAULT_TAG, OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG,
-    OpBatcherBuilder, OpChallengerBuilder, OpConductorBuilder, OpDeployerConfig, OpProposerBuilder,
-    OpRethBuilder, PROMETHEUS_DEFAULT_IMAGE, PROMETHEUS_DEFAULT_TAG, PrometheusConfig,
+    L2StackBuilder, MonitoringConfig, NetworkMode, ParsedNetworkMode, OP_BATCHER_DEFAULT_IMAGE,
+    OP_BATCHER_DEFAULT_TAG, OP_CHALLENGER_DEFAULT_IMAGE, OP_CHALLENGER_DEFAULT_TAG,
+    OP_CONDUCTOR_DEFAULT_IMAGE, OP_CONDUCTOR_DEFAULT_TAG, OP_DEPLOYER_DEFAULT_IMAGE,
+    OP_DEPLOYER_DEFAULT_TAG, OP_PROPOSER_DEFAULT_IMAGE, OP_PROPOSER_DEFAULT_TAG,
+    OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG, OpBatcherBuilder, OpChallengerBuilder,
+    OpConductorBuilder, OpDeployerConfig, OpProposerBuilder, OpRethBuilder, PROMETHEUS_DEFAULT_IMAGE,
+    PROMETHEUS_DEFAULT_TAG, PrometheusConfig,
 };
 
 /// Block header information from an RPC response.
@@ -547,9 +548,11 @@ impl DeployerBuilder {
             },
 
             docker: KupDockerConfig {
-                net_name: format!("{}-network", network_name),
                 no_cleanup: self.no_cleanup || self.detach,
-                network_mode: self.network_mode,
+                parsed_network_mode: ParsedNetworkMode::from_mode(
+                    self.network_mode,
+                    format!("{}-network", network_name),
+                ),
             },
 
             op_deployer: OpDeployerConfig {

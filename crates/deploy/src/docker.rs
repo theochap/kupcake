@@ -32,6 +32,55 @@ pub enum NetworkMode {
     Host,
 }
 
+/// Parsed network mode that includes runtime information like network name.
+///
+/// This is constructed from [`NetworkMode`] at runtime and contains
+/// additional context needed for container deployment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum ParsedNetworkMode {
+    /// Bridge mode with the Docker network name to use.
+    Bridge {
+        /// The Docker network name to create and use.
+        network_name: String,
+    },
+    /// Host network mode.
+    Host,
+}
+
+impl ParsedNetworkMode {
+    /// Create a parsed network mode from a base network mode and network name.
+    pub fn from_mode(mode: NetworkMode, network_name: impl Into<String>) -> Self {
+        match mode {
+            NetworkMode::Bridge => Self::Bridge {
+                network_name: network_name.into(),
+            },
+            NetworkMode::Host => Self::Host,
+        }
+    }
+
+    /// Check if this is bridge mode.
+    #[must_use]
+    pub fn is_bridge(&self) -> bool {
+        matches!(self, Self::Bridge { .. })
+    }
+
+    /// Check if this is host mode.
+    #[must_use]
+    pub fn is_host(&self) -> bool {
+        matches!(self, Self::Host)
+    }
+
+    /// Get the network name if in bridge mode.
+    #[must_use]
+    pub fn network_name(&self) -> Option<&str> {
+        match self {
+            Self::Bridge { network_name } => Some(network_name),
+            Self::Host => None,
+        }
+    }
+}
+
 /// Container port information that varies based on network mode.
 ///
 /// This enum encapsulates how to construct URLs for container communication
@@ -415,15 +464,13 @@ impl std::fmt::Display for DockerImage {
 }
 
 /// Configuration for the Docker client.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KupDockerConfig {
-    /// The name of the Docker network to create.
-    pub net_name: String,
     /// Whether to skip cleanup of containers on exit.
     pub no_cleanup: bool,
-    /// The network mode for containers.
-    #[serde(default)]
-    pub network_mode: NetworkMode,
+    /// The parsed network mode (includes network name for bridge mode).
+    #[serde(flatten)]
+    pub parsed_network_mode: ParsedNetworkMode,
 }
 
 /// Docker client wrapper for Foundry operations.
@@ -434,9 +481,6 @@ pub struct KupDocker {
 
     /// Containers that have been started.
     pub containers: HashSet<String>,
-
-    /// Network ID for container communication.
-    pub network_id: String,
 
     pub config: KupDockerConfig,
 }
@@ -463,8 +507,7 @@ impl Drop for KupDocker {
         // Spawn a blocking task to stop all containers
         let docker = self.docker.clone();
         let containers = mem::take(&mut self.containers);
-        let network_id = self.network_id.clone();
-        let is_host_mode = self.config.network_mode == NetworkMode::Host;
+        let network_name = self.config.parsed_network_mode.network_name().map(String::from);
 
         let cleanup = async {
             // Stop and remove containers first
@@ -480,14 +523,14 @@ impl Drop for KupDocker {
                 .into_iter()
                 .collect::<Result<Vec<_>>>()?;
 
-            // Skip network removal in host mode (no network was created)
-            if !is_host_mode {
-                tracing::trace!(network_id, "Removing network");
+            // Remove network if in bridge mode
+            if let Some(network_name) = network_name {
+                tracing::trace!(network_name, "Removing network");
                 docker
-                    .remove_network(&network_id)
+                    .remove_network(&network_name)
                     .await
                     .context("Failed to remove network")?;
-                tracing::trace!(network_id, "Network removed");
+                tracing::trace!(network_name, "Network removed");
             }
 
             Ok::<_, anyhow::Error>(())
@@ -542,26 +585,26 @@ impl KupDocker {
         let docker = Docker::connect_with_local_defaults()
             .context("Failed to connect to Docker. Is Docker running?")?;
 
-        // Skip network creation in host mode
-        let network_id = match config.network_mode {
-            NetworkMode::Host => {
+        // Create network in bridge mode (skip in host mode)
+        match &config.parsed_network_mode {
+            ParsedNetworkMode::Host => {
                 tracing::info!("Using host network mode, skipping Docker network creation");
-                String::new()
             }
-            NetworkMode::Bridge => Self::create_network(&docker, &config.net_name).await?,
+            ParsedNetworkMode::Bridge { network_name } => {
+                Self::create_network(&docker, network_name).await?;
+            }
         };
 
         Ok(Self {
             docker,
             config,
-            network_id,
             containers: HashSet::new(),
         })
     }
 
     /// Returns true if running in host network mode.
     pub fn is_host_network(&self) -> bool {
-        self.config.network_mode == NetworkMode::Host
+        self.config.parsed_network_mode.is_host()
     }
 
     /// Create a Docker network for container communication.
@@ -873,10 +916,10 @@ impl KupDocker {
         let has_port_bindings = !port_bindings.is_empty();
         let has_exposed_ports = !exposed_ports.is_empty();
 
-        // Set network mode: "host" for host network mode, otherwise the bridge network ID
-        let network_mode = match self.config.network_mode {
-            NetworkMode::Host => "host".to_string(),
-            NetworkMode::Bridge => self.network_id.clone(),
+        // Set network mode: "host" for host network mode, otherwise the bridge network name
+        let network_mode = match &self.config.parsed_network_mode {
+            ParsedNetworkMode::Host => "host".to_string(),
+            ParsedNetworkMode::Bridge { network_name } => network_name.clone(),
         };
 
         let host_config = HostConfig {
@@ -935,9 +978,9 @@ impl KupDocker {
         );
 
         // Create ContainerPorts based on network mode
-        let ports = match self.config.network_mode {
-            NetworkMode::Host => ContainerPorts::Host { bound_ports },
-            NetworkMode::Bridge => ContainerPorts::Bridge {
+        let ports = match &self.config.parsed_network_mode {
+            ParsedNetworkMode::Host => ContainerPorts::Host { bound_ports },
+            ParsedNetworkMode::Bridge { .. } => ContainerPorts::Bridge {
                 container_name: container_name.to_string(),
                 bound_ports,
             },

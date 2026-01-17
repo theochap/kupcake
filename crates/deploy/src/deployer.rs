@@ -206,7 +206,7 @@ impl Deployer {
         anvil: &AnvilHandler,
         l2_stack: &L2StackHandler,
         monitoring: &Option<MonitoringHandler>,
-        network_id: &str,
+        network_name: Option<&str>,
     ) {
         let mut container_names = Vec::new();
 
@@ -235,12 +235,16 @@ impl Deployer {
             container_names.push(mon.grafana.container_name.clone());
         }
 
-        // Build the docker stop command
-        let stop_command = format!(
-            "docker stop {} && docker network rm {}",
-            container_names.join(" "),
-            network_id
-        );
+        // Build the docker stop command (include network removal if in bridge mode)
+        let stop_command = if let Some(network) = network_name {
+            format!(
+                "docker stop {} && docker network rm {}",
+                container_names.join(" "),
+                network
+            )
+        } else {
+            format!("docker stop {}", container_names.join(" "))
+        };
 
         // Print the detached mode information
         tracing::info!("✓ Detached mode enabled. Containers are running in the background.");
@@ -252,8 +256,10 @@ impl Deployer {
             tracing::info!("  - {}", name);
         }
         tracing::info!("");
-        tracing::info!("Network: {}", network_id);
-        tracing::info!("");
+        if let Some(network) = network_name {
+            tracing::info!("Network: {}", network);
+            tracing::info!("");
+        }
         tracing::info!("To stop all containers:");
         tracing::info!("  {}", stop_command);
         tracing::info!("");
@@ -456,7 +462,13 @@ impl Deployer {
 
         if detach {
             // Detached mode: print management info and exit
-            Self::print_detached_info(&outdata, &anvil, &l2_stack, &monitoring, &docker.network_id);
+            Self::print_detached_info(
+                &outdata,
+                &anvil,
+                &l2_stack,
+                &monitoring,
+                docker.config.parsed_network_mode.network_name(),
+            );
         } else {
             // Normal mode: wait for Ctrl+C
             tracing::info!("Press Ctrl+C to stop all nodes and cleanup.");

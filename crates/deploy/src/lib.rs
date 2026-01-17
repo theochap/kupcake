@@ -17,7 +17,8 @@ pub mod services;
 
 pub use docker::{
     CleanupResult, ContainerPorts, DockerImage, ExposedPort, KupDocker, KupDockerConfig,
-    NetworkMode, PortMapping, PortProtocol, ServiceConfig, ServiceHandler, cleanup_by_prefix,
+    NetworkMode, ParsedNetworkMode, PortMapping, PortProtocol, ServiceConfig, ServiceHandler,
+    cleanup_by_prefix,
 };
 pub use services::{
     // Docker image defaults
