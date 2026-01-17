@@ -14,7 +14,7 @@ use crate::{
     ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG, AnvilConfig, Deployer, DockerImage,
     GRAFANA_DEFAULT_IMAGE, GRAFANA_DEFAULT_TAG, GrafanaConfig, KONA_NODE_DEFAULT_IMAGE,
     KONA_NODE_DEFAULT_TAG, KonaNodeBuilder, KupDockerConfig, L2NodeBuilder, L2NodeRole,
-    L2StackBuilder, MonitoringConfig, OP_BATCHER_DEFAULT_IMAGE, OP_BATCHER_DEFAULT_TAG,
+    L2StackBuilder, MonitoringConfig, NetworkMode, OP_BATCHER_DEFAULT_IMAGE, OP_BATCHER_DEFAULT_TAG,
     OP_CHALLENGER_DEFAULT_IMAGE, OP_CHALLENGER_DEFAULT_TAG, OP_CONDUCTOR_DEFAULT_IMAGE,
     OP_CONDUCTOR_DEFAULT_TAG, OP_DEPLOYER_DEFAULT_IMAGE, OP_DEPLOYER_DEFAULT_TAG,
     OP_PROPOSER_DEFAULT_IMAGE, OP_PROPOSER_DEFAULT_TAG, OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG,
@@ -127,6 +127,8 @@ pub struct DeployerBuilder {
     l2_node_count: usize,
     /// Number of sequencer nodes.
     sequencer_count: usize,
+    /// Network mode (bridge or host).
+    network_mode: NetworkMode,
 
     // Docker images
     anvil_docker: DockerImage,
@@ -157,6 +159,7 @@ impl DeployerBuilder {
             block_time: 12,
             l2_node_count: 1,
             sequencer_count: 1,
+            network_mode: NetworkMode::Bridge,
             anvil_docker: DockerImage::new(ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG),
             op_reth_docker: DockerImage::new(OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG),
             kona_node_docker: DockerImage::new(KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG),
@@ -427,6 +430,19 @@ impl DeployerBuilder {
         self
     }
 
+    /// Set host network mode.
+    ///
+    /// When enabled, containers share the host's network namespace and
+    /// communicate via localhost with OS-assigned ephemeral ports.
+    pub fn host_network(mut self, host_network: bool) -> Self {
+        self.network_mode = if host_network {
+            NetworkMode::Host
+        } else {
+            NetworkMode::Bridge
+        };
+        self
+    }
+
     /// Set the path to custom Grafana dashboards.
     pub fn dashboards_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.dashboards_path = Some(path.into());
@@ -533,6 +549,7 @@ impl DeployerBuilder {
             docker: KupDockerConfig {
                 net_name: format!("{}-network", network_name),
                 no_cleanup: self.no_cleanup || self.detach,
+                network_mode: self.network_mode,
             },
 
             op_deployer: OpDeployerConfig {

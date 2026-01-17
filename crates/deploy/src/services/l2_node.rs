@@ -329,31 +329,31 @@ impl L2NodeBuilder {
         // Wait for both RPCs to be ready before starting conductor (conductor connects immediately)
         // Use the host-accessible URLs since we're running outside Docker
         if self.op_conductor.is_some() {
-            // Wait for op-reth execution RPC
+            // Wait for op-reth execution RPC - prefer host URL, fallback to internal
             let op_reth_wait_url = op_reth_handler
-                .http_host_url
-                .as_ref()
-                .map(|u| u.as_str())
-                .unwrap_or(op_reth_handler.http_rpc_url.as_str());
+                .host_http_url()
+                .and_then(|r| r.ok())
+                .or_else(|| op_reth_handler.internal_http_url().ok())
+                .context("Failed to get op-reth URL for health check")?;
             tracing::info!(
                 rpc_url = %op_reth_wait_url,
                 "Waiting for op-reth RPC to be ready before starting conductor..."
             );
-            wait_for_execution_rpc_ready(op_reth_wait_url, 30)
+            wait_for_execution_rpc_ready(op_reth_wait_url.as_str(), 30)
                 .await
                 .context("op-reth RPC not ready in time for conductor startup")?;
 
-            // Wait for kona-node consensus RPC
+            // Wait for kona-node consensus RPC - prefer host URL, fallback to internal
             let kona_wait_url = kona_node_handler
-                .rpc_host_url
-                .as_ref()
-                .map(|u| u.as_str())
-                .unwrap_or(kona_node_handler.rpc_url.as_str());
+                .host_rpc_url()
+                .and_then(|r| r.ok())
+                .or_else(|| kona_node_handler.internal_rpc_url().ok())
+                .context("Failed to get kona-node URL for health check")?;
             tracing::info!(
                 rpc_url = %kona_wait_url,
                 "Waiting for kona-node RPC to be ready before starting conductor..."
             );
-            wait_for_consensus_rpc_ready(kona_wait_url, 30)
+            wait_for_consensus_rpc_ready(kona_wait_url.as_str(), 30)
                 .await
                 .context("kona-node RPC not ready in time for conductor startup")?;
         }
@@ -361,6 +361,7 @@ impl L2NodeBuilder {
         let op_conductor = match (&self.op_conductor, conductor_context) {
             (Some(conductor_config), ConductorContext::Leader { index }) => {
                 let server_id = format!("sequencer-{}", index);
+                let kona_rpc = kona_node_handler.internal_rpc_url()?;
                 tracing::info!(
                     server_id = %server_id,
                     container_name = %conductor_config.container_name,
@@ -373,7 +374,7 @@ impl L2NodeBuilder {
                             host_config_path,
                             &server_id,
                             &op_reth_handler,
-                            kona_node_handler.rpc_url.as_str(),
+                            kona_rpc.as_str(),
                         )
                         .await
                         .context("Failed to start op-conductor leader")?,
@@ -381,6 +382,7 @@ impl L2NodeBuilder {
             }
             (Some(conductor_config), ConductorContext::Follower { index }) => {
                 let server_id = format!("sequencer-{}", index);
+                let kona_rpc = kona_node_handler.internal_rpc_url()?;
                 tracing::info!(
                     server_id = %server_id,
                     container_name = %conductor_config.container_name,
@@ -393,7 +395,7 @@ impl L2NodeBuilder {
                             host_config_path,
                             &server_id,
                             &op_reth_handler,
-                            kona_node_handler.rpc_url.as_str(),
+                            kona_rpc.as_str(),
                         )
                         .await
                         .context("Failed to start op-conductor follower")?,

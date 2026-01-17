@@ -160,6 +160,16 @@ pub struct DeployArgs {
     #[arg(long, env = "KUP_DETACH")]
     pub detach: bool,
 
+    /// Use host network mode instead of Docker bridge network.
+    ///
+    /// In host mode, all containers share the host's network namespace.
+    /// Containers communicate via localhost with OS-assigned ephemeral ports.
+    /// This is useful for connecting host-based services to Docker containers.
+    ///
+    /// Cannot be used together with a custom Docker network name.
+    #[arg(long, env = "KUP_HOST_NETWORK", default_value_t = false)]
+    pub host_network: bool,
+
     /// The block time in seconds for the L1 chain (Anvil) and L2 derivation.
     ///
     /// Defaults to 12 seconds (Ethereum mainnet block time).
@@ -209,6 +219,7 @@ impl Default for DeployArgs {
             outdata: None,
             no_cleanup: false,
             detach: false,
+            host_network: false,
             block_time: 12,
             l2_nodes: 5,
             sequencer_count: 2,

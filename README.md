@@ -15,6 +15,7 @@ Kupcake spins up a local L1 (via Anvil fork), deploys all OP Stack contracts aut
 - **Built-in monitoring** — Prometheus + Grafana dashboards for metrics visualization
 - **Config persistence** — Save and reload deployments via `Kupcake.toml`
 - **Detach mode** — Deploy in the background and keep containers running
+- **Flexible networking** — Bridge (default) or host network mode for different use cases
 - **Custom images** — Override Docker images for any component
 - **Docker-based** — No local toolchain required, just Docker
 
@@ -77,6 +78,7 @@ Options:
       --outdata <PATH>              Output directory [env: KUP_OUTDATA]
       --no-cleanup                  Keep containers running on exit [env: KUP_NO_CLEANUP]
       --detach                      Deploy and exit, leaving containers running [env: KUP_DETACH]
+      --host-network                Use host network mode instead of bridge [env: KUP_HOST_NETWORK]
       --block-time <SECONDS>        L1/L2 block time [default: 12] [env: KUP_BLOCK_TIME]
       --l2-nodes <COUNT>            Total L2 nodes (sequencers + validators) [default: 5]
       --sequencer-count <COUNT>     Number of sequencers [default: 2]
@@ -119,6 +121,9 @@ kupcake --detach
 
 # Keep containers running after Ctrl+C (for debugging)
 kupcake --no-cleanup
+
+# Use host network mode (containers share host network namespace)
+kupcake --host-network
 
 # Custom block time (2 second blocks)
 kupcake --block-time 2
@@ -201,9 +206,29 @@ After running, you'll find these files in the output directory (`data-<network-n
 | Prometheus | `prom/prometheus` | Metrics collection and storage |
 | Grafana | `grafana/grafana` | Metrics visualization and dashboards |
 
+## Networking Modes
+
+Kupcake supports two Docker networking modes:
+
+### Bridge Mode (Default)
+
+In bridge mode, containers run on a custom Docker network and communicate using container names:
+- Containers use container names for internal communication (e.g., `http://my-sequencer-op-reth:8545`)
+- Host access uses mapped ports on localhost
+- Predictable port assignments
+
+### Host Network Mode
+
+Enable with `--host-network`. In this mode:
+- Containers share the host's network namespace
+- All communication happens via `localhost` with OS-assigned ephemeral ports
+- No custom Docker network is created
+- Useful when you need host-based services (debuggers, IDEs) to connect to containerized services
+- Port assignments are dynamic (check logs for actual URLs)
+
 ## Ports
 
-Default ports for the first instance of each service. Additional instances use dynamically assigned ports.
+Default ports for the first instance of each service in **bridge mode**. In **host mode**, ports are dynamically assigned by the OS.
 
 | Service | Port | Protocol |
 |---------|------|----------|

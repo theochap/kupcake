@@ -15,8 +15,125 @@ use bollard::{
 };
 use derive_more::Deref;
 use futures::{StreamExt, executor::block_on, future::join_all};
+use serde::{Deserialize, Serialize};
 use tokio::{task::JoinHandle, time::timeout};
 use url::Url;
+
+/// Network mode for Docker containers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkMode {
+    /// Use a custom Docker bridge network (default).
+    /// Containers communicate using container names as hostnames.
+    #[default]
+    Bridge,
+    /// Use host network mode.
+    /// Containers share the host's network namespace and communicate via localhost.
+    Host,
+}
+
+/// Container port information that varies based on network mode.
+///
+/// This enum encapsulates how to construct URLs for container communication
+/// depending on whether containers run in bridge or host network mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum ContainerPorts {
+    /// Host network mode - all communication via localhost with dynamically assigned ports.
+    Host {
+        /// Map of "container_port/protocol" -> bound host port
+        bound_ports: HashMap<String, u16>,
+    },
+    /// Bridge network mode - internal communication via container name, host access via mapped ports.
+    Bridge {
+        /// Container name for internal Docker network URLs
+        container_name: String,
+        /// Map of "container_port/protocol" -> bound host port (for host access)
+        bound_ports: HashMap<String, u16>,
+    },
+}
+
+impl ContainerPorts {
+    /// Get the bound ports map regardless of network mode.
+    fn bound_ports(&self) -> &HashMap<String, u16> {
+        match self {
+            ContainerPorts::Host { bound_ports } => bound_ports,
+            ContainerPorts::Bridge { bound_ports, .. } => bound_ports,
+        }
+    }
+
+    /// Build an internal URL with the given scheme and port.
+    fn internal_url(&self, scheme: &str, container_port: u16) -> Result<Url> {
+        let url_str = match self {
+            ContainerPorts::Host { bound_ports } => {
+                let key = format!("{}/tcp", container_port);
+                let port = bound_ports
+                    .get(&key)
+                    .ok_or_else(|| anyhow::anyhow!("Port {} not bound", container_port))?;
+                format!("{}://localhost:{}/", scheme, port)
+            }
+            ContainerPorts::Bridge { container_name, .. } => {
+                format!("{}://{}:{}/", scheme, container_name, container_port)
+            }
+        };
+        Url::parse(&url_str).context("Failed to parse URL")
+    }
+
+    /// Get the HTTP URL for internal container-to-container communication.
+    ///
+    /// In host mode, returns localhost with the bound port.
+    /// In bridge mode, returns the container name with the container port.
+    pub fn internal_http_url(&self, container_port: u16) -> Result<Url> {
+        self.internal_url("http", container_port)
+    }
+
+    /// Get the WebSocket URL for internal container-to-container communication.
+    ///
+    /// In host mode, returns localhost with the bound port.
+    /// In bridge mode, returns the container name with the container port.
+    pub fn internal_ws_url(&self, container_port: u16) -> Result<Url> {
+        self.internal_url("ws", container_port)
+    }
+
+    /// Get the HTTP URL for host access.
+    ///
+    /// Returns None if the port is not published to the host.
+    pub fn host_http_url(&self, container_port: u16) -> Option<Result<Url>> {
+        let key = format!("{}/tcp", container_port);
+        self.bound_ports().get(&key).map(|port| {
+            Url::parse(&format!("http://localhost:{}/", port)).context("Failed to parse URL")
+        })
+    }
+
+    /// Get the bound host port for a TCP container port.
+    #[must_use]
+    pub fn get_tcp_host_port(&self, container_port: u16) -> Option<u16> {
+        let key = format!("{}/tcp", container_port);
+        self.bound_ports().get(&key).copied()
+    }
+
+    /// Get the bound host port for a UDP container port.
+    #[must_use]
+    pub fn get_udp_host_port(&self, container_port: u16) -> Option<u16> {
+        let key = format!("{}/udp", container_port);
+        self.bound_ports().get(&key).copied()
+    }
+
+    /// Get the container name (only available in Bridge mode).
+    #[must_use]
+    pub fn container_name(&self) -> Option<&str> {
+        match self {
+            ContainerPorts::Host { .. } => None,
+            ContainerPorts::Bridge { container_name, .. } => Some(container_name),
+        }
+    }
+
+    /// Check if this is host network mode.
+    #[must_use]
+    pub fn is_host_mode(&self) -> bool {
+        matches!(self, ContainerPorts::Host { .. })
+    }
+}
 
 /// Timeout for shutting down docker and cleaning up containers.
 const DOCKER_DROP_TIMEOUT: Duration = Duration::from_secs(60);
@@ -239,22 +356,29 @@ pub struct ServiceHandler {
     pub container_id: String,
     /// The container name.
     pub container_name: String,
-    /// Map of container port to actual bound host port.
-    /// Key format: "port/protocol" (e.g., "8545/tcp")
-    pub bound_ports: HashMap<String, u16>,
+    /// Port information that varies based on network mode.
+    pub ports: ContainerPorts,
 }
 
 impl ServiceHandler {
-    /// Get the bound host port for a container port.
-    /// Returns None if the port is not published to the host.
-    pub fn get_host_port(&self, container_port: u16, protocol: &str) -> Option<u16> {
-        let key = format!("{}/{}", container_port, protocol);
-        self.bound_ports.get(&key).copied()
-    }
-
     /// Get the bound host port for a TCP container port.
     pub fn get_tcp_host_port(&self, container_port: u16) -> Option<u16> {
-        self.get_host_port(container_port, "tcp")
+        self.ports.get_tcp_host_port(container_port)
+    }
+
+    /// Get the HTTP URL for internal container-to-container communication.
+    pub fn internal_http_url(&self, container_port: u16) -> Result<Url> {
+        self.ports.internal_http_url(container_port)
+    }
+
+    /// Get the WebSocket URL for internal container-to-container communication.
+    pub fn internal_ws_url(&self, container_port: u16) -> Result<Url> {
+        self.ports.internal_ws_url(container_port)
+    }
+
+    /// Get the HTTP URL for host access.
+    pub fn host_http_url(&self, container_port: u16) -> Option<Result<Url>> {
+        self.ports.host_http_url(container_port)
     }
 }
 
@@ -291,12 +415,15 @@ impl std::fmt::Display for DockerImage {
 }
 
 /// Configuration for the Docker client.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct KupDockerConfig {
     /// The name of the Docker network to create.
     pub net_name: String,
     /// Whether to skip cleanup of containers on exit.
     pub no_cleanup: bool,
+    /// The network mode for containers.
+    #[serde(default)]
+    pub network_mode: NetworkMode,
 }
 
 /// Docker client wrapper for Foundry operations.
@@ -336,6 +463,8 @@ impl Drop for KupDocker {
         // Spawn a blocking task to stop all containers
         let docker = self.docker.clone();
         let containers = mem::take(&mut self.containers);
+        let network_id = self.network_id.clone();
+        let is_host_mode = self.config.network_mode == NetworkMode::Host;
 
         let cleanup = async {
             // Stop and remove containers first
@@ -351,13 +480,15 @@ impl Drop for KupDocker {
                 .into_iter()
                 .collect::<Result<Vec<_>>>()?;
 
-            // Remove network if it exists
-            tracing::trace!(self.network_id, "Removing network");
-            docker
-                .remove_network(&self.network_id)
-                .await
-                .context("Failed to remove network")?;
-            tracing::trace!(self.network_id, "Network removed");
+            // Skip network removal in host mode (no network was created)
+            if !is_host_mode {
+                tracing::trace!(network_id, "Removing network");
+                docker
+                    .remove_network(&network_id)
+                    .await
+                    .context("Failed to remove network")?;
+                tracing::trace!(network_id, "Network removed");
+            }
 
             Ok::<_, anyhow::Error>(())
         };
@@ -411,7 +542,14 @@ impl KupDocker {
         let docker = Docker::connect_with_local_defaults()
             .context("Failed to connect to Docker. Is Docker running?")?;
 
-        let network_id = Self::create_network(&docker, &config.net_name).await?;
+        // Skip network creation in host mode
+        let network_id = match config.network_mode {
+            NetworkMode::Host => {
+                tracing::info!("Using host network mode, skipping Docker network creation");
+                String::new()
+            }
+            NetworkMode::Bridge => Self::create_network(&docker, &config.net_name).await?,
+        };
 
         Ok(Self {
             docker,
@@ -419,6 +557,11 @@ impl KupDocker {
             network_id,
             containers: HashSet::new(),
         })
+    }
+
+    /// Returns true if running in host network mode.
+    pub fn is_host_network(&self) -> bool {
+        self.config.network_mode == NetworkMode::Host
     }
 
     /// Create a Docker network for container communication.
@@ -730,10 +873,16 @@ impl KupDocker {
         let has_port_bindings = !port_bindings.is_empty();
         let has_exposed_ports = !exposed_ports.is_empty();
 
+        // Set network mode: "host" for host network mode, otherwise the bridge network ID
+        let network_mode = match self.config.network_mode {
+            NetworkMode::Host => "host".to_string(),
+            NetworkMode::Bridge => self.network_id.clone(),
+        };
+
         let host_config = HostConfig {
             port_bindings: has_port_bindings.then_some(port_bindings),
             binds: (!config.binds.is_empty()).then_some(config.binds),
-            network_mode: Some(self.network_id.clone()),
+            network_mode: Some(network_mode),
             auto_remove: options.auto_remove.then_some(true),
             ..Default::default()
         };
@@ -785,10 +934,19 @@ impl KupDocker {
             "Container started with bound ports"
         );
 
+        // Create ContainerPorts based on network mode
+        let ports = match self.config.network_mode {
+            NetworkMode::Host => ContainerPorts::Host { bound_ports },
+            NetworkMode::Bridge => ContainerPorts::Bridge {
+                container_name: container_name.to_string(),
+                bound_ports,
+            },
+        };
+
         Ok(ServiceHandler {
             container_id: create_and_start_result.container_id,
             container_name: container_name.to_string(),
-            bound_ports,
+            ports,
         })
     }
 

@@ -14,7 +14,10 @@ pub use cmd::KonaNodeCmdBuilder;
 
 use crate::{
     ExposedPort,
-    docker::{CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig},
+    docker::{
+        ContainerPorts, CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping,
+        ServiceConfig,
+    },
     services::kona_node::cmd::DEFAULT_P2P_PORT,
 };
 
@@ -219,14 +222,12 @@ pub struct KonaNodeHandler {
     pub container_name: String,
     /// P2P port for peer discovery.
     pub p2p_port: u16,
+    /// RPC port (container port).
+    pub rpc_port: u16,
     /// P2P keypair for this node.
     pub p2p_keypair: P2pKeypair,
-    /// The RPC URL for the kona-node (internal Docker network).
-    pub rpc_url: Url,
-    /// The RPC URL accessible from host (if published). None if not published.
-    pub rpc_host_url: Option<Url>,
-    /// The metrics URL accessible from host (if published). None if not published.
-    pub metrics_host_url: Option<Url>,
+    /// Port information for this container.
+    pub ports: ContainerPorts,
 }
 
 impl KonaNodeHandler {
@@ -243,6 +244,16 @@ impl KonaNodeHandler {
     pub fn enode(&self) -> String {
         self.p2p_keypair
             .to_enode(&self.container_name, self.p2p_port)
+    }
+
+    /// Get the internal RPC URL for container-to-container communication.
+    pub fn internal_rpc_url(&self) -> anyhow::Result<Url> {
+        self.ports.internal_http_url(self.rpc_port)
+    }
+
+    /// Get the host-accessible RPC URL (if published).
+    pub fn host_rpc_url(&self) -> Option<anyhow::Result<Url>> {
+        self.ports.host_http_url(self.rpc_port)
     }
 }
 
@@ -290,8 +301,8 @@ impl KonaNodeBuilder {
         );
 
         let mut cmd_builder = KonaNodeCmdBuilder::new(
-            anvil_handler.l1_rpc_url.to_string(),
-            op_reth_handler.authrpc_url.to_string(),
+            anvil_handler.internal_rpc_url()?.to_string(),
+            op_reth_handler.internal_authrpc_url()?.to_string(),
             self.container_name.clone(),
             container_config_path.join("rollup.json"),
             container_config_path.join(jwt_filename),
@@ -371,27 +382,12 @@ impl KonaNodeBuilder {
             .await
             .context("Failed to start kona-node container")?;
 
-        // Build internal Docker network URL
-        let rpc_url = KupDocker::build_http_url(&handler.container_name, self.rpc_port)?;
-
-        // Build host-accessible URLs from bound ports
-        let rpc_host_url = handler
-            .get_tcp_host_port(self.rpc_port)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build RPC host URL")?;
-
-        let metrics_host_url = handler
-            .get_tcp_host_port(self.metrics_port)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build metrics host URL")?;
+        let rpc_host_url = handler.ports.host_http_url(self.rpc_port);
 
         tracing::info!(
             container_id = %handler.container_id,
             container_name = %handler.container_name,
             ?rpc_host_url,
-            ?metrics_host_url,
             "kona-node container started"
         );
 
@@ -399,10 +395,9 @@ impl KonaNodeBuilder {
             container_id: handler.container_id,
             container_name: handler.container_name,
             p2p_port: DEFAULT_P2P_PORT,
+            rpc_port: self.rpc_port,
             p2p_keypair,
-            rpc_url,
-            rpc_host_url,
-            metrics_host_url,
+            ports: handler.ports,
         })
     }
 }

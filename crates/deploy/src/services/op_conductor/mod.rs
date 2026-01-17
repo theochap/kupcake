@@ -14,7 +14,8 @@ use url::Url;
 pub use cmd::OpConductorCmdBuilder;
 
 use crate::docker::{
-    CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig,
+    ContainerPorts, CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping,
+    ServiceConfig,
 };
 
 use super::op_reth::OpRethHandler;
@@ -94,10 +95,22 @@ pub struct OpConductorHandler {
     pub container_id: String,
     /// Docker container name.
     pub container_name: String,
-    /// The RPC URL for the op-conductor (internal Docker network).
-    pub rpc_url: Url,
-    /// The RPC URL accessible from host (if published). None if not published.
-    pub rpc_host_url: Option<Url>,
+    /// RPC port (container port).
+    pub rpc_port: u16,
+    /// Port information for this container.
+    pub ports: ContainerPorts,
+}
+
+impl OpConductorHandler {
+    /// Get the internal RPC URL for container-to-container communication.
+    pub fn internal_rpc_url(&self) -> anyhow::Result<Url> {
+        self.ports.internal_http_url(self.rpc_port)
+    }
+
+    /// Get the host-accessible RPC URL (if published).
+    pub fn host_rpc_url(&self) -> Option<anyhow::Result<Url>> {
+        self.ports.host_http_url(self.rpc_port)
+    }
 }
 
 impl OpConductorBuilder {
@@ -161,7 +174,7 @@ impl OpConductorBuilder {
 
         let cmd = OpConductorCmdBuilder::new(
             kona_node_rpc_url.to_string(),
-            op_reth_handler.http_rpc_url.to_string(),
+            op_reth_handler.internal_http_url()?.to_string(),
             server_id,
             raft_storage_dir.display().to_string(),
             rollup_config_path.display().to_string(),
@@ -203,15 +216,7 @@ impl OpConductorBuilder {
             .await
             .context("Failed to start op-conductor container")?;
 
-        // Build internal Docker network URL
-        let rpc_url = KupDocker::build_http_url(&handler.container_name, self.rpc_port)?;
-
-        // Build host-accessible URLs from bound ports
-        let rpc_host_url = handler
-            .get_tcp_host_port(self.rpc_port)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build RPC host URL")?;
+        let rpc_host_url = handler.ports.host_http_url(self.rpc_port);
 
         tracing::info!(
             container_id = %handler.container_id,
@@ -225,8 +230,8 @@ impl OpConductorBuilder {
         Ok(OpConductorHandler {
             container_id: handler.container_id,
             container_name: handler.container_name,
-            rpc_url,
-            rpc_host_url,
+            rpc_port: self.rpc_port,
+            ports: handler.ports,
         })
     }
 }

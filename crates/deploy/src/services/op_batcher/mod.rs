@@ -105,9 +105,9 @@ impl OpBatcherBuilder {
         let batcher_private_key = &anvil_handler.accounts.batcher.private_key;
 
         let cmd = OpBatcherCmdBuilder::new(
-            anvil_handler.l1_rpc_url.to_string(),
-            op_reth_handler.http_rpc_url.to_string(),
-            kona_node_handler.rpc_url.to_string(),
+            anvil_handler.internal_rpc_url()?.to_string(),
+            op_reth_handler.internal_http_url()?.to_string(),
+            kona_node_handler.internal_rpc_url()?.to_string(),
             batcher_private_key.to_string(),
         )
         .rpc_port(self.rpc_port)

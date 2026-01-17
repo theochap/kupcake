@@ -243,7 +243,7 @@ impl L2StackBuilder {
         }
 
         // Get the primary sequencer's RPC URL for validators to follow
-        let sequencer_rpc = sequencer_handlers[0].op_reth.http_rpc_url.clone();
+        let sequencer_rpc = sequencer_handlers[0].op_reth.internal_http_url()?;
 
         // Start validator nodes (no conductors)
         let mut validator_handlers: Vec<L2NodeHandler> = Vec::with_capacity(self.validators.len());
@@ -322,26 +322,38 @@ impl L2StackBuilder {
 
         // Log all sequencer endpoints
         for (i, sequencer) in sequencer_handlers.iter().enumerate() {
-            tracing::info!(
-                role = "sequencer",
-                index = i,
-                l2_http_rpc = %sequencer.op_reth.http_rpc_url,
-                l2_ws_rpc = %sequencer.op_reth.ws_rpc_url,
-                kona_node_rpc = %sequencer.kona_node.rpc_url,
-                "L2 sequencer node started"
-            );
+            if let (Ok(http_url), Ok(ws_url), Ok(kona_url)) = (
+                sequencer.op_reth.internal_http_url(),
+                sequencer.op_reth.internal_ws_url(),
+                sequencer.kona_node.internal_rpc_url(),
+            ) {
+                tracing::info!(
+                    role = "sequencer",
+                    index = i,
+                    l2_http_rpc = %http_url,
+                    l2_ws_rpc = %ws_url,
+                    kona_node_rpc = %kona_url,
+                    "L2 sequencer node started"
+                );
+            }
         }
 
         // Log all validator endpoints
         for (i, validator) in validator_handlers.iter().enumerate() {
-            tracing::info!(
-                role = "validator",
-                index = i,
-                l2_http_rpc = %validator.op_reth.http_rpc_url,
-                l2_ws_rpc = %validator.op_reth.ws_rpc_url,
-                kona_node_rpc = %validator.kona_node.rpc_url,
-                "L2 validator node started"
-            );
+            if let (Ok(http_url), Ok(ws_url), Ok(kona_url)) = (
+                validator.op_reth.internal_http_url(),
+                validator.op_reth.internal_ws_url(),
+                validator.kona_node.internal_rpc_url(),
+            ) {
+                tracing::info!(
+                    role = "validator",
+                    index = i,
+                    l2_http_rpc = %http_url,
+                    l2_ws_rpc = %ws_url,
+                    kona_node_rpc = %kona_url,
+                    "L2 validator node started"
+                );
+            }
         }
 
         tracing::info!(

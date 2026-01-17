@@ -43,6 +43,7 @@ cargo clippy --fix
 ./target/release/kupcake --network my-testnet --outdata ./my-testnet-data
 ./target/release/kupcake --no-cleanup  # Keep containers running on exit
 ./target/release/kupcake -v debug      # Debug logging
+./target/release/kupcake --host-network  # Use host network mode
 
 # Load from saved configuration
 ./target/release/kupcake --config ./data-my-network/Kupcake.toml
@@ -104,12 +105,39 @@ Deployer
 - **Config** types - Serializable configuration (used in Kupcake.toml)
 - **Handler** types - Runtime handles to running containers
 - **DockerImage** - Image name and tag tuple for each service
+- **NetworkMode** - Enum controlling container networking (Bridge or Host)
+- **ContainerPorts** - Port information that varies based on network mode
 
 ### Docker Networking
 
-All containers run on a custom Docker network (`{network-name}-network`). Services communicate using container names as hostnames. Port mappings expose services to the host:
+Kupcake supports two network modes controlled by the `--host-network` flag:
+
+#### Bridge Mode (Default)
+
+In bridge mode, all containers run on a custom Docker network (`{network-name}-network`). Services communicate using container names as hostnames:
+- Containers use container names for internal URLs (e.g., `http://my-sequencer-op-reth:8545`)
+- Host access uses mapped ports on localhost (e.g., `http://localhost:8545`)
 - `PortMapping` - Maps container port to host port
 - `ExposedPort` - Exposes port within Docker network only
+
+#### Host Mode
+
+In host mode, containers share the host's network namespace:
+- All containers communicate via `localhost` with OS-assigned ephemeral ports
+- No custom Docker network is created
+- Ports are dynamically bound to available host ports
+- **Use case**: When you need host-based services (e.g., a local debugger or IDE) to connect directly to containerized services
+- **Limitation**: Cannot use custom Docker network names with host mode
+
+#### ContainerPorts Type
+
+The `ContainerPorts` enum encapsulates networking differences:
+- `.internal_http_url(port)` - Returns the URL for container-to-container communication
+  - Bridge: `http://container-name:port`
+  - Host: `http://localhost:bound_port`
+- `.internal_ws_url(port)` - Same as HTTP but for WebSocket URLs
+- `.host_http_url(port)` - Returns the URL for host access (always localhost)
+- `.bound_host_port(port)` - Get the host port bound for a container port
 
 ### Configuration Persistence
 

@@ -89,6 +89,7 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         .maybe_l1_rpc_url(l1_rpc_url)
         .no_cleanup(args.no_cleanup)
         .detach(args.detach)
+        .host_network(args.host_network)
         .block_time(args.block_time)
         .l2_node_count(args.l2_nodes)
         .sequencer_count(args.sequencer_count)

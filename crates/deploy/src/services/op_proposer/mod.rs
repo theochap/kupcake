@@ -105,8 +105,8 @@ impl OpProposerBuilder {
             .context("DisputeGameFactory address not found in state.json")?;
 
         let cmd = OpProposerCmdBuilder::new(
-            anvil_handler.l1_rpc_url.to_string(),
-            kona_node_handler.rpc_url.to_string(),
+            anvil_handler.internal_rpc_url()?.to_string(),
+            kona_node_handler.internal_rpc_url()?.to_string(),
             proposer_private_key.to_string(),
             dgf_address,
         )

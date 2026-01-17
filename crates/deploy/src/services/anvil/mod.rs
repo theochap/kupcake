@@ -13,7 +13,10 @@ pub use cmd::AnvilCmdBuilder;
 
 use crate::{
     AccountInfo,
-    docker::{CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig},
+    docker::{
+        ContainerPorts, CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping,
+        ServiceConfig,
+    },
     fs::FsHandler,
 };
 
@@ -159,18 +162,31 @@ struct L1AnvilData {
     private_keys: Vec<Bytes>,
 }
 
+/// The internal port Anvil listens on inside the container.
+pub const ANVIL_INTERNAL_PORT: u16 = 8545;
+
 /// Handler for a running Anvil instance.
 pub struct AnvilHandler {
     /// Docker container ID.
     pub container_id: String,
     /// Docker container name.
     pub container_name: String,
-    /// The RPC URL for the L1 chain behind Anvil (internal Docker network).
-    pub l1_rpc_url: Url,
-    /// The RPC URL accessible from host (if published). None if not published.
-    pub l1_host_url: Option<Url>,
+    /// Port information for this container.
+    pub ports: ContainerPorts,
     /// Named accounts from Anvil matching the OP Stack participant roles.
     pub accounts: AnvilAccounts,
+}
+
+impl AnvilHandler {
+    /// Get the internal RPC URL for container-to-container communication.
+    pub fn internal_rpc_url(&self) -> anyhow::Result<Url> {
+        self.ports.internal_http_url(ANVIL_INTERNAL_PORT)
+    }
+
+    /// Get the host-accessible RPC URL (if published).
+    pub fn host_rpc_url(&self) -> Option<anyhow::Result<Url>> {
+        self.ports.host_http_url(ANVIL_INTERNAL_PORT)
+    }
 }
 
 impl AnvilConfig {
@@ -195,9 +211,6 @@ impl AnvilConfig {
 
         // Container path where anvil will write the config
         let container_config_path = PathBuf::from("/data");
-
-        // Anvil listens on port 8545 inside the container
-        const ANVIL_INTERNAL_PORT: u16 = 8545;
 
         let mut cmd_builder = AnvilCmdBuilder::new(chain_id)
             .host("0.0.0.0")
@@ -273,28 +286,20 @@ impl AnvilConfig {
         let accounts = AnvilAccounts::from_account_infos(account_infos)
             .context("Failed to create named accounts from Anvil")?;
 
-        let l1_rpc_url = KupDocker::build_http_url(&handler.container_name, ANVIL_INTERNAL_PORT)?;
-
-        // Build host-accessible URL from bound port
-        let l1_host_url = handler
-            .get_tcp_host_port(ANVIL_INTERNAL_PORT)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build Anvil host URL")?;
+        let host_rpc_url = handler.ports.host_http_url(ANVIL_INTERNAL_PORT);
 
         tracing::info!(
             container_id = %handler.container_id,
             container_name = %handler.container_name,
-            ?l1_host_url,
+            ?host_rpc_url,
             "Anvil container started"
         );
 
         Ok(AnvilHandler {
             container_id: handler.container_id,
             container_name: handler.container_name,
+            ports: handler.ports,
             accounts,
-            l1_rpc_url,
-            l1_host_url,
         })
     }
 }

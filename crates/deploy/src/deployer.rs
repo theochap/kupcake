@@ -349,7 +349,7 @@ impl Deployer {
         tracing::info!("✓ Deployment complete!");
         tracing::info!("");
         tracing::info!("=== Host-accessible endpoints (curl from your terminal) ===");
-        if let Some(ref url) = anvil.l1_host_url {
+        if let Some(Ok(ref url)) = anvil.host_rpc_url() {
             tracing::info!("L1 (Anvil) RPC:       {}", url);
         }
 
@@ -360,19 +360,19 @@ impl Deployer {
             } else {
                 format!("sequencer-{}", i)
             };
-            if let Some(ref url) = node.op_reth.http_host_url {
+            if let Some(Ok(ref url)) = node.op_reth.host_http_url() {
                 tracing::info!("L2 {} (op-reth) HTTP:    {}", label, url);
             }
-            if let Some(ref url) = node.op_reth.ws_host_url {
+            if let Some(Ok(ref url)) = node.op_reth.host_ws_url() {
                 tracing::info!("L2 {} (op-reth) WS:      {}", label, url);
             }
-            if let Some(ref url) = node.kona_node.rpc_host_url {
+            if let Some(Ok(ref url)) = node.kona_node.host_rpc_url() {
                 tracing::info!("L2 {} (kona-node) RPC:   {}", label, url);
             }
 
             // Log op-conductor endpoints if present
             if let Some(ref conductor) = node.op_conductor {
-                if let Some(ref url) = conductor.rpc_host_url {
+                if let Some(Ok(ref url)) = conductor.host_rpc_url() {
                     tracing::info!("L2 {} (op-conductor) RPC:     {}", label, url);
                 }
             }
@@ -381,13 +381,13 @@ impl Deployer {
         // Log endpoints for validator nodes
         for (i, node) in l2_stack.validators.iter().enumerate() {
             let label = format!("validator-{}", i + 1);
-            if let Some(ref url) = node.op_reth.http_host_url {
+            if let Some(Ok(ref url)) = node.op_reth.host_http_url() {
                 tracing::info!("L2 {} (op-reth) HTTP:    {}", label, url);
             }
-            if let Some(ref url) = node.op_reth.ws_host_url {
+            if let Some(Ok(ref url)) = node.op_reth.host_ws_url() {
                 tracing::info!("L2 {} (op-reth) WS:      {}", label, url);
             }
-            if let Some(ref url) = node.kona_node.rpc_host_url {
+            if let Some(Ok(ref url)) = node.kona_node.host_rpc_url() {
                 tracing::info!("L2 {} (kona-node) RPC:   {}", label, url);
             }
         }
@@ -405,7 +405,9 @@ impl Deployer {
         }
         tracing::info!("");
         tracing::info!("=== Internal Docker network endpoints ===");
-        tracing::info!("L1 (Anvil) RPC:       {}", anvil.l1_rpc_url);
+        if let Ok(ref url) = anvil.internal_rpc_url() {
+            tracing::info!("L1 (Anvil) RPC:       {}", url);
+        }
 
         // Log internal endpoints for sequencer nodes
         for (i, node) in l2_stack.sequencers.iter().enumerate() {
@@ -414,38 +416,36 @@ impl Deployer {
             } else {
                 format!("sequencer-{}", i)
             };
-            tracing::info!(
-                "L2 {} (op-reth) HTTP:    {}",
-                label,
-                node.op_reth.http_rpc_url
-            );
-            tracing::info!(
-                "L2 {} (op-reth) WS:      {}",
-                label,
-                node.op_reth.ws_rpc_url
-            );
-            tracing::info!("L2 {} (kona-node) RPC:   {}", label, node.kona_node.rpc_url);
+            if let Ok(ref url) = node.op_reth.internal_http_url() {
+                tracing::info!("L2 {} (op-reth) HTTP:    {}", label, url);
+            }
+            if let Ok(ref url) = node.op_reth.internal_ws_url() {
+                tracing::info!("L2 {} (op-reth) WS:      {}", label, url);
+            }
+            if let Ok(ref url) = node.kona_node.internal_rpc_url() {
+                tracing::info!("L2 {} (kona-node) RPC:   {}", label, url);
+            }
 
             // Log op-conductor internal endpoints if present
             if let Some(ref conductor) = node.op_conductor {
-                tracing::info!("L2 {} (op-conductor) RPC:     {}", label, conductor.rpc_url);
+                if let Ok(ref url) = conductor.internal_rpc_url() {
+                    tracing::info!("L2 {} (op-conductor) RPC:     {}", label, url);
+                }
             }
         }
 
         // Log internal endpoints for validator nodes
         for (i, node) in l2_stack.validators.iter().enumerate() {
             let label = format!("validator-{}", i + 1);
-            tracing::info!(
-                "L2 {} (op-reth) HTTP:    {}",
-                label,
-                node.op_reth.http_rpc_url
-            );
-            tracing::info!(
-                "L2 {} (op-reth) WS:      {}",
-                label,
-                node.op_reth.ws_rpc_url
-            );
-            tracing::info!("L2 {} (kona-node) RPC:   {}", label, node.kona_node.rpc_url);
+            if let Ok(ref url) = node.op_reth.internal_http_url() {
+                tracing::info!("L2 {} (op-reth) HTTP:    {}", label, url);
+            }
+            if let Ok(ref url) = node.op_reth.internal_ws_url() {
+                tracing::info!("L2 {} (op-reth) WS:      {}", label, url);
+            }
+            if let Ok(ref url) = node.kona_node.internal_rpc_url() {
+                tracing::info!("L2 {} (kona-node) RPC:   {}", label, url);
+            }
         }
 
         tracing::info!("Op Batcher RPC:       {}", l2_stack.op_batcher.rpc_url);

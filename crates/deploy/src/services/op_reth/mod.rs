@@ -12,7 +12,10 @@ pub use cmd::OpRethCmdBuilder;
 
 use crate::{
     ExposedPort,
-    docker::{CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig},
+    docker::{
+        ContainerPorts, CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping,
+        ServiceConfig,
+    },
     services::kona_node::P2pKeypair,
 };
 
@@ -107,26 +110,24 @@ impl Default for OpRethBuilder {
 
 /// Handler for a running op-reth instance.
 pub struct OpRethHandler {
-    /// Port for P2P discovery (container port).
-    pub discovery_port: u16,
     /// Docker container ID.
     pub container_id: String,
     /// Docker container name.
     pub container_name: String,
+    /// Port for P2P discovery (container port).
+    pub discovery_port: u16,
     /// The P2P listen port (used for enode URL construction).
     pub listen_port: u16,
+    /// HTTP RPC port (container port).
+    pub http_port: u16,
+    /// WebSocket RPC port (container port).
+    pub ws_port: u16,
+    /// Authenticated RPC port for Engine API (container port).
+    pub authrpc_port: u16,
     /// P2P keypair for this node (used for enode computation).
     pub p2p_keypair: P2pKeypair,
-    /// The HTTP RPC URL for the L2 execution client (internal Docker network).
-    pub http_rpc_url: Url,
-    /// The WebSocket RPC URL for the L2 execution client (internal Docker network).
-    pub ws_rpc_url: Url,
-    /// The authenticated RPC URL for Engine API (internal Docker network, used by kona-node).
-    pub authrpc_url: Url,
-    /// The HTTP RPC URL accessible from host (if published). None if not published.
-    pub http_host_url: Option<Url>,
-    /// The WebSocket RPC URL accessible from host (if published). None if not published.
-    pub ws_host_url: Option<Url>,
+    /// Port information for this container.
+    pub ports: ContainerPorts,
 }
 
 impl OpRethHandler {
@@ -137,6 +138,39 @@ impl OpRethHandler {
     pub fn enode(&self) -> String {
         self.p2p_keypair
             .to_enode(&self.container_name, self.discovery_port)
+    }
+
+    /// Get the internal HTTP RPC URL for container-to-container communication.
+    pub fn internal_http_url(&self) -> anyhow::Result<Url> {
+        self.ports.internal_http_url(self.http_port)
+    }
+
+    /// Get the internal WebSocket RPC URL for container-to-container communication.
+    pub fn internal_ws_url(&self) -> anyhow::Result<Url> {
+        self.ports.internal_ws_url(self.ws_port)
+    }
+
+    /// Get the internal authenticated RPC URL for Engine API.
+    pub fn internal_authrpc_url(&self) -> anyhow::Result<Url> {
+        self.ports.internal_http_url(self.authrpc_port)
+    }
+
+    /// Get the host-accessible HTTP RPC URL (if published).
+    pub fn host_http_url(&self) -> Option<anyhow::Result<Url>> {
+        self.ports.host_http_url(self.http_port)
+    }
+
+    /// Get the host-accessible WebSocket RPC URL (if published).
+    pub fn host_ws_url(&self) -> Option<anyhow::Result<Url>> {
+        let key = format!("{}/tcp", self.ws_port);
+        match &self.ports {
+            ContainerPorts::Host { bound_ports } | ContainerPorts::Bridge { bound_ports, .. } => {
+                bound_ports.get(&key).map(|port| {
+                    Url::parse(&format!("ws://localhost:{}/", port))
+                        .context("Failed to parse WebSocket URL")
+                })
+            }
+        }
     }
 }
 
@@ -240,29 +274,12 @@ impl OpRethBuilder {
             .await
             .context("Failed to start op-reth container")?;
 
-        // Build internal Docker network URLs
-        let http_rpc_url = KupDocker::build_http_url(&handler.container_name, self.http_port)?;
-        let ws_rpc_url = KupDocker::build_ws_url(&handler.container_name, self.ws_port)?;
-        let authrpc_url = KupDocker::build_http_url(&handler.container_name, self.authrpc_port)?;
-
-        // Build host-accessible URLs from bound ports
-        let http_host_url = handler
-            .get_tcp_host_port(self.http_port)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build HTTP host URL")?;
-
-        let ws_host_url = handler
-            .get_tcp_host_port(self.ws_port)
-            .map(|port| Url::parse(&format!("ws://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build WebSocket host URL")?;
+        let http_host_url = handler.ports.host_http_url(self.http_port);
 
         tracing::info!(
             container_id = %handler.container_id,
             container_name = %handler.container_name,
             ?http_host_url,
-            ?ws_host_url,
             "op-reth container started"
         );
 
@@ -271,12 +288,11 @@ impl OpRethBuilder {
             container_name: handler.container_name,
             listen_port: self.listen_port,
             discovery_port: self.discovery_port,
+            http_port: self.http_port,
+            ws_port: self.ws_port,
+            authrpc_port: self.authrpc_port,
             p2p_keypair,
-            http_rpc_url,
-            ws_rpc_url,
-            authrpc_url,
-            http_host_url,
-            ws_host_url,
+            ports: handler.ports,
         })
     }
 }

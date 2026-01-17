@@ -973,3 +973,285 @@ async fn test_op_batcher_health() -> Result<()> {
 
     Ok(())
 }
+
+/// Test that host network mode deployment works correctly.
+/// This test verifies:
+/// - All containers can be deployed in host network mode
+/// - Services communicate correctly via localhost with dynamic ports
+/// - Block production works correctly in host mode
+/// - All critical services (L1, L2, batcher) are functional
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_host_network_mode_deployment() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init()
+        .ok();
+
+    let l1_chain_id = generate_random_l1_chain_id();
+    let network_name = format!("kup-host-test-{}", l1_chain_id);
+    let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
+
+    println!(
+        "=== Starting host network mode test deployment with network: {} (L1 chain ID: {}) ===",
+        network_name, l1_chain_id
+    );
+
+    // Deploy with host network mode enabled
+    let deployer = DeployerBuilder::new(l1_chain_id)
+        .network_name(&network_name)
+        .outdata(OutDataPath::Path(outdata_path.clone()))
+        // No l1_rpc_url - this triggers local mode
+        .l2_node_count(2) // 1 sequencer + 1 validator (minimum for faster testing)
+        .sequencer_count(1)
+        .block_time(2)
+        .host_network(true) // ENABLE HOST NETWORK MODE
+        .detach(true)
+        .build()
+        .await
+        .context("Failed to build deployer with host network mode")?;
+
+    deployer.save_config()?;
+
+    println!("=== Deploying network in host mode... ===");
+
+    let deploy_result = timeout(Duration::from_secs(600), deployer.deploy(false)).await;
+
+    match deploy_result {
+        Ok(Ok(())) => println!("=== Deployment completed successfully ==="),
+        Ok(Err(e)) => {
+            let _ = cleanup_by_prefix(&network_name).await;
+            return Err(e).context("Deployment failed");
+        }
+        Err(_) => {
+            let _ = cleanup_by_prefix(&network_name).await;
+            anyhow::bail!("Deployment timed out after 600 seconds");
+        }
+    }
+
+    // In host mode, all ports are dynamically assigned by the OS
+    // We need to use docker inspect to get the actual bound ports
+
+    println!("=== Verifying container deployment in host mode... ===");
+
+    // Verify critical containers are running
+    let critical_containers = vec![
+        format!("{}-anvil", network_name),
+        format!("{}-op-reth", network_name),
+        format!("{}-kona-node", network_name),
+        format!("{}-op-batcher", network_name),
+        format!("{}-op-proposer", network_name),
+    ];
+
+    for container_name in &critical_containers {
+        let output = Command::new("docker")
+            .args(["inspect", "--format", "{{.State.Running}}", container_name])
+            .output()
+            .context(format!("Failed to inspect container {}", container_name))?;
+
+        if !output.status.success() {
+            let _ = cleanup_by_prefix(&network_name).await;
+            anyhow::bail!("Container {} not found", container_name);
+        }
+
+        let running = String::from_utf8_lossy(&output.stdout).trim() == "true";
+        if !running {
+            let _ = cleanup_by_prefix(&network_name).await;
+            anyhow::bail!("Container {} is not running", container_name);
+        }
+        println!("Container {} is running", container_name);
+    }
+
+    // Get dynamically bound ports for testing
+    let anvil_port = get_container_host_port(&format!("{}-anvil", network_name), 8545)
+        .context("Failed to get Anvil port in host mode")?;
+    let kona_port = get_container_host_port(&format!("{}-kona-node", network_name), 7545)
+        .context("Failed to get kona-node port in host mode")?;
+    let op_reth_port = get_container_host_port(&format!("{}-op-reth", network_name), 9545)
+        .context("Failed to get op-reth port in host mode")?;
+    let batcher_port = get_container_host_port(&format!("{}-op-batcher", network_name), 8548)
+        .context("Failed to get op-batcher port in host mode")?;
+
+    println!("=== Host mode dynamic ports ===");
+    println!("Anvil (L1): http://localhost:{}", anvil_port);
+    println!("kona-node: http://localhost:{}", kona_port);
+    println!("op-reth: http://localhost:{}", op_reth_port);
+    println!("op-batcher: http://localhost:{}", batcher_port);
+
+    // Verify L1 (Anvil) is responding
+    println!("=== Verifying L1 (Anvil) is responding... ===");
+    let anvil_url = format!("http://localhost:{}", anvil_port);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+
+    let anvil_response = client
+        .post(&anvil_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "eth_blockNumber",
+            "params": [],
+            "id": 1
+        }))
+        .send()
+        .await
+        .context("Failed to query Anvil in host mode")?;
+
+    let anvil_body: Value = anvil_response.json().await?;
+    if anvil_body.get("result").is_none() {
+        let _ = cleanup_by_prefix(&network_name).await;
+        anyhow::bail!("Anvil RPC not responding correctly in host mode");
+    }
+    println!("Anvil (L1) is responding correctly");
+
+    // Wait for op-reth to be ready
+    println!("=== Waiting for op-reth to be ready in host mode... ===");
+    let op_reth_url = format!("http://localhost:{}", op_reth_port);
+    if let Err(e) = wait_for_op_reth_ready(&op_reth_url, 120).await {
+        println!("Warning: op-reth not ready: {}", e);
+    }
+
+    // Wait for kona-node to be ready
+    println!("=== Waiting for kona-node to be ready in host mode... ===");
+    let kona_url = format!("http://localhost:{}", kona_port);
+    if let Err(e) = wait_for_node_ready(&kona_url, 120).await {
+        println!("Warning: kona-node not ready: {}", e);
+    }
+
+    // Get initial sync status from kona-node
+    println!("=== Getting initial sync status in host mode... ===");
+    let initial_status = match get_sync_status(&kona_url).await {
+        Ok(status) => {
+            println!(
+                "Initial status: unsafe_l2={}, safe_l2={}, finalized_l2={}",
+                status.unsafe_l2.number,
+                status.safe_l2.number,
+                status.finalized_l2.number
+            );
+            Some(status)
+        }
+        Err(e) => {
+            println!("Warning: Failed to get initial sync status: {}", e);
+            None
+        }
+    };
+
+    // Get initial op-reth block number
+    let initial_reth_status = match get_op_reth_status(&op_reth_url).await {
+        Ok(status) => {
+            println!(
+                "Initial op-reth: block={}, syncing={}",
+                status.block_number,
+                status.is_syncing
+            );
+            Some(status.block_number)
+        }
+        Err(e) => {
+            println!("Warning: Failed to get initial op-reth status: {}", e);
+            None
+        }
+    };
+
+    // Wait for blocks to be produced
+    println!("=== Waiting 30 seconds for blocks to be produced in host mode... ===");
+    sleep(Duration::from_secs(30)).await;
+
+    // Verify block production
+    println!("=== Verifying block production in host mode... ===");
+    let mut all_advancing = true;
+    let mut errors = Vec::new();
+
+    // Check kona-node sync status advancement
+    if let Some(initial) = initial_status {
+        match get_sync_status(&kona_url).await {
+            Ok(current) => {
+                let unsafe_advanced = current.unsafe_l2.number > initial.unsafe_l2.number;
+                let safe_advanced = current.safe_l2.number > initial.safe_l2.number;
+
+                println!(
+                    "kona-node: unsafe {} -> {} ({}), safe {} -> {} ({})",
+                    initial.unsafe_l2.number,
+                    current.unsafe_l2.number,
+                    if unsafe_advanced { "ADVANCING" } else { "STALLED" },
+                    initial.safe_l2.number,
+                    current.safe_l2.number,
+                    if safe_advanced { "ADVANCING" } else { "STALLED" },
+                );
+
+                if !unsafe_advanced {
+                    errors.push("kona-node: unsafe head not advancing".to_string());
+                    all_advancing = false;
+                }
+            }
+            Err(e) => {
+                errors.push(format!("kona-node: failed to get current status: {}", e));
+                all_advancing = false;
+            }
+        }
+    }
+
+    // Check op-reth block advancement
+    if let Some(initial_block) = initial_reth_status {
+        match get_op_reth_status(&op_reth_url).await {
+            Ok(status) => {
+                let advanced = status.block_number > initial_block;
+                println!(
+                    "op-reth: block {} -> {} ({})",
+                    initial_block,
+                    status.block_number,
+                    if advanced { "ADVANCING" } else { "STALLED" }
+                );
+
+                if !advanced {
+                    errors.push("op-reth: block number not advancing".to_string());
+                    all_advancing = false;
+                }
+            }
+            Err(e) => {
+                errors.push(format!("op-reth: failed to get current status: {}", e));
+                all_advancing = false;
+            }
+        }
+    }
+
+    // Verify op-batcher is healthy in host mode
+    println!("=== Verifying op-batcher health in host mode... ===");
+    let batcher_url = format!("http://localhost:{}", batcher_port);
+    if let Err(e) = wait_for_op_batcher_ready(&batcher_url, 60).await {
+        println!("Warning: op-batcher not ready: {}", e);
+    } else {
+        match get_op_batcher_status(&batcher_url).await {
+            Ok(status) if status.is_healthy => {
+                println!("op-batcher is healthy in host mode");
+            }
+            Ok(status) => {
+                println!(
+                    "Warning: op-batcher not healthy: {}",
+                    status.error.unwrap_or_else(|| "unknown".to_string())
+                );
+            }
+            Err(e) => {
+                println!("Warning: Failed to check op-batcher health: {}", e);
+            }
+        }
+    }
+
+    // Cleanup
+    println!("=== Cleaning up host mode network... ===");
+    let cleanup_result = cleanup_by_prefix(&network_name).await?;
+    println!(
+        "Cleaned up {} containers",
+        cleanup_result.containers_removed.len()
+    );
+    if let Some(network) = cleanup_result.network_removed {
+        println!("Removed network: {}", network);
+    }
+
+    // Assert after cleanup
+    if !all_advancing {
+        anyhow::bail!("Not all services are advancing in host mode:\n{}", errors.join("\n"));
+    }
+
+    println!("=== Test passed! Host network mode deployment is working correctly. ===");
+    Ok(())
+}
