@@ -120,6 +120,72 @@ pub const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/foundry-rs/foundry";
 /// Default Docker tag for Anvil (Foundry).
 pub const DEFAULT_DOCKER_TAG: &str = "latest";
 
+/// Host port configuration for Anvil (used in Bridge mode).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AnvilHostPorts {
+    /// Host port for RPC endpoint.
+    pub rpc: Option<u16>,
+}
+
+impl Default for AnvilHostPorts {
+    fn default() -> Self {
+        Self {
+            rpc: Some(0), // Let OS pick an available port
+        }
+    }
+}
+
+/// Runtime port information for Anvil containers.
+pub enum AnvilContainerPorts {
+    /// Host network mode - all communication via localhost with dynamically assigned ports.
+    Host {
+        /// Bound host ports for this container.
+        bound_ports: AnvilHostPorts,
+    },
+    /// Bridge network mode - internal communication via container name, host access via mapped ports.
+    Bridge {
+        /// Container name for internal Docker network URLs.
+        container_name: String,
+        /// Bound host ports for this container (for host access).
+        bound_ports: AnvilHostPorts,
+    },
+}
+
+impl AnvilContainerPorts {
+    /// Get the HTTP URL for internal container-to-container communication.
+    ///
+    /// In host mode, returns localhost with the bound port.
+    /// In bridge mode, returns the container name with the container port.
+    pub fn internal_http_url(&self, container_port: u16) -> anyhow::Result<Url> {
+        let url_str = match self {
+            Self::Host { bound_ports } => {
+                let port = bound_ports
+                    .rpc
+                    .ok_or_else(|| anyhow::anyhow!("RPC port not bound"))?;
+                format!("http://localhost:{}/", port)
+            }
+            Self::Bridge { container_name, .. } => {
+                format!("http://{}:{}/", container_name, container_port)
+            }
+        };
+        Url::parse(&url_str).context("Failed to parse HTTP URL")
+    }
+
+    /// Get the HTTP URL for host access.
+    ///
+    /// Returns None if the port is not published to the host.
+    pub fn host_http_url(&self) -> Option<anyhow::Result<Url>> {
+        match self {
+            Self::Host { bound_ports } | Self::Bridge { bound_ports, .. } => {
+                bound_ports.rpc.map(|port| {
+                    Url::parse(&format!("http://localhost:{}/", port))
+                        .context("Failed to parse HTTP URL")
+                })
+            }
+        }
+    }
+}
+
 /// Configuration for Anvil.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AnvilConfig {
@@ -129,12 +195,9 @@ pub struct AnvilConfig {
     pub host: String,
     /// Port for Anvil RPC (container port).
     pub port: u16,
-    /// Host port for Anvil RPC. If None, not published to host.
-    #[serde(
-        default = "default_anvil_host_port",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub host_port: Option<u16>,
+    /// Host ports configuration. Only populated in Bridge mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_ports: Option<AnvilHostPorts>,
     /// Block time in seconds.
     pub block_time: u64,
     /// URL to fork from (optional, if not provided Anvil runs without forking).
@@ -149,10 +212,6 @@ pub struct AnvilConfig {
     /// Extra arguments to pass to Anvil.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
-}
-
-fn default_anvil_host_port() -> Option<u16> {
-    Some(0) // Let OS pick an available port
 }
 
 /// Parsed Anvil configuration data.
@@ -172,7 +231,7 @@ pub struct AnvilHandler {
     /// Docker container name.
     pub container_name: String,
     /// Port information for this container.
-    pub ports: ContainerPorts,
+    pub ports: AnvilContainerPorts,
     /// Named accounts from Anvil matching the OP Stack participant roles.
     pub accounts: AnvilAccounts,
 }
@@ -185,7 +244,7 @@ impl AnvilHandler {
 
     /// Get the host-accessible RPC URL (if published).
     pub fn host_rpc_url(&self) -> Option<anyhow::Result<Url>> {
-        self.ports.host_http_url(ANVIL_INTERNAL_PORT)
+        self.ports.host_http_url()
     }
 }
 
@@ -228,9 +287,12 @@ impl AnvilConfig {
 
         let cmd = cmd_builder.build();
 
+        // Extract port value for PortMapping from host_ports
+        let rpc_port = self.host_ports.as_ref().and_then(|hp| hp.rpc);
+
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> =
-            PortMapping::tcp_optional(ANVIL_INTERNAL_PORT, self.host_port)
+            PortMapping::tcp_optional(ANVIL_INTERNAL_PORT, rpc_port)
                 .into_iter()
                 .collect();
 
@@ -240,7 +302,7 @@ impl AnvilConfig {
             .ports(port_mappings)
             .bind(&host_config_path, &container_config_path, "rw");
 
-        let handler = docker
+        let service_handler = docker
             .start_service(
                 &self.container_name,
                 service_config,
@@ -250,8 +312,8 @@ impl AnvilConfig {
             .context("Failed to start Anvil container")?;
 
         tracing::info!(
-            container_id = %handler.container_id,
-            container_name = %handler.container_name,
+            container_id = %service_handler.container_id,
+            container_name = %service_handler.container_name,
             "Anvil container started"
         );
 
@@ -286,19 +348,35 @@ impl AnvilConfig {
         let accounts = AnvilAccounts::from_account_infos(account_infos)
             .context("Failed to create named accounts from Anvil")?;
 
-        let host_rpc_url = handler.ports.host_http_url(ANVIL_INTERNAL_PORT);
+        // Convert HashMap bound_ports to AnvilHostPorts
+        let bound_host_ports = AnvilHostPorts {
+            rpc: service_handler.ports.get_tcp_host_port(ANVIL_INTERNAL_PORT),
+        };
+
+        // Create typed ContainerPorts
+        let typed_ports = match &service_handler.ports {
+            ContainerPorts::Host { .. } => AnvilContainerPorts::Host {
+                bound_ports: bound_host_ports,
+            },
+            ContainerPorts::Bridge { container_name, .. } => AnvilContainerPorts::Bridge {
+                container_name: container_name.clone(),
+                bound_ports: bound_host_ports,
+            },
+        };
+
+        let host_rpc_url = typed_ports.host_http_url();
 
         tracing::info!(
-            container_id = %handler.container_id,
-            container_name = %handler.container_name,
+            container_id = %service_handler.container_id,
+            container_name = %service_handler.container_name,
             ?host_rpc_url,
             "Anvil container started"
         );
 
         Ok(AnvilHandler {
-            container_id: handler.container_id,
-            container_name: handler.container_name,
-            ports: handler.ports,
+            container_id: service_handler.container_id,
+            container_name: service_handler.container_name,
+            ports: typed_ports,
             accounts,
         })
     }
@@ -311,7 +389,7 @@ impl Default for AnvilConfig {
             container_name: "kupcake-anvil".to_string(),
             host: "0.0.0.0".to_string(),
             port: DEFAULT_PORT,
-            host_port: Some(0), // Let OS pick an available port
+            host_ports: Some(AnvilHostPorts::default()),
             block_time: 12,
             fork_url: None,
             timestamp: None,

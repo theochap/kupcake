@@ -398,14 +398,14 @@ impl Deployer {
             }
         }
 
-        if let Some(ref url) = l2_stack.op_batcher.rpc_host_url {
+        if let Some(Ok(ref url)) = l2_stack.op_batcher.host_rpc_url() {
             tracing::info!("L2 (op-batcher) RPC:  {}", url);
         }
         if let Some(ref mon) = monitoring {
-            if let Some(ref url) = mon.prometheus.host_url {
+            if let Some(Ok(ref url)) = mon.prometheus.host_url() {
                 tracing::info!("Prometheus:           {}", url);
             }
-            if let Some(ref url) = mon.grafana.host_url {
+            if let Some(Ok(ref url)) = mon.grafana.host_url() {
                 tracing::info!("Grafana:              {}", url);
             }
         }
@@ -454,9 +454,13 @@ impl Deployer {
             }
         }
 
-        tracing::info!("Op Batcher RPC:       {}", l2_stack.op_batcher.rpc_url);
-        tracing::info!("Op Proposer RPC:      {}", l2_stack.op_proposer.rpc_url);
-        tracing::info!("Op Challenger RPC:    {}", l2_stack.op_challenger.rpc_url);
+        if let Ok(ref url) = l2_stack.op_batcher.internal_rpc_url() {
+            tracing::info!("Op Batcher RPC:       {}", url);
+        }
+        if let Ok(ref url) = l2_stack.op_proposer.internal_rpc_url() {
+            tracing::info!("Op Proposer RPC:      {}", url);
+        }
+        tracing::info!("Op Challenger (metrics only)");
 
         tracing::info!("");
 

@@ -356,10 +356,12 @@ impl L2StackBuilder {
             }
         }
 
+        let op_batcher_rpc = op_batcher_handler.internal_rpc_url();
+        let op_proposer_rpc = op_proposer_handler.internal_rpc_url();
+
         tracing::info!(
-            op_batcher_rpc = %op_batcher_handler.rpc_url,
-            op_proposer_rpc = %op_proposer_handler.rpc_url,
-            op_challenger_rpc = %op_challenger_handler.rpc_url,
+            ?op_batcher_rpc,
+            ?op_proposer_rpc,
             "L2 stack started successfully"
         );
 

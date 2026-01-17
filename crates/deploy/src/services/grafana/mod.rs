@@ -7,13 +7,87 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    docker::{CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig},
+    docker::{
+        ContainerPorts, CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping,
+        ServiceConfig,
+    },
     fs::FsHandler,
 };
 
 /// Default ports for monitoring components.
 pub const DEFAULT_PROMETHEUS_PORT: u16 = 9099;
 pub const DEFAULT_GRAFANA_PORT: u16 = 3019;
+
+/// Host port configuration for Prometheus (used in Bridge mode).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PrometheusHostPorts {
+    /// Host port for server endpoint.
+    pub server: Option<u16>,
+}
+
+impl Default for PrometheusHostPorts {
+    fn default() -> Self {
+        Self {
+            server: Some(0), // Let OS pick an available port
+        }
+    }
+}
+
+/// Runtime port information for Prometheus containers.
+pub enum PrometheusContainerPorts {
+    /// Host network mode - all communication via localhost with dynamically assigned ports.
+    Host {
+        /// Bound host ports for this container.
+        bound_ports: PrometheusHostPorts,
+    },
+    /// Bridge network mode - internal communication via container name, host access via mapped ports.
+    Bridge {
+        /// Container name for internal Docker network URLs.
+        container_name: String,
+        /// Bound host ports for this container (for host access).
+        bound_ports: PrometheusHostPorts,
+    },
+}
+
+impl PrometheusContainerPorts {
+    /// Get the HTTP URL for internal container-to-container communication.
+    ///
+    /// In host mode, returns localhost with the bound port.
+    /// In bridge mode, returns the container name with the container port.
+    pub fn internal_http_url(&self, container_port: u16) -> anyhow::Result<Url> {
+        let url_str = match self {
+            Self::Host { bound_ports } => {
+                let port = bound_ports
+                    .server
+                    .ok_or_else(|| anyhow::anyhow!("Server port not bound"))?;
+                format!("http://localhost:{}/", port)
+            }
+            Self::Bridge { container_name, .. } => {
+                format!("http://{}:{}/", container_name, container_port)
+            }
+        };
+        Url::parse(&url_str).context("Failed to parse HTTP URL")
+    }
+
+    /// Get the HTTP URL for host access.
+    ///
+    /// Returns None if the port is not published to the host.
+    pub fn host_http_url(&self) -> Option<anyhow::Result<Url>> {
+        match self {
+            Self::Host { bound_ports } | Self::Bridge { bound_ports, .. } => {
+                bound_ports.server.map(|port| {
+                    Url::parse(&format!("http://localhost:{}/", port))
+                        .context("Failed to parse HTTP URL")
+                })
+            }
+        }
+    }
+}
+
+/// Default Docker image for Prometheus.
+pub const DEFAULT_PROMETHEUS_DOCKER_IMAGE: &str = "prom/prometheus";
+/// Default Docker tag for Prometheus.
+pub const DEFAULT_PROMETHEUS_DOCKER_TAG: &str = "latest";
 
 /// Configuration for Prometheus.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -30,25 +104,13 @@ pub struct PrometheusConfig {
     /// Port for the Prometheus server (container port).
     pub port: u16,
 
-    /// Host port for Prometheus. If None, not published to host. If Some(0), OS picks port.
-    #[serde(
-        default = "default_prometheus_host_port",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub host_port: Option<u16>,
+    /// Host ports configuration. Only populated in Bridge mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_ports: Option<PrometheusHostPorts>,
 
     /// Scrape interval in seconds.
     pub scrape_interval: u64,
 }
-
-fn default_prometheus_host_port() -> Option<u16> {
-    Some(0) // Let OS pick an available port
-}
-
-/// Default Docker image for Prometheus.
-pub const DEFAULT_PROMETHEUS_DOCKER_IMAGE: &str = "prom/prometheus";
-/// Default Docker tag for Prometheus.
-pub const DEFAULT_PROMETHEUS_DOCKER_TAG: &str = "latest";
 
 impl Default for PrometheusConfig {
     fn default() -> Self {
@@ -60,11 +122,82 @@ impl Default for PrometheusConfig {
             container_name: "kupcake-prometheus".to_string(),
             host: "0.0.0.0".to_string(),
             port: DEFAULT_PROMETHEUS_PORT,
-            host_port: Some(0), // Let OS pick an available port
+            host_ports: Some(PrometheusHostPorts::default()),
             scrape_interval: 15,
         }
     }
 }
+
+/// Host port configuration for Grafana (used in Bridge mode).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GrafanaHostPorts {
+    /// Host port for server endpoint.
+    pub server: Option<u16>,
+}
+
+impl Default for GrafanaHostPorts {
+    fn default() -> Self {
+        Self {
+            server: Some(0), // Let OS pick an available port
+        }
+    }
+}
+
+/// Runtime port information for Grafana containers.
+pub enum GrafanaContainerPorts {
+    /// Host network mode - all communication via localhost with dynamically assigned ports.
+    Host {
+        /// Bound host ports for this container.
+        bound_ports: GrafanaHostPorts,
+    },
+    /// Bridge network mode - internal communication via container name, host access via mapped ports.
+    Bridge {
+        /// Container name for internal Docker network URLs.
+        container_name: String,
+        /// Bound host ports for this container (for host access).
+        bound_ports: GrafanaHostPorts,
+    },
+}
+
+impl GrafanaContainerPorts {
+    /// Get the HTTP URL for internal container-to-container communication.
+    ///
+    /// In host mode, returns localhost with the bound port.
+    /// In bridge mode, returns the container name with the container port.
+    pub fn internal_http_url(&self, container_port: u16) -> anyhow::Result<Url> {
+        let url_str = match self {
+            Self::Host { bound_ports } => {
+                let port = bound_ports
+                    .server
+                    .ok_or_else(|| anyhow::anyhow!("Server port not bound"))?;
+                format!("http://localhost:{}/", port)
+            }
+            Self::Bridge { container_name, .. } => {
+                format!("http://{}:{}/", container_name, container_port)
+            }
+        };
+        Url::parse(&url_str).context("Failed to parse HTTP URL")
+    }
+
+    /// Get the HTTP URL for host access.
+    ///
+    /// Returns None if the port is not published to the host.
+    pub fn host_http_url(&self) -> Option<anyhow::Result<Url>> {
+        match self {
+            Self::Host { bound_ports } | Self::Bridge { bound_ports, .. } => {
+                bound_ports.server.map(|port| {
+                    Url::parse(&format!("http://localhost:{}/", port))
+                        .context("Failed to parse HTTP URL")
+                })
+            }
+        }
+    }
+}
+
+/// Default Docker image for Grafana.
+pub const DEFAULT_GRAFANA_DOCKER_IMAGE: &str = "grafana/grafana";
+/// Default Docker tag for Grafana.
+pub const DEFAULT_GRAFANA_DOCKER_TAG: &str = "latest";
 
 /// Configuration for Grafana.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -81,12 +214,9 @@ pub struct GrafanaConfig {
     /// Port for the Grafana server (container port).
     pub port: u16,
 
-    /// Host port for Grafana. If None, not published to host. If Some(0), OS picks port.
-    #[serde(
-        default = "default_grafana_host_port",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub host_port: Option<u16>,
+    /// Host ports configuration. Only populated in Bridge mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_ports: Option<GrafanaHostPorts>,
 
     /// Admin username.
     pub admin_user: String,
@@ -94,15 +224,6 @@ pub struct GrafanaConfig {
     /// Admin password.
     pub admin_password: String,
 }
-
-fn default_grafana_host_port() -> Option<u16> {
-    Some(0) // Let OS pick an available port
-}
-
-/// Default Docker image for Grafana.
-pub const DEFAULT_GRAFANA_DOCKER_IMAGE: &str = "grafana/grafana";
-/// Default Docker tag for Grafana.
-pub const DEFAULT_GRAFANA_DOCKER_TAG: &str = "latest";
 
 impl Default for GrafanaConfig {
     fn default() -> Self {
@@ -114,7 +235,7 @@ impl Default for GrafanaConfig {
             container_name: "kupcake-grafana".to_string(),
             host: "0.0.0.0".to_string(),
             port: DEFAULT_GRAFANA_PORT,
-            host_port: Some(0), // Let OS pick an available port
+            host_ports: Some(GrafanaHostPorts::default()),
             admin_user: "admin".to_string(),
             admin_password: "admin".to_string(),
         }
@@ -149,11 +270,23 @@ pub struct PrometheusHandler {
     pub container_id: String,
     pub container_name: String,
 
-    /// The URL for the Prometheus server (internal Docker network).
-    pub url: Url,
+    /// Port for the Prometheus server (container port).
+    pub port: u16,
 
-    /// The URL accessible from host (if published). None if not published.
-    pub host_url: Option<Url>,
+    /// Port information for this container.
+    pub ports: PrometheusContainerPorts,
+}
+
+impl PrometheusHandler {
+    /// Get the internal URL for container-to-container communication.
+    pub fn internal_url(&self) -> anyhow::Result<Url> {
+        self.ports.internal_http_url(self.port)
+    }
+
+    /// Get the host-accessible URL (if published).
+    pub fn host_url(&self) -> Option<anyhow::Result<Url>> {
+        self.ports.host_http_url()
+    }
 }
 
 /// Handler for Grafana.
@@ -161,11 +294,23 @@ pub struct GrafanaHandler {
     pub container_id: String,
     pub container_name: String,
 
-    /// The URL for the Grafana server (internal Docker network).
-    pub url: Url,
+    /// Port for the Grafana server (container port, always 3000 internally).
+    pub port: u16,
 
-    /// The URL accessible from host (if published). None if not published.
-    pub host_url: Option<Url>,
+    /// Port information for this container.
+    pub ports: GrafanaContainerPorts,
+}
+
+impl GrafanaHandler {
+    /// Get the internal URL for container-to-container communication.
+    pub fn internal_url(&self) -> anyhow::Result<Url> {
+        self.ports.internal_http_url(self.port)
+    }
+
+    /// Get the host-accessible URL (if published).
+    pub fn host_url(&self) -> Option<anyhow::Result<Url>> {
+        self.ports.host_http_url()
+    }
 }
 
 /// Handler for the complete monitoring stack.
@@ -362,9 +507,16 @@ providers:
 
         self.prometheus.docker_image.pull(docker).await?;
 
+        // Extract port value for PortMapping from host_ports
+        let server = self
+            .prometheus
+            .host_ports
+            .as_ref()
+            .and_then(|hp| hp.server);
+
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> =
-            PortMapping::tcp_optional(self.prometheus.port, self.prometheus.host_port)
+            PortMapping::tcp_optional(self.prometheus.port, server)
                 .into_iter()
                 .collect();
 
@@ -377,7 +529,7 @@ providers:
                 container_config_path.join("prometheus.yml").display()
             ));
 
-        let handler = docker
+        let service_handler = docker
             .start_service(
                 &self.prometheus.container_name,
                 service_config,
@@ -389,28 +541,36 @@ providers:
             .await
             .context("Failed to start Prometheus container")?;
 
-        // Build internal Docker network URL
-        let url = KupDocker::build_http_url(&handler.container_name, self.prometheus.port)?;
+        // Convert HashMap bound_ports to PrometheusHostPorts
+        let bound_host_ports = PrometheusHostPorts {
+            server: service_handler.ports.get_tcp_host_port(self.prometheus.port),
+        };
 
-        // Build host-accessible URL from bound port
-        let host_url = handler
-            .get_tcp_host_port(self.prometheus.port)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build Prometheus host URL")?;
+        // Create typed ContainerPorts
+        let typed_ports = match &service_handler.ports {
+            ContainerPorts::Host { .. } => PrometheusContainerPorts::Host {
+                bound_ports: bound_host_ports,
+            },
+            ContainerPorts::Bridge { container_name, .. } => PrometheusContainerPorts::Bridge {
+                container_name: container_name.clone(),
+                bound_ports: bound_host_ports,
+            },
+        };
+
+        let host_url = typed_ports.host_http_url();
 
         tracing::info!(
-            container_id = %handler.container_id,
-            container_name = %handler.container_name,
+            container_id = %service_handler.container_id,
+            container_name = %service_handler.container_name,
             ?host_url,
             "Prometheus container started"
         );
 
         Ok(PrometheusHandler {
-            container_id: handler.container_id,
-            container_name: handler.container_name,
-            url,
-            host_url,
+            container_id: service_handler.container_id,
+            container_name: service_handler.container_name,
+            port: self.prometheus.port,
+            ports: typed_ports,
         })
     }
 
@@ -435,9 +595,16 @@ providers:
 
         self.grafana.docker_image.pull(docker).await?;
 
+        // Extract port value for PortMapping from host_ports
+        let server = self
+            .grafana
+            .host_ports
+            .as_ref()
+            .and_then(|hp| hp.server);
+
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> =
-            PortMapping::tcp_optional(GRAFANA_INTERNAL_PORT, self.grafana.host_port)
+            PortMapping::tcp_optional(GRAFANA_INTERNAL_PORT, server)
                 .into_iter()
                 .collect();
 
@@ -449,7 +616,7 @@ providers:
             ))
             .env(env);
 
-        let handler = docker
+        let service_handler = docker
             .start_service(
                 &self.grafana.container_name,
                 service_config,
@@ -461,28 +628,36 @@ providers:
             .await
             .context("Failed to start Grafana container")?;
 
-        // Build internal Docker network URL
-        let url = KupDocker::build_http_url(&handler.container_name, GRAFANA_INTERNAL_PORT)?;
+        // Convert HashMap bound_ports to GrafanaHostPorts
+        let bound_host_ports = GrafanaHostPorts {
+            server: service_handler.ports.get_tcp_host_port(GRAFANA_INTERNAL_PORT),
+        };
 
-        // Build host-accessible URL from bound port
-        let host_url = handler
-            .get_tcp_host_port(GRAFANA_INTERNAL_PORT)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build Grafana host URL")?;
+        // Create typed ContainerPorts
+        let typed_ports = match &service_handler.ports {
+            ContainerPorts::Host { .. } => GrafanaContainerPorts::Host {
+                bound_ports: bound_host_ports,
+            },
+            ContainerPorts::Bridge { container_name, .. } => GrafanaContainerPorts::Bridge {
+                container_name: container_name.clone(),
+                bound_ports: bound_host_ports,
+            },
+        };
+
+        let host_url = typed_ports.host_http_url();
 
         tracing::info!(
-            container_id = %handler.container_id,
-            container_name = %handler.container_name,
+            container_id = %service_handler.container_id,
+            container_name = %service_handler.container_name,
             ?host_url,
             "Grafana container started"
         );
 
         Ok(GrafanaHandler {
-            container_id: handler.container_id,
-            container_name: handler.container_name,
-            url,
-            host_url,
+            container_id: service_handler.container_id,
+            container_name: service_handler.container_name,
+            port: GRAFANA_INTERNAL_PORT,
+            ports: typed_ports,
         })
     }
 
@@ -524,9 +699,12 @@ providers:
         tracing::info!("Starting Grafana...");
         let grafana_handler = self.start_grafana(docker, &host_config_path).await?;
 
+        let prometheus_url = prometheus_handler.internal_url();
+        let grafana_url = grafana_handler.internal_url();
+
         tracing::info!(
-            prometheus_url = %prometheus_handler.url,
-            grafana_url = %grafana_handler.url,
+            ?prometheus_url,
+            ?grafana_url,
             "Monitoring stack started successfully"
         );
 

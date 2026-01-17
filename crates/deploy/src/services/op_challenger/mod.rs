@@ -11,7 +11,8 @@ use url::Url;
 pub use cmd::OpChallengerCmdBuilder;
 
 use crate::docker::{
-    CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig,
+    ContainerPorts, CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping,
+    ServiceConfig,
 };
 
 use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethBuilder};
@@ -20,6 +21,59 @@ use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethBuil
 pub const DEFAULT_RPC_PORT: u16 = 8561;
 /// Default metrics port for op-challenger.
 pub const DEFAULT_METRICS_PORT: u16 = 7303;
+
+/// Host port configuration for op-challenger (used in Bridge mode).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct OpChallengerHostPorts {
+    /// Host port for metrics endpoint.
+    pub metrics: Option<u16>,
+}
+
+impl Default for OpChallengerHostPorts {
+    fn default() -> Self {
+        Self {
+            metrics: Some(0), // Let OS pick an available port
+        }
+    }
+}
+
+/// Runtime port information for op-challenger containers.
+pub enum OpChallengerContainerPorts {
+    /// Host network mode - all communication via localhost with dynamically assigned ports.
+    Host {
+        /// Bound host ports for this container.
+        bound_ports: OpChallengerHostPorts,
+    },
+    /// Bridge network mode - internal communication via container name, host access via mapped ports.
+    Bridge {
+        /// Container name for internal Docker network URLs.
+        container_name: String,
+        /// Bound host ports for this container (for host access).
+        bound_ports: OpChallengerHostPorts,
+    },
+}
+
+impl OpChallengerContainerPorts {
+    /// Get the HTTP URL for host access to metrics.
+    ///
+    /// Returns None if the port is not published to the host.
+    pub fn host_metrics_url(&self) -> Option<anyhow::Result<Url>> {
+        match self {
+            Self::Host { bound_ports } | Self::Bridge { bound_ports, .. } => {
+                bound_ports.metrics.map(|port| {
+                    Url::parse(&format!("http://localhost:{}/", port))
+                        .context("Failed to parse HTTP URL")
+                })
+            }
+        }
+    }
+}
+
+/// Default Docker image for op-challenger.
+pub const DEFAULT_DOCKER_IMAGE: &str =
+    "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-challenger";
+/// Default Docker tag for op-challenger.
+pub const DEFAULT_DOCKER_TAG: &str = "develop";
 
 /// Configuration for the op-challenger component.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -32,19 +86,13 @@ pub struct OpChallengerBuilder {
     pub host: String,
     /// Port for metrics (container port).
     pub metrics_port: u16,
-    /// Host port for metrics. If None, not published to host.
+    /// Host ports configuration. Only populated in Bridge mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metrics_host_port: Option<u16>,
+    pub host_ports: Option<OpChallengerHostPorts>,
     /// Extra arguments to pass to op-challenger.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
 }
-
-/// Default Docker image for op-challenger.
-pub const DEFAULT_DOCKER_IMAGE: &str =
-    "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-challenger";
-/// Default Docker tag for op-challenger.
-pub const DEFAULT_DOCKER_TAG: &str = "develop";
 
 impl Default for OpChallengerBuilder {
     fn default() -> Self {
@@ -53,7 +101,7 @@ impl Default for OpChallengerBuilder {
             container_name: "kupcake-op-challenger".to_string(),
             host: "0.0.0.0".to_string(),
             metrics_port: DEFAULT_METRICS_PORT,
-            metrics_host_port: Some(0),
+            host_ports: Some(OpChallengerHostPorts::default()),
             extra_args: Vec::new(),
         }
     }
@@ -65,8 +113,17 @@ pub struct OpChallengerHandler {
     pub container_id: String,
     /// Docker container name.
     pub container_name: String,
-    /// The RPC URL for the op-challenger.
-    pub rpc_url: Url,
+    /// Metrics port (container port).
+    pub metrics_port: u16,
+    /// Port information for this container.
+    pub ports: OpChallengerContainerPorts,
+}
+
+impl OpChallengerHandler {
+    /// Get the host-accessible metrics URL (if published).
+    pub fn host_metrics_url(&self) -> Option<anyhow::Result<Url>> {
+        self.ports.host_metrics_url()
+    }
 }
 
 impl OpChallengerBuilder {
@@ -114,10 +171,16 @@ impl OpChallengerBuilder {
 
         self.docker_image.pull(docker).await?;
 
+        // Extract port value for PortMapping from host_ports
+        let metrics = self
+            .host_ports
+            .as_ref()
+            .and_then(|hp| hp.metrics);
+
         // Build port mappings only for ports that should be published to host
         // op-challenger doesn't have an RPC server, only metrics
         let port_mappings: Vec<PortMapping> =
-            [PortMapping::tcp_optional(self.metrics_port, self.metrics_host_port)]
+            [PortMapping::tcp_optional(self.metrics_port, metrics)]
                 .into_iter()
                 .flatten()
                 .collect();
@@ -127,7 +190,7 @@ impl OpChallengerBuilder {
             .ports(port_mappings)
             .bind(host_config_path, &container_config_path, "rw");
 
-        let handler = docker
+        let service_handler = docker
             .start_service(
                 &self.container_name,
                 service_config,
@@ -139,19 +202,36 @@ impl OpChallengerBuilder {
             .await
             .context("Failed to start op-challenger container")?;
 
+        // Convert HashMap bound_ports to OpChallengerHostPorts
+        let bound_host_ports = OpChallengerHostPorts {
+            metrics: service_handler.ports.get_tcp_host_port(self.metrics_port),
+        };
+
+        // Create typed ContainerPorts
+        let typed_ports = match &service_handler.ports {
+            ContainerPorts::Host { .. } => OpChallengerContainerPorts::Host {
+                bound_ports: bound_host_ports,
+            },
+            ContainerPorts::Bridge { container_name, .. } => OpChallengerContainerPorts::Bridge {
+                container_name: container_name.clone(),
+                bound_ports: bound_host_ports,
+            },
+        };
+
+        let metrics_host_url = typed_ports.host_metrics_url();
+
         tracing::info!(
-            container_id = %handler.container_id,
-            container_name = %handler.container_name,
+            container_id = %service_handler.container_id,
+            container_name = %service_handler.container_name,
+            ?metrics_host_url,
             "op-challenger container started"
         );
 
-        // op-challenger doesn't have an RPC server, use metrics URL as reference
-        let rpc_url = KupDocker::build_http_url(&handler.container_name, self.metrics_port)?;
-
         Ok(OpChallengerHandler {
-            container_id: handler.container_id,
-            container_name: handler.container_name,
-            rpc_url,
+            container_id: service_handler.container_id,
+            container_name: service_handler.container_name,
+            metrics_port: self.metrics_port,
+            ports: typed_ports,
         })
     }
 }
