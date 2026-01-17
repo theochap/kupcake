@@ -1785,6 +1785,8 @@ dependencies = [
  "clap",
  "kupcake-deploy",
  "rand 0.9.2",
+ "reqwest",
+ "serde_json",
  "strum",
  "tokio",
  "tracing",

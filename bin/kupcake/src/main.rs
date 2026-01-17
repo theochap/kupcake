@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, CleanupArgs, Commands, DeployArgs, OutData};
+use cli::{Cli, CleanupArgs, Commands, DeployArgs, L1Source, OutData};
 use kupcake_deploy::{Deployer, DeployerBuilder, OutDataPath, cleanup_by_prefix};
 
 #[tokio::main]
@@ -73,11 +73,10 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
     }
 
     // Determine L1 chain ID and RPC URL based on provided arguments
-    // - Both None: local mode with random L1 chain ID
-    // - l1_chain Some, rpc None: use chain with PublicNode
-    // - rpc Some, chain None: error (need chain info)
-    // - Both Some: use both
-    let (l1_chain_id, l1_rpc_url) = resolve_l1_config(args.l1_chain, args.l1_rpc_provider)?;
+    // - None: local mode with random L1 chain ID
+    // - Known chain (sepolia/mainnet): use known chain ID and public RPC
+    // - Custom RPC URL: detect chain ID via eth_chainId
+    let (l1_chain_id, l1_rpc_url) = resolve_l1_config(args.l1).await?;
 
     // Create a new deployment from CLI arguments
     let deployer = DeployerBuilder::new(l1_chain_id)
@@ -129,35 +128,56 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
 /// Resolve L1 chain ID and RPC URL from CLI arguments.
 ///
 /// Returns `(l1_chain_id, l1_rpc_url)` where `l1_rpc_url` is `None` for local mode.
-fn resolve_l1_config(
-    l1_chain: Option<cli::L1Chain>,
-    l1_rpc_provider: Option<cli::L1Provider>,
-) -> Result<(u64, Option<String>)> {
-    use cli::L1Provider;
+async fn resolve_l1_config(l1_source: Option<L1Source>) -> Result<(u64, Option<String>)> {
     use rand::Rng;
 
-    match (l1_chain, l1_rpc_provider) {
+    let Some(source) = l1_source else {
         // Local mode: no forking, random L1 chain ID
-        (None, None) => {
-            let chain_id = rand::rng().random_range(10000..=99999);
-            tracing::info!(l1_chain_id = chain_id, "Running in local mode without L1 forking");
-            Ok((chain_id, None))
-        }
-        // Chain specified, use PublicNode by default
-        (Some(chain), None) => {
-            let rpc_url = L1Provider::PublicNode.to_rpc_url(chain.clone())?;
-            Ok((chain.to_chain_id()?, Some(rpc_url)))
-        }
-        // RPC provider without chain - need chain info
-        (None, Some(_)) => {
-            anyhow::bail!(
-                "When specifying --l1-rpc-provider, you must also specify --l1-chain"
-            );
-        }
-        // Both specified
-        (Some(chain), Some(provider)) => {
-            let rpc_url = provider.to_rpc_url(chain.clone())?;
-            Ok((chain.to_chain_id()?, Some(rpc_url)))
-        }
-    }
+        let chain_id = rand::rng().random_range(10000..=99999);
+        tracing::info!(l1_chain_id = chain_id, "Running in local mode without L1 forking");
+        return Ok((chain_id, None));
+    };
+
+    let rpc_url = source.rpc_url();
+
+    // Detect chain ID via eth_chainId
+    tracing::info!(rpc_url = %rpc_url, "Detecting L1 chain ID from RPC...");
+    let chain_id = fetch_chain_id(&rpc_url).await?;
+    tracing::info!(l1_chain_id = chain_id, rpc_url = %rpc_url, "Detected L1 chain ID");
+
+    Ok((chain_id, Some(rpc_url)))
+}
+
+/// Fetch the chain ID from an Ethereum RPC endpoint using eth_chainId.
+async fn fetch_chain_id(rpc_url: &str) -> Result<u64> {
+    use anyhow::Context;
+    use serde_json::{json, Value};
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(rpc_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "eth_chainId",
+            "params": [],
+            "id": 1
+        }))
+        .send()
+        .await
+        .context("Failed to send eth_chainId request")?;
+
+    let body: Value = response
+        .json()
+        .await
+        .context("Failed to parse eth_chainId response")?;
+
+    let chain_id_hex = body["result"]
+        .as_str()
+        .context("eth_chainId response missing 'result' field")?;
+
+    // Parse hex string (with or without 0x prefix) to u64
+    let chain_id = u64::from_str_radix(chain_id_hex.trim_start_matches("0x"), 16)
+        .context("Failed to parse chain ID from hex")?;
+
+    Ok(chain_id)
 }

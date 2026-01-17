@@ -9,50 +9,40 @@ use kupcake_deploy::{
 };
 use tracing::level_filters::LevelFilter;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, strum::Display, strum::EnumString)]
-#[strum(serialize_all = "kebab-case")]
-pub enum L1Provider {
-    #[default]
-    PublicNode,
-    #[strum(default)]
+/// L1 source configuration - can be a known chain name or a custom RPC URL.
+///
+/// When a chain name is provided (e.g., "sepolia", "mainnet"), the known chain ID
+/// and a public RPC endpoint are used. When a custom RPC URL is provided,
+/// the chain ID is detected via the `eth_chainId` RPC method.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum L1Source {
+    /// Known chain with predefined chain ID and public RPC URL
+    Sepolia,
+    Mainnet,
+    /// Custom RPC URL - chain ID will be detected via eth_chainId
     Custom(String),
 }
 
-impl L1Provider {
-    pub fn to_rpc_url(&self, chain: L1Chain) -> anyhow::Result<String> {
-        match self {
-            L1Provider::PublicNode if chain == L1Chain::Sepolia => {
-                Ok("https://ethereum-sepolia-rpc.publicnode.com".to_string())
-            }
-            L1Provider::PublicNode if chain == L1Chain::Mainnet => {
-                Ok("https://ethereum-mainnet-rpc.publicnode.com".to_string())
-            }
-            L1Provider::PublicNode => {
-                anyhow::bail!("Public node is not supported for custom chains");
-            }
-            L1Provider::Custom(url) => Ok(url.clone()),
+impl std::str::FromStr for L1Source {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "sepolia" => Ok(L1Source::Sepolia),
+            "mainnet" => Ok(L1Source::Mainnet),
+            // Anything else is treated as a custom RPC URL
+            _ => Ok(L1Source::Custom(s.to_string())),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, strum::Display, strum::EnumString)]
-#[strum(serialize_all = "kebab-case")]
-pub enum L1Chain {
-    #[default]
-    Sepolia,
-    Mainnet,
-    #[strum(default)]
-    Custom(String),
-}
-
-impl L1Chain {
-    pub fn to_chain_id(&self) -> anyhow::Result<u64> {
+impl L1Source {
+    /// Returns the RPC URL for this L1 source.
+    pub fn rpc_url(&self) -> String {
         match self {
-            L1Chain::Sepolia => Ok(11155111),
-            L1Chain::Mainnet => Ok(1),
-            L1Chain::Custom(id) => id
-                .parse()
-                .map_err(|_| anyhow::anyhow!("Invalid L1 chain ID: {}", id)),
+            L1Source::Sepolia => "https://ethereum-sepolia-rpc.publicnode.com".to_string(),
+            L1Source::Mainnet => "https://ethereum-rpc.publicnode.com".to_string(),
+            L1Source::Custom(url) => url.clone(),
         }
     }
 }
@@ -135,21 +125,16 @@ pub struct DeployArgs {
     #[arg(short, long, visible_alias = "name", env = "KUP_NETWORK_NAME")]
     pub network: Option<String>,
 
-    /// The URL of an L1 RPC endpoint.
+    /// The L1 chain source - either a chain name or RPC URL.
     ///
-    /// If neither this nor --l1-chain is provided, the L1 chain will run in local mode
-    /// without forking and with a random chain ID.
+    /// Accepts:
+    /// - Chain names: "sepolia", "mainnet" (uses public RPC endpoints)
+    /// - Custom RPC URL: "https://..." (chain ID detected via eth_chainId)
     ///
-    /// If public-node is selected (default when --l1-chain is provided),
-    /// anvil will be started in fork-mode using a node from `<https://publicnode.com/>`
-    #[arg(long, alias = "l1-rpc", env = "KUP_L1_RPC_URL")]
-    pub l1_rpc_provider: Option<L1Provider>,
-
-    /// The L1 chain info (chain ID or name).
-    ///
-    /// If not provided, the L1 chain will be started with a local anvil chain with a random chain ID.
-    #[arg(long, alias = "l1", env = "KUP_L1_CHAIN")]
-    pub l1_chain: Option<L1Chain>,
+    /// If not provided, the L1 chain will run in local mode without forking
+    /// and with a random chain ID.
+    #[arg(long, alias = "l1-chain", env = "KUP_L1")]
+    pub l1: Option<L1Source>,
 
     /// The L2 chain info (chain ID or name).
     /// If not provided, the L2 chain id will be generated randomly.
@@ -218,8 +203,7 @@ impl Default for DeployArgs {
     fn default() -> Self {
         Self {
             network: None,
-            l1_rpc_provider: None, // Local mode by default
-            l1_chain: None,        // Random chain ID by default
+            l1: None, // Local mode by default (random chain ID)
             l2_chain: None,
             redeploy: false,
             outdata: None,
@@ -342,5 +326,59 @@ impl Default for DockerImageOverrides {
             grafana_image: GRAFANA_DEFAULT_IMAGE.to_string(),
             grafana_tag: GRAFANA_DEFAULT_TAG.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_l1_source_parse_sepolia() {
+        let source: L1Source = "sepolia".parse().unwrap();
+        assert_eq!(source, L1Source::Sepolia);
+
+        // Case insensitive
+        let source: L1Source = "SEPOLIA".parse().unwrap();
+        assert_eq!(source, L1Source::Sepolia);
+
+        let source: L1Source = "Sepolia".parse().unwrap();
+        assert_eq!(source, L1Source::Sepolia);
+    }
+
+    #[test]
+    fn test_l1_source_parse_mainnet() {
+        let source: L1Source = "mainnet".parse().unwrap();
+        assert_eq!(source, L1Source::Mainnet);
+
+        // Case insensitive
+        let source: L1Source = "MAINNET".parse().unwrap();
+        assert_eq!(source, L1Source::Mainnet);
+    }
+
+    #[test]
+    fn test_l1_source_parse_custom_url() {
+        let url = "https://my-custom-rpc.example.com";
+        let source: L1Source = url.parse().unwrap();
+        assert_eq!(source, L1Source::Custom(url.to_string()));
+
+        // Any unknown string becomes a custom URL
+        let source: L1Source = "http://localhost:8545".parse().unwrap();
+        assert_eq!(source, L1Source::Custom("http://localhost:8545".to_string()));
+    }
+
+    #[test]
+    fn test_l1_source_rpc_url() {
+        assert_eq!(
+            L1Source::Sepolia.rpc_url(),
+            "https://ethereum-sepolia-rpc.publicnode.com"
+        );
+        assert_eq!(
+            L1Source::Mainnet.rpc_url(),
+            "https://ethereum-rpc.publicnode.com"
+        );
+
+        let custom_url = "https://my-rpc.example.com";
+        assert_eq!(L1Source::Custom(custom_url.to_string()).rpc_url(), custom_url);
     }
 }
