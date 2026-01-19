@@ -14,6 +14,43 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This file (CLAUDE.md) is for AI assistant guidance when modifying code. For comprehensive user and developer documentation, refer to the `docs/` directory.
 
+## ⚠️ IMPORTANT: Documentation Requirements
+
+**ALWAYS update documentation BEFORE committing code changes!**
+
+When making ANY code changes, you MUST:
+1. **Identify affected documentation** - Determine which docs need updates based on your changes:
+   - CLI flag changes → Update `docs/user-guide/cli-reference.md` and `docs/user-guide/environment-variables.md`
+   - New features → Update relevant user guide sections, add examples if applicable
+   - Architecture changes → Update `docs/architecture/overview.md` and `CLAUDE.md`
+   - Service modifications → Update `docs/services/README.md` and service-specific docs
+   - Configuration changes → Update `docs/user-guide/configuration-file.md`
+   - API/interface changes → Update developer guide and relevant examples
+
+2. **Update documentation** - Make the necessary documentation changes:
+   - Keep examples accurate and runnable
+   - Update command outputs and screenshots if they change
+   - Ensure consistency across all affected documents
+   - Update CLAUDE.md if development patterns change
+
+3. **Test examples** - If you modified example scripts or configs, verify they work:
+   ```bash
+   cd docs/examples/<example-name>
+   ./run.sh
+   ```
+
+4. **Commit together** - Include documentation updates in the same commit as code changes:
+   ```bash
+   git add <code-files> <doc-files>
+   git commit -m "feat: description
+
+   - Code changes...
+   - Updated documentation...
+   "
+   ```
+
+**Documentation is not optional** - Outdated docs are worse than no docs. Every feature commit MUST include documentation updates.
+
 ## Project Overview
 
 Kupcake is a CLI tool that bootstraps a complete Rust-based OP Stack (Optimism) L2 chain locally. It orchestrates Docker containers to run a full stack including L1 (Anvil fork), contract deployment, L2 execution/consensus clients, and monitoring infrastructure.
