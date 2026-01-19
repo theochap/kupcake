@@ -90,6 +90,12 @@ impl OpProposerBuilder {
     ) -> Result<OpProposerHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
+        // Ensure the Docker image is ready (pull or build if needed)
+        docker
+            .ensure_image_ready(&self.docker_image, "op-proposer")
+            .await
+            .context("Failed to ensure op-proposer image is ready")?;
+
         let proposer_private_key = &anvil_handler.accounts.proposer.private_key;
 
         // Read the DisputeGameFactory address from state.json
@@ -117,8 +123,6 @@ impl OpProposerBuilder {
         .metrics(true, "0.0.0.0", self.metrics_port)
         .extra_args(self.extra_args.clone())
         .build();
-
-        self.docker_image.pull(docker).await?;
 
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> = [

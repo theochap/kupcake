@@ -103,6 +103,12 @@ impl OpBatcherBuilder {
     ) -> Result<OpBatcherHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
+        // Ensure the Docker image is ready (pull or build if needed)
+        docker
+            .ensure_image_ready(&self.docker_image, "op-batcher")
+            .await
+            .context("Failed to ensure op-batcher image is ready")?;
+
         let batcher_private_key = &anvil_handler.accounts.batcher.private_key;
 
         let cmd = OpBatcherCmdBuilder::new(
@@ -116,8 +122,6 @@ impl OpBatcherBuilder {
         .data_availability_type("blobs")
         .extra_args(self.extra_args.clone())
         .build();
-
-        self.docker_image.pull(docker).await?;
 
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> = [

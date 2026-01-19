@@ -159,6 +159,12 @@ impl OpConductorBuilder {
         let raft_storage_dir = container_config_path.join("raft");
         let rollup_config_path = container_config_path.join("rollup.json");
 
+        // Ensure the Docker image is ready (pull or build if needed)
+        docker
+            .ensure_image_ready(&self.docker_image, "op-conductor")
+            .await
+            .context("Failed to ensure op-conductor image is ready")?;
+
         let cmd = OpConductorCmdBuilder::new(
             kona_node_rpc_url.to_string(),
             op_reth_handler.http_rpc_url.to_string(),

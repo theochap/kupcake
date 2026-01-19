@@ -22,6 +22,16 @@ pub struct L2StackHandler {
     pub op_challenger: OpChallengerHandler,
 }
 
+/// Deployment result containing all service handlers.
+///
+/// This is returned by `Deployer::deploy()` and provides access to all running containers.
+pub struct DeploymentResult {
+    /// Handler for the L1 Anvil instance.
+    pub anvil: AnvilHandler,
+    /// Handlers for all L2 stack components.
+    pub l2_stack: L2StackHandler,
+}
+
 impl L2StackHandler {
     /// Get the primary sequencer node handler (the first sequencer).
     pub fn primary_sequencer(&self) -> &L2NodeHandler {
@@ -261,7 +271,7 @@ impl Deployer {
         tracing::info!("  docker logs <container-name>");
     }
 
-    pub async fn deploy(self, force_deploy: bool) -> Result<()> {
+    pub async fn deploy(self, force_deploy: bool) -> Result<DeploymentResult> {
         tracing::info!("Starting deployment process...");
 
         // Save values we'll need after self is consumed
@@ -463,6 +473,6 @@ impl Deployer {
             tokio::signal::ctrl_c().await?;
         }
 
-        Ok(())
+        Ok(DeploymentResult { anvil, l2_stack })
     }
 }

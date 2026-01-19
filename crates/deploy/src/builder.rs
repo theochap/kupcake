@@ -220,121 +220,171 @@ impl DeployerBuilder {
 
     /// Set Docker image for Anvil.
     pub fn anvil_image(mut self, image: impl Into<String>) -> Self {
-        self.anvil_docker.image = image.into();
+        self.anvil_docker.image = Some(image.into());
         self
     }
 
     /// Set Docker tag for Anvil.
     pub fn anvil_tag(mut self, tag: impl Into<String>) -> Self {
-        self.anvil_docker.tag = tag.into();
+        self.anvil_docker.tag = Some(tag.into());
         self
     }
 
     /// Set Docker image for op-reth.
     pub fn op_reth_image(mut self, image: impl Into<String>) -> Self {
-        self.op_reth_docker.image = image.into();
+        self.op_reth_docker.image = Some(image.into());
         self
     }
 
     /// Set Docker tag for op-reth.
     pub fn op_reth_tag(mut self, tag: impl Into<String>) -> Self {
-        self.op_reth_docker.tag = tag.into();
+        self.op_reth_docker.tag = Some(tag.into());
         self
     }
 
     /// Set Docker image for kona-node.
     pub fn kona_node_image(mut self, image: impl Into<String>) -> Self {
-        self.kona_node_docker.image = image.into();
+        self.kona_node_docker.image = Some(image.into());
         self
     }
 
     /// Set Docker tag for kona-node.
     pub fn kona_node_tag(mut self, tag: impl Into<String>) -> Self {
-        self.kona_node_docker.tag = tag.into();
+        self.kona_node_docker.tag = Some(tag.into());
         self
     }
 
     /// Set Docker image for op-batcher.
     pub fn op_batcher_image(mut self, image: impl Into<String>) -> Self {
-        self.op_batcher_docker.image = image.into();
+        self.op_batcher_docker.image = Some(image.into());
         self
     }
 
     /// Set Docker tag for op-batcher.
     pub fn op_batcher_tag(mut self, tag: impl Into<String>) -> Self {
-        self.op_batcher_docker.tag = tag.into();
+        self.op_batcher_docker.tag = Some(tag.into());
         self
     }
 
     /// Set Docker image for op-proposer.
     pub fn op_proposer_image(mut self, image: impl Into<String>) -> Self {
-        self.op_proposer_docker.image = image.into();
+        self.op_proposer_docker.image = Some(image.into());
         self
     }
 
     /// Set Docker tag for op-proposer.
     pub fn op_proposer_tag(mut self, tag: impl Into<String>) -> Self {
-        self.op_proposer_docker.tag = tag.into();
+        self.op_proposer_docker.tag = Some(tag.into());
         self
     }
 
     /// Set Docker image for op-challenger.
     pub fn op_challenger_image(mut self, image: impl Into<String>) -> Self {
-        self.op_challenger_docker.image = image.into();
+        self.op_challenger_docker.image = Some(image.into());
         self
     }
 
     /// Set Docker tag for op-challenger.
     pub fn op_challenger_tag(mut self, tag: impl Into<String>) -> Self {
-        self.op_challenger_docker.tag = tag.into();
+        self.op_challenger_docker.tag = Some(tag.into());
         self
     }
 
     /// Set Docker image for op-conductor.
     pub fn op_conductor_image(mut self, image: impl Into<String>) -> Self {
-        self.op_conductor_docker.image = image.into();
+        self.op_conductor_docker.image = Some(image.into());
         self
     }
 
     /// Set Docker tag for op-conductor.
     pub fn op_conductor_tag(mut self, tag: impl Into<String>) -> Self {
-        self.op_conductor_docker.tag = tag.into();
+        self.op_conductor_docker.tag = Some(tag.into());
         self
     }
 
     /// Set Docker image for op-deployer.
     pub fn op_deployer_image(mut self, image: impl Into<String>) -> Self {
-        self.op_deployer_docker.image = image.into();
+        self.op_deployer_docker.image = Some(image.into());
         self
     }
 
     /// Set Docker tag for op-deployer.
     pub fn op_deployer_tag(mut self, tag: impl Into<String>) -> Self {
-        self.op_deployer_docker.tag = tag.into();
+        self.op_deployer_docker.tag = Some(tag.into());
         self
     }
 
     /// Set Docker image for Prometheus.
     pub fn prometheus_image(mut self, image: impl Into<String>) -> Self {
-        self.prometheus_docker.image = image.into();
+        self.prometheus_docker.image = Some(image.into());
         self
     }
 
     /// Set Docker tag for Prometheus.
     pub fn prometheus_tag(mut self, tag: impl Into<String>) -> Self {
-        self.prometheus_docker.tag = tag.into();
+        self.prometheus_docker.tag = Some(tag.into());
         self
     }
 
     /// Set Docker image for Grafana.
     pub fn grafana_image(mut self, image: impl Into<String>) -> Self {
-        self.grafana_docker.image = image.into();
+        self.grafana_docker.image = Some(image.into());
         self
     }
 
     /// Set Docker tag for Grafana.
     pub fn grafana_tag(mut self, tag: impl Into<String>) -> Self {
-        self.grafana_docker.tag = tag.into();
+        self.grafana_docker.tag = Some(tag.into());
+        self
+    }
+
+    // ==================== Binary Path Setters ====================
+
+    /// Use a local binary for op-reth instead of a Docker image.
+    ///
+    /// The binary will be copied into a lightweight Docker image and used for deployment.
+    pub fn with_op_reth_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
+        self.op_reth_docker = DockerImage::from_binary(binary_path);
+        self
+    }
+
+    /// Use a local binary for kona-node instead of a Docker image.
+    ///
+    /// The binary will be copied into a lightweight Docker image and used for deployment.
+    pub fn with_kona_node_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
+        self.kona_node_docker = DockerImage::from_binary(binary_path);
+        self
+    }
+
+    /// Use a local binary for op-batcher instead of a Docker image.
+    ///
+    /// The binary will be copied into a lightweight Docker image and used for deployment.
+    pub fn with_op_batcher_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
+        self.op_batcher_docker = DockerImage::from_binary(binary_path);
+        self
+    }
+
+    /// Use a local binary for op-proposer instead of a Docker image.
+    ///
+    /// The binary will be copied into a lightweight Docker image and used for deployment.
+    pub fn with_op_proposer_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
+        self.op_proposer_docker = DockerImage::from_binary(binary_path);
+        self
+    }
+
+    /// Use a local binary for op-challenger instead of a Docker image.
+    ///
+    /// The binary will be copied into a lightweight Docker image and used for deployment.
+    pub fn with_op_challenger_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
+        self.op_challenger_docker = DockerImage::from_binary(binary_path);
+        self
+    }
+
+    /// Use a local binary for op-conductor instead of a Docker image.
+    ///
+    /// The binary will be copied into a lightweight Docker image and used for deployment.
+    pub fn with_op_conductor_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
+        self.op_conductor_docker = DockerImage::from_binary(binary_path);
         self
     }
 
@@ -595,6 +645,8 @@ impl DeployerBuilder {
                             docker_image: self.kona_node_docker.clone(),
                             container_name: format!("{}-kona-node{}", network_name, suffix),
                             l1_slot_duration: self.block_time,
+                            rpc_host_port: Some(0), // Explicitly publish RPC port
+                            metrics_host_port: if self.publish_all_ports { Some(0) } else { None },
                             ..Default::default()
                         },
                         op_conductor,
@@ -619,6 +671,8 @@ impl DeployerBuilder {
                                 i + 1
                             ),
                             l1_slot_duration: self.block_time,
+                            rpc_host_port: Some(0), // Explicitly publish RPC port
+                            metrics_host_port: if self.publish_all_ports { Some(0) } else { None },
                             ..Default::default()
                         },
                         op_conductor: None,

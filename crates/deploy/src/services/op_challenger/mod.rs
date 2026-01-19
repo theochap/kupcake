@@ -81,6 +81,12 @@ impl OpChallengerBuilder {
     ) -> Result<OpChallengerHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
+        // Ensure the Docker image is ready (pull or build if needed)
+        docker
+            .ensure_image_ready(&self.docker_image, "op-challenger")
+            .await
+            .context("Failed to ensure op-challenger image is ready")?;
+
         let challenger_private_key = &anvil_handler.accounts.challenger.private_key;
 
         // Read the DisputeGameFactory address from state.json
@@ -111,8 +117,6 @@ impl OpChallengerBuilder {
         .metrics(true, "0.0.0.0", self.metrics_port)
         .extra_args(self.extra_args.clone())
         .build();
-
-        self.docker_image.pull(docker).await?;
 
         // Build port mappings only for ports that should be published to host
         // op-challenger doesn't have an RPC server, only metrics

@@ -10,7 +10,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use kupcake_deploy::{cleanup_by_prefix, DeployerBuilder, OutDataPath};
+use kupcake_deploy::{DeployerBuilder, OutDataPath, cleanup_by_prefix};
 use rand::Rng;
 use serde::Deserialize;
 use serde_json::Value;
@@ -88,7 +88,10 @@ fn get_container_host_port(container_name: &str, container_port: u16) -> Result<
         .args([
             "inspect",
             "--format",
-            &format!("{{{{(index (index .NetworkSettings.Ports \"{}/tcp\") 0).HostPort}}}}", container_port),
+            &format!(
+                "{{{{(index (index .NetworkSettings.Ports \"{}/tcp\") 0).HostPort}}}}",
+                container_port
+            ),
             container_name,
         ])
         .output()
@@ -103,9 +106,12 @@ fn get_container_host_port(container_name: &str, container_port: u16) -> Result<
 
     let port_str = String::from_utf8_lossy(&output.stdout);
     let port_str = port_str.trim();
-    port_str
-        .parse::<u16>()
-        .with_context(|| format!("Failed to parse port '{}' for container {}", port_str, container_name))
+    port_str.parse::<u16>().with_context(|| {
+        format!(
+            "Failed to parse port '{}' for container {}",
+            port_str, container_name
+        )
+    })
 }
 
 /// Wait for a node to be ready by polling its sync status endpoint.
@@ -218,8 +224,8 @@ async fn get_op_reth_status(rpc_url: &str) -> Result<OpRethStatus> {
     let block_hex = block_body["result"]
         .as_str()
         .context("eth_blockNumber result is not a string")?;
-    let block_number =
-        u64::from_str_radix(block_hex.trim_start_matches("0x"), 16).context("Failed to parse block number")?;
+    let block_number = u64::from_str_radix(block_hex.trim_start_matches("0x"), 16)
+        .context("Failed to parse block number")?;
 
     Ok(OpRethStatus {
         is_syncing,
@@ -283,7 +289,10 @@ async fn get_op_batcher_status(rpc_url: &str) -> Result<OpBatcherStatus> {
 
     match response {
         Ok(resp) => {
-            let body: Value = resp.json().await.context("Failed to parse opp_version response")?;
+            let body: Value = resp
+                .json()
+                .await
+                .context("Failed to parse opp_version response")?;
             if body.get("error").is_some() {
                 // Even if there's an error, the service is responding
                 Ok(OpBatcherStatus {
@@ -367,7 +376,7 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
     let deploy_result = timeout(Duration::from_secs(600), deployer.deploy(false)).await;
 
     match deploy_result {
-        Ok(Ok(())) => println!("=== Deployment completed successfully ==="),
+        Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
         Ok(Err(e)) => {
             // Cleanup before returning error
             let _ = cleanup_by_prefix(&network_name).await;
@@ -384,12 +393,16 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
     // kona-node uses port 7545 internally
     let sequencer_port = get_container_host_port(&format!("{}-kona-node", network_name), 7545)
         .context("Failed to get sequencer kona-node port")?;
-    let validator_port = get_container_host_port(&format!("{}-kona-node-validator-1", network_name), 7545)
-        .context("Failed to get validator kona-node port")?;
+    let validator_port =
+        get_container_host_port(&format!("{}-kona-node-validator-1", network_name), 7545)
+            .context("Failed to get validator kona-node port")?;
 
     let node_endpoints = vec![
         ("sequencer", format!("http://localhost:{}", sequencer_port)),
-        ("validator-1", format!("http://localhost:{}", validator_port)),
+        (
+            "validator-1",
+            format!("http://localhost:{}", validator_port),
+        ),
     ];
 
     // Wait for nodes to be ready
@@ -446,10 +459,18 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
                     label,
                     initial.unsafe_l2.number,
                     current.unsafe_l2.number,
-                    if unsafe_advanced { "ADVANCING" } else { "STALLED" },
+                    if unsafe_advanced {
+                        "ADVANCING"
+                    } else {
+                        "STALLED"
+                    },
                     initial.safe_l2.number,
                     current.safe_l2.number,
-                    if safe_advanced { "ADVANCING" } else { "STALLED" },
+                    if safe_advanced {
+                        "ADVANCING"
+                    } else {
+                        "STALLED"
+                    },
                 );
 
                 if !unsafe_advanced {
@@ -526,7 +547,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
     let deploy_result = timeout(Duration::from_secs(600), deployer.deploy(false)).await;
 
     match deploy_result {
-        Ok(Ok(())) => println!("=== Deployment completed successfully ==="),
+        Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
         Ok(Err(e)) => {
             let _ = cleanup_by_prefix(&network_name).await;
             return Err(e).context("Deployment failed");
@@ -540,12 +561,19 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
     // Get the ports for op-reth containers (HTTP RPC on 9545)
     let sequencer_reth_port = get_container_host_port(&format!("{}-op-reth", network_name), 9545)
         .context("Failed to get sequencer op-reth port")?;
-    let validator_reth_port = get_container_host_port(&format!("{}-op-reth-validator-1", network_name), 9545)
-        .context("Failed to get validator op-reth port")?;
+    let validator_reth_port =
+        get_container_host_port(&format!("{}-op-reth-validator-1", network_name), 9545)
+            .context("Failed to get validator op-reth port")?;
 
     let reth_endpoints = vec![
-        ("sequencer-reth", format!("http://localhost:{}", sequencer_reth_port)),
-        ("validator-reth", format!("http://localhost:{}", validator_reth_port)),
+        (
+            "sequencer-reth",
+            format!("http://localhost:{}", sequencer_reth_port),
+        ),
+        (
+            "validator-reth",
+            format!("http://localhost:{}", validator_reth_port),
+        ),
     ];
 
     // Wait for op-reth nodes to be ready
@@ -570,7 +598,10 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
                     status
                         .sync_progress
                         .as_ref()
-                        .map(|p| format!(" (current: {}, highest: {})", p.current_block, p.highest_block))
+                        .map(|p| format!(
+                            " (current: {}, highest: {})",
+                            p.current_block, p.highest_block
+                        ))
                         .unwrap_or_default()
                 );
                 initial_blocks.push((label.to_string(), url.clone(), status.block_number));
@@ -631,7 +662,10 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
     }
 
     if !all_advancing {
-        anyhow::bail!("Not all op-reth nodes are advancing:\n{}", errors.join("\n"));
+        anyhow::bail!(
+            "Not all op-reth nodes are advancing:\n{}",
+            errors.join("\n")
+        );
     }
 
     println!("=== Test passed! All op-reth nodes are advancing. ===");
@@ -679,7 +713,7 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
     let deploy_result = timeout(Duration::from_secs(900), deployer.deploy(false)).await;
 
     match deploy_result {
-        Ok(Ok(())) => println!("=== Deployment completed successfully ==="),
+        Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
         Ok(Err(e)) => {
             let _ = cleanup_by_prefix(&network_name).await;
             return Err(e).context("Deployment failed");
@@ -719,27 +753,39 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
     // Get conductor RPC ports and verify they respond
     println!("=== Verifying conductor RPC endpoints... ===");
     for conductor_name in &conductor_containers {
-        let conductor_port = get_container_host_port(conductor_name, 8547)
-            .context(format!("Failed to get conductor port for {}", conductor_name))?;
+        let conductor_port = get_container_host_port(conductor_name, 8547).context(format!(
+            "Failed to get conductor port for {}",
+            conductor_name
+        ))?;
         let conductor_url = format!("http://localhost:{}", conductor_port);
 
         // Wait for conductor to be ready
         if let Err(e) = wait_for_conductor_ready(&conductor_url, 60).await {
             println!("Warning: Conductor {} not ready: {}", conductor_name, e);
         } else {
-            println!("Conductor {} RPC is responding at {}", conductor_name, conductor_url);
+            println!(
+                "Conductor {} RPC is responding at {}",
+                conductor_name, conductor_url
+            );
         }
     }
 
     // Get ports for both sequencer kona-nodes
     let sequencer1_port = get_container_host_port(&format!("{}-kona-node", network_name), 7545)
         .context("Failed to get sequencer 1 kona-node port")?;
-    let sequencer2_port = get_container_host_port(&format!("{}-kona-node-sequencer-1", network_name), 7545)
-        .context("Failed to get sequencer 2 kona-node port")?;
+    let sequencer2_port =
+        get_container_host_port(&format!("{}-kona-node-sequencer-1", network_name), 7545)
+            .context("Failed to get sequencer 2 kona-node port")?;
 
     let sequencer_endpoints = vec![
-        ("sequencer-1", format!("http://localhost:{}", sequencer1_port)),
-        ("sequencer-2", format!("http://localhost:{}", sequencer2_port)),
+        (
+            "sequencer-1",
+            format!("http://localhost:{}", sequencer1_port),
+        ),
+        (
+            "sequencer-2",
+            format!("http://localhost:{}", sequencer2_port),
+        ),
     ];
 
     // Wait for sequencers to be ready
@@ -880,7 +926,7 @@ async fn test_op_batcher_health() -> Result<()> {
     let deploy_result = timeout(Duration::from_secs(600), deployer.deploy(false)).await;
 
     match deploy_result {
-        Ok(Ok(())) => println!("=== Deployment completed successfully ==="),
+        Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
         Ok(Err(e)) => {
             let _ = cleanup_by_prefix(&network_name).await;
             return Err(e).context("Deployment failed");
@@ -949,7 +995,11 @@ async fn test_op_batcher_health() -> Result<()> {
         "Safe head: {} -> {} ({})",
         initial_status.safe_l2.number,
         final_status.safe_l2.number,
-        if safe_advanced { "ADVANCING - batcher is working" } else { "NOT YET ADVANCING" }
+        if safe_advanced {
+            "ADVANCING - batcher is working"
+        } else {
+            "NOT YET ADVANCING"
+        }
     );
 
     // Cleanup
@@ -968,7 +1018,9 @@ async fn test_op_batcher_health() -> Result<()> {
     if safe_advanced {
         println!("=== Test passed! op-batcher is healthy and submitting batches. ===");
     } else {
-        println!("=== Test passed! op-batcher is healthy (safe head may need more time to advance). ===");
+        println!(
+            "=== Test passed! op-batcher is healthy (safe head may need more time to advance). ==="
+        );
     }
 
     Ok(())
@@ -1015,7 +1067,7 @@ async fn test_publish_all_ports() -> Result<()> {
     let deploy_result = timeout(Duration::from_secs(600), deployer.deploy(false)).await;
 
     match deploy_result {
-        Ok(Ok(())) => println!("=== Deployment completed successfully ==="),
+        Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
         Ok(Err(e)) => {
             let _ = cleanup_by_prefix(&network_name).await;
             return Err(e).context("Deployment failed");
@@ -1038,7 +1090,6 @@ async fn test_publish_all_ports() -> Result<()> {
         (format!("{}-op-batcher", network_name), 8548, true), // RPC - always published
         (format!("{}-prometheus", network_name), 9090, true), // always published
         (format!("{}-grafana", network_name), 3000, true), // always published
-
         // Optional ports that should ONLY be published when publish_all_ports is true
         // These are the key ports to verify for this test
         (format!("{}-op-reth", network_name), 8551, false), // AuthRPC - default None
@@ -1058,8 +1109,14 @@ async fn test_publish_all_ports() -> Result<()> {
             Ok(host_port) => {
                 println!(
                     "✓ {}:{} -> host:{} {}",
-                    container_name, container_port, host_port,
-                    if required { "(required)" } else { "(optional - publish_all_ports enabled)" }
+                    container_name,
+                    container_port,
+                    host_port,
+                    if required {
+                        "(required)"
+                    } else {
+                        "(optional - publish_all_ports enabled)"
+                    }
                 );
                 published_ports.push((container_name, container_port, host_port));
             }
@@ -1083,10 +1140,7 @@ async fn test_publish_all_ports() -> Result<()> {
         anyhow::bail!("No ports were published to the host");
     }
 
-    println!(
-        "=== Found {} published ports ===",
-        published_ports.len()
-    );
+    println!("=== Found {} published ports ===", published_ports.len());
 
     // Verify containers are still on the custom network
     println!("=== Verifying containers are on custom network... ===");
@@ -1119,15 +1173,19 @@ async fn test_publish_all_ports() -> Result<()> {
         );
     }
 
-    println!("✓ Containers are on custom network: {}", network_name_docker);
+    println!(
+        "✓ Containers are on custom network: {}",
+        network_name_docker
+    );
 
     // Test accessibility of a few key ports
     println!("=== Testing accessibility of published ports... ===");
 
     // Test anvil RPC
-    if let Some((_, _, host_port)) = published_ports.iter().find(|(name, port, _)| {
-        name == &format!("{}-anvil", network_name) && *port == 8545
-    }) {
+    if let Some((_, _, host_port)) = published_ports
+        .iter()
+        .find(|(name, port, _)| name == &format!("{}-anvil", network_name) && *port == 8545)
+    {
         let anvil_url = format!("http://localhost:{}", host_port);
         match test_rpc_endpoint(&anvil_url, "eth_blockNumber").await {
             Ok(_) => println!("✓ Anvil RPC accessible at {}", anvil_url),
@@ -1139,9 +1197,10 @@ async fn test_publish_all_ports() -> Result<()> {
     }
 
     // Test op-reth RPC
-    if let Some((_, _, host_port)) = published_ports.iter().find(|(name, port, _)| {
-        name == &format!("{}-op-reth", network_name) && *port == 9545
-    }) {
+    if let Some((_, _, host_port)) = published_ports
+        .iter()
+        .find(|(name, port, _)| name == &format!("{}-op-reth", network_name) && *port == 9545)
+    {
         let reth_url = format!("http://localhost:{}", host_port);
         match test_rpc_endpoint(&reth_url, "eth_blockNumber").await {
             Ok(_) => println!("✓ op-reth RPC accessible at {}", reth_url),
@@ -1153,9 +1212,10 @@ async fn test_publish_all_ports() -> Result<()> {
     }
 
     // Test kona-node RPC
-    if let Some((_, _, host_port)) = published_ports.iter().find(|(name, port, _)| {
-        name == &format!("{}-kona-node", network_name) && *port == 7545
-    }) {
+    if let Some((_, _, host_port)) = published_ports
+        .iter()
+        .find(|(name, port, _)| name == &format!("{}-kona-node", network_name) && *port == 7545)
+    {
         let kona_url = format!("http://localhost:{}", host_port);
         match test_rpc_endpoint(&kona_url, "optimism_syncStatus").await {
             Ok(_) => println!("✓ kona-node RPC accessible at {}", kona_url),
@@ -1221,5 +1281,242 @@ async fn test_rpc_endpoint(rpc_url: &str, method: &str) -> Result<()> {
         anyhow::bail!("RPC response missing result field");
     }
 
+    Ok(())
+}
+
+/// Test deploying a network with a local kona-node binary.
+///
+/// This test:
+/// - Builds kona-node from the submodule (if not already built)
+/// - Deploys a network using the local binary instead of a Docker image
+/// - Verifies the network starts successfully
+/// - Verifies sync status can be queried
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_local_kona_binary() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init()
+        .ok();
+
+    let l1_chain_id = generate_random_l1_chain_id();
+    let network_name = format!("kup-local-kona-{}", l1_chain_id);
+    let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
+
+    println!(
+        "=== Starting local kona binary test with network: {} (L1 chain ID: {}) ===",
+        network_name, l1_chain_id
+    );
+
+    // Path to the kona submodule (relative to the test crate)
+    // env!("CARGO_MANIFEST_DIR") points to crates/deploy
+    let kona_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/kona");
+    let kona_binary_path = kona_dir.join("target/release/kona-node");
+
+    // Verify binary exists
+    if !kona_binary_path.exists() {
+        println!("=== Building kona-node binary (this may take a few minutes)... ===");
+        let output = Command::new("cargo")
+            .args(["build", "--bin", "kona-node", "--release"])
+            .current_dir(&kona_dir)
+            .output()
+            .context("Failed to build kona-node")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to build kona-node: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        println!("=== kona-node build completed ===");
+    } else {
+        println!(
+            "=== Using existing kona-node binary at {} ===",
+            kona_binary_path.display()
+        );
+    }
+
+    // Deploy with local kona-node binary
+    let deployer = DeployerBuilder::new(l1_chain_id)
+        .network_name(&network_name)
+        .outdata(OutDataPath::Path(outdata_path.clone()))
+        .l2_node_count(2) // 1 sequencer + 1 validator
+        .sequencer_count(1)
+        .block_time(2)
+        .with_kona_node_binary(kona_binary_path.clone())
+        .publish_all_ports(true) // Ensure all ports (including kona-node RPC) are published
+        .detach(true)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
+
+    deployer.save_config()?;
+
+    println!("=== Deploying network with local kona-node binary... ===");
+    let deployment = deployer
+        .deploy(false)
+        .await
+        .context("Failed to deploy network")?;
+
+    println!("=== Network deployed successfully ===");
+
+    // Verify that kona-node containers were created from local binary images
+    println!("=== Verifying local binary images were used... ===");
+
+    // List all Docker images with the "kupcake-*-local" pattern
+    let output = Command::new("docker")
+        .args([
+            "images",
+            "--filter",
+            &format!("reference=kupcake-{}-*-local*", network_name),
+            "--format",
+            "{{.Repository}}:{{.Tag}}",
+        ])
+        .output()
+        .context("Failed to list Docker images")?;
+
+    let images_list = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    println!("Found local binary images:");
+    for image in images_list.lines() {
+        println!("  - {}", image);
+    }
+
+    // We expect 2 local images (one for sequencer kona-node, one for validator kona-node)
+    let image_count = images_list.lines().count();
+    if image_count < 2 {
+        anyhow::bail!(
+            "Expected at least 2 local binary images, found {}",
+            image_count
+        );
+    }
+
+    println!(
+        "=== Successfully deployed with {} local binary Docker images! ===",
+        image_count
+    );
+
+    // Verify kona nodes are advancing
+    println!("=== Verifying kona nodes are advancing... ===");
+
+    // Get RPC URLs directly from the deployment result
+    let sequencer_rpc_url = deployment
+        .l2_stack
+        .sequencers[0]
+        .kona_node
+        .rpc_host_url
+        .as_ref()
+        .context("Sequencer kona-node RPC URL not available")?;
+
+    let validator_rpc_url = deployment
+        .l2_stack
+        .validators[0]
+        .kona_node
+        .rpc_host_url
+        .as_ref()
+        .context("Validator kona-node RPC URL not available")?;
+
+    let node_endpoints = vec![
+        ("sequencer", sequencer_rpc_url.to_string()),
+        ("validator-1", validator_rpc_url.to_string()),
+    ];
+
+    // Wait for nodes to be ready
+    println!("=== Waiting for nodes to be ready... ===");
+    for (label, url) in &node_endpoints {
+        if let Err(e) = wait_for_node_ready(url, 120).await {
+            println!("Warning: {} at {} not ready: {}", label, url, e);
+        }
+    }
+
+    // Get initial sync status
+    println!("=== Getting initial sync status... ===");
+    let mut initial_status: Vec<(String, String, SyncStatus)> = Vec::new();
+    for (label, url) in &node_endpoints {
+        match get_sync_status(url).await {
+            Ok(status) => {
+                println!(
+                    "{}: unsafe_l2={}, safe_l2={}, finalized_l2={}",
+                    label,
+                    status.unsafe_l2.number,
+                    status.safe_l2.number,
+                    status.finalized_l2.number
+                );
+                initial_status.push((label.to_string(), url.clone(), status));
+            }
+            Err(e) => {
+                println!("{}: failed to get sync status: {}", label, e);
+            }
+        }
+    }
+
+    if initial_status.is_empty() {
+        let _ = cleanup_by_prefix(&network_name).await;
+        anyhow::bail!("No nodes available for testing");
+    }
+
+    // Wait for blocks to be produced (with 2s block time, wait ~30s for several blocks)
+    println!("=== Waiting 30 seconds for blocks to be produced... ===");
+    sleep(Duration::from_secs(30)).await;
+
+    // Check that nodes have advanced
+    println!("=== Checking that nodes have advanced... ===");
+    let mut all_advancing = true;
+    let mut errors = Vec::new();
+
+    for (label, url, initial) in &initial_status {
+        match get_sync_status(url).await {
+            Ok(current) => {
+                let unsafe_advanced = current.unsafe_l2.number > initial.unsafe_l2.number;
+                let safe_advanced = current.safe_l2.number > initial.safe_l2.number;
+
+                println!(
+                    "{}: unsafe {} -> {} ({}), safe {} -> {} ({})",
+                    label,
+                    initial.unsafe_l2.number,
+                    current.unsafe_l2.number,
+                    if unsafe_advanced {
+                        "ADVANCING"
+                    } else {
+                        "STALLED"
+                    },
+                    initial.safe_l2.number,
+                    current.safe_l2.number,
+                    if safe_advanced {
+                        "ADVANCING"
+                    } else {
+                        "STALLED"
+                    },
+                );
+
+                if !unsafe_advanced {
+                    errors.push(format!("{}: unsafe head not advancing", label));
+                    all_advancing = false;
+                }
+            }
+            Err(e) => {
+                errors.push(format!("{}: failed to get current status: {}", label, e));
+                all_advancing = false;
+            }
+        }
+    }
+
+    // Cleanup
+    println!("=== Cleaning up network... ===");
+    let cleanup_result = cleanup_by_prefix(&network_name).await?;
+    println!(
+        "Cleaned up {} containers",
+        cleanup_result.containers_removed.len()
+    );
+
+    if let Some(network) = cleanup_result.network_removed {
+        println!("Removed network: {}", network);
+    }
+
+    // Assert after cleanup so we always clean up
+    if !all_advancing {
+        anyhow::bail!("Not all nodes are advancing:\n{}", errors.join("\n"));
+    }
+
+    println!("=== Test passed! All kona nodes with local binary are advancing. ===");
     Ok(())
 }

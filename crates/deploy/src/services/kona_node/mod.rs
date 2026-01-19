@@ -276,6 +276,12 @@ impl KonaNodeBuilder {
     ) -> Result<KonaNodeHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
+        // Ensure the Docker image is ready (pull or build if needed)
+        docker
+            .ensure_image_ready(&self.docker_image, "kona-node")
+            .await
+            .context("Failed to ensure kona-node image is ready")?;
+
         // Create or use the provided P2P keypair
         let p2p_keypair = match &self.p2p_secret_key {
             Some(key) => P2pKeypair::from_private_key(key)

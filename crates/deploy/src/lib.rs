@@ -69,7 +69,7 @@ pub use services::{
 };
 
 mod l2_stack;
-pub use deployer::L2StackHandler;
+pub use deployer::{DeploymentResult, L2StackHandler};
 pub use l2_stack::L2StackBuilder;
 
 /// Account information from Anvil.

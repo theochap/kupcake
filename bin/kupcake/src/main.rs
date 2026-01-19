@@ -67,7 +67,7 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
             "Loading deployment from config file..."
         );
 
-        deployer.deploy(args.redeploy).await?;
+        let _result = deployer.deploy(args.redeploy).await?;
 
         return Ok(());
     }
@@ -79,7 +79,7 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
     let (l1_chain_id, l1_rpc_url) = resolve_l1_config(args.l1).await?;
 
     // Create a new deployment from CLI arguments
-    let deployer = DeployerBuilder::new(l1_chain_id)
+    let mut deployer_builder = DeployerBuilder::new(l1_chain_id)
         .maybe_l2_chain_id(args.l2_chain.map(|c| c.to_chain_id()))
         .maybe_network_name(args.network)
         .maybe_outdata(args.outdata.map(|o| match o {
@@ -113,7 +113,29 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         .prometheus_image(args.docker_images.prometheus_image)
         .prometheus_tag(args.docker_images.prometheus_tag)
         .grafana_image(args.docker_images.grafana_image)
-        .grafana_tag(args.docker_images.grafana_tag)
+        .grafana_tag(args.docker_images.grafana_tag);
+
+    // Apply binary paths if provided (these override Docker images)
+    if let Some(path) = args.docker_images.op_reth_binary {
+        deployer_builder = deployer_builder.with_op_reth_binary(path);
+    }
+    if let Some(path) = args.docker_images.kona_node_binary {
+        deployer_builder = deployer_builder.with_kona_node_binary(path);
+    }
+    if let Some(path) = args.docker_images.op_batcher_binary {
+        deployer_builder = deployer_builder.with_op_batcher_binary(path);
+    }
+    if let Some(path) = args.docker_images.op_proposer_binary {
+        deployer_builder = deployer_builder.with_op_proposer_binary(path);
+    }
+    if let Some(path) = args.docker_images.op_challenger_binary {
+        deployer_builder = deployer_builder.with_op_challenger_binary(path);
+    }
+    if let Some(path) = args.docker_images.op_conductor_binary {
+        deployer_builder = deployer_builder.with_op_conductor_binary(path);
+    }
+
+    let deployer = deployer_builder
         .dashboards_path(PathBuf::from("grafana/dashboards"))
         .build()
         .await?;
@@ -121,7 +143,7 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
     // Save the configuration to kupconf.toml before deploying
     deployer.save_config()?;
 
-    deployer.deploy(args.redeploy).await?;
+    let _result = deployer.deploy(args.redeploy).await?;
 
     Ok(())
 }

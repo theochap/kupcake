@@ -309,6 +309,49 @@ pub struct DockerImageOverrides {
     /// Docker tag for Grafana.
     #[arg(long, env = "KUP_GRAFANA_TAG", default_value = GRAFANA_DEFAULT_TAG)]
     pub grafana_tag: String,
+
+    // Binary path overrides (alternative to Docker images)
+    /// Path to a local op-reth binary to use instead of a Docker image.
+    ///
+    /// When provided, the binary will be copied into a lightweight Docker image.
+    /// This is useful for testing local builds.
+    #[arg(long, env = "KUP_OP_RETH_BINARY")]
+    pub op_reth_binary: Option<String>,
+
+    /// Path to a local kona-node binary to use instead of a Docker image.
+    ///
+    /// When provided, the binary will be copied into a lightweight Docker image.
+    /// This is useful for testing local builds.
+    #[arg(long, env = "KUP_KONA_NODE_BINARY")]
+    pub kona_node_binary: Option<String>,
+
+    /// Path to a local op-batcher binary to use instead of a Docker image.
+    ///
+    /// When provided, the binary will be copied into a lightweight Docker image.
+    /// This is useful for testing local builds.
+    #[arg(long, env = "KUP_OP_BATCHER_BINARY")]
+    pub op_batcher_binary: Option<String>,
+
+    /// Path to a local op-proposer binary to use instead of a Docker image.
+    ///
+    /// When provided, the binary will be copied into a lightweight Docker image.
+    /// This is useful for testing local builds.
+    #[arg(long, env = "KUP_OP_PROPOSER_BINARY")]
+    pub op_proposer_binary: Option<String>,
+
+    /// Path to a local op-challenger binary to use instead of a Docker image.
+    ///
+    /// When provided, the binary will be copied into a lightweight Docker image.
+    /// This is useful for testing local builds.
+    #[arg(long, env = "KUP_OP_CHALLENGER_BINARY")]
+    pub op_challenger_binary: Option<String>,
+
+    /// Path to a local op-conductor binary to use instead of a Docker image.
+    ///
+    /// When provided, the binary will be copied into a lightweight Docker image.
+    /// This is useful for testing local builds.
+    #[arg(long, env = "KUP_OP_CONDUCTOR_BINARY")]
+    pub op_conductor_binary: Option<String>,
 }
 
 impl Default for DockerImageOverrides {
@@ -334,6 +377,12 @@ impl Default for DockerImageOverrides {
             prometheus_tag: PROMETHEUS_DEFAULT_TAG.to_string(),
             grafana_image: GRAFANA_DEFAULT_IMAGE.to_string(),
             grafana_tag: GRAFANA_DEFAULT_TAG.to_string(),
+            op_reth_binary: None,
+            kona_node_binary: None,
+            op_batcher_binary: None,
+            op_proposer_binary: None,
+            op_challenger_binary: None,
+            op_conductor_binary: None,
         }
     }
 }

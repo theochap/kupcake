@@ -1,0 +1,3 @@
+[submodule "crates/deploy/tests/kona"]
+	path = crates/deploy/tests/kona
+	url = https://github.com/op-rs/kona

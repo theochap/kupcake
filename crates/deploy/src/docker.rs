@@ -1,6 +1,16 @@
 //! Docker client for managing containers.
 
-use std::{collections::HashMap, collections::HashSet, mem, path::PathBuf, time::Duration};
+use std::{
+    collections::HashMap,
+    collections::HashSet,
+    fs,
+    io::Read as _,
+    mem,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+use sha2::{Digest, Sha256};
 
 use anyhow::{Context, Result};
 use bollard::{
@@ -9,7 +19,7 @@ use bollard::{
         Config, CreateContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
         StartContainerOptions, StopContainerOptions, WaitContainerOptions,
     },
-    image::CreateImageOptions,
+    image::{BuildImageOptions, CreateImageOptions},
     network::CreateNetworkOptions,
     secret::{HostConfig, PortBinding},
 };
@@ -262,31 +272,77 @@ impl ServiceHandler {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DockerImage {
     /// The image name (e.g., "ghcr.io/foundry-rs/foundry").
-    pub image: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     /// The image tag (e.g., "latest" or "v1.0.0").
-    pub tag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    /// Path to local binary (takes precedence over image/tag).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binary: Option<PathBuf>,
 }
 
 impl DockerImage {
     /// Create a new DockerImage with the given image name and tag.
     pub fn new(image: impl Into<String>, tag: impl Into<String>) -> Self {
         Self {
-            image: image.into(),
-            tag: tag.into(),
+            image: Some(image.into()),
+            tag: Some(tag.into()),
+            binary: None,
+        }
+    }
+
+    /// Create a DockerImage from a local binary path.
+    pub fn from_binary(path: impl Into<PathBuf>) -> Self {
+        Self {
+            image: None,
+            tag: None,
+            binary: Some(path.into()),
+        }
+    }
+
+    /// Returns true if this image uses a local binary.
+    pub fn is_local_binary(&self) -> bool {
+        self.binary.is_some()
+    }
+
+    /// Get the binary path if set.
+    pub fn binary_path(&self) -> Option<&Path> {
+        self.binary.as_deref()
+    }
+
+    /// Get the image reference string (image:tag).
+    /// Panics if called on a local binary image (use ensure_image_ready instead).
+    pub fn image_ref(&self) -> String {
+        match (&self.image, &self.tag) {
+            (Some(image), Some(tag)) => format!("{}:{}", image, tag),
+            _ => panic!("image_ref() called on local binary DockerImage"),
         }
     }
 
     /// Pull the image, ensuring it is available locally.
     ///
     /// This will check if the image exists locally and pull it if necessary.
+    /// For local binaries, use KupDocker::ensure_image_ready() instead.
     pub async fn pull(&self, docker: &KupDocker) -> Result<String> {
-        docker.pull_image(&self.image, &self.tag).await
+        if self.is_local_binary() {
+            anyhow::bail!("Cannot pull a local binary image. Use ensure_image_ready() instead.");
+        }
+        let image = self.image.as_ref().context("Missing image name")?;
+        let tag = self.tag.as_ref().context("Missing image tag")?;
+        docker.pull_image(image, tag).await
     }
 }
 
 impl std::fmt::Display for DockerImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.image, self.tag)
+        if let Some(binary) = &self.binary {
+            write!(f, "local:{}", binary.display())
+        } else if let (Some(image), Some(tag)) = (&self.image, &self.tag) {
+            write!(f, "{}:{}", image, tag)
+        } else {
+            write!(f, "<invalid>")
+        }
     }
 }
 
@@ -407,6 +463,200 @@ impl KupDocker {
         }
 
         Ok(full_image)
+    }
+
+    /// Build a Docker image from a local binary file.
+    ///
+    /// This creates a lightweight image based on `debian:bookworm-slim` with the binary
+    /// copied to `/binary` and set as the entrypoint.
+    ///
+    /// The image is tagged as `kupcake-{service_name}-local:{hash}` where hash is the
+    /// first 12 characters of the SHA256 hash of the binary content. This enables
+    /// caching: if the image already exists with this tag, the build is skipped.
+    ///
+    /// # Arguments
+    /// * `binary_path` - Path to the local binary file
+    /// * `service_name` - Name of the service (used in the image tag)
+    ///
+    /// # Returns
+    /// The full image reference (e.g., `kupcake-op-reth-local:a1b2c3d4e5f6`)
+    pub async fn build_local_image(
+        &self,
+        binary_path: &Path,
+        service_name: &str,
+    ) -> Result<String> {
+        // Validate binary exists and is readable
+        let binary_path = binary_path
+            .canonicalize()
+            .with_context(|| format!("Binary not found: {}", binary_path.display()))?;
+
+        let metadata = fs::metadata(&binary_path)
+            .with_context(|| format!("Cannot read binary metadata: {}", binary_path.display()))?;
+
+        if !metadata.is_file() {
+            anyhow::bail!("Path is not a file: {}", binary_path.display());
+        }
+
+        // Compute SHA256 hash of the binary
+        let hash = Self::compute_file_hash(&binary_path)
+            .with_context(|| format!("Failed to hash binary: {}", binary_path.display()))?;
+
+        // Use first 12 characters of hex hash for tag
+        let short_hash = &hash[..12];
+        let image_name = format!("kupcake-{}-local", service_name);
+        let image_ref = format!("{}:{}", image_name, short_hash);
+
+        // Check if image already exists (skip build if so)
+        if self.docker.inspect_image(&image_ref).await.is_ok() {
+            tracing::debug!(
+                image = %image_ref,
+                binary = %binary_path.display(),
+                "Local image already exists, skipping build"
+            );
+            return Ok(image_ref);
+        }
+
+        tracing::info!(
+            service = %service_name,
+            binary = %binary_path.display(),
+            image = %image_ref,
+            "Building local image from binary"
+        );
+
+        // Pull base image if needed (using trixie for GLIBC 2.38+ support)
+        self.pull_image("debian", "trixie-slim").await?;
+
+        // Create tar archive with Dockerfile and binary
+        let tar_bytes = Self::create_build_context(&binary_path)
+            .with_context(|| format!("Failed to create build context for {}", binary_path.display()))?;
+
+        // Build the image
+        let build_options = BuildImageOptions {
+            dockerfile: "Dockerfile".to_string(),
+            t: image_ref.clone(),
+            rm: true,
+            forcerm: true,
+            ..Default::default()
+        };
+
+        let mut build_stream = self.docker.build_image(
+            build_options,
+            None,
+            Some(tar_bytes.into()),
+        );
+
+        // Process build stream and check for errors
+        while let Some(result) = build_stream.next().await {
+            let build_info = result
+                .map_err(|e| anyhow::anyhow!("Docker build error: {}", e))?;
+
+            // Log build progress
+            if let Some(stream) = &build_info.stream {
+                let stream = stream.trim();
+                if !stream.is_empty() {
+                    tracing::trace!(stream, "Docker build");
+                }
+            }
+
+            // Check for build errors
+            if let Some(error) = &build_info.error {
+                anyhow::bail!("Docker build failed: {}", error);
+            }
+        }
+
+        tracing::info!(
+            image = %image_ref,
+            "Local image built successfully"
+        );
+
+        Ok(image_ref)
+    }
+
+    /// Compute SHA256 hash of a file, returning the hex-encoded string.
+    fn compute_file_hash(path: &Path) -> Result<String> {
+        let mut file = fs::File::open(path)
+            .with_context(|| format!("Failed to open file: {}", path.display()))?;
+
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 8192];
+
+        loop {
+            let bytes_read = file.read(&mut buffer)
+                .with_context(|| format!("Failed to read file: {}", path.display()))?;
+
+            if bytes_read == 0 {
+                break;
+            }
+
+            hasher.update(&buffer[..bytes_read]);
+        }
+
+        let hash = hasher.finalize();
+        Ok(hex::encode(hash))
+    }
+
+    /// Create a tar archive containing the Dockerfile and binary for building.
+    fn create_build_context(binary_path: &Path) -> Result<Vec<u8>> {
+        use std::io::Cursor;
+
+        let binary_data = fs::read(binary_path)
+            .with_context(|| format!("Failed to read binary: {}", binary_path.display()))?;
+
+        let dockerfile_content = b"FROM debian:trixie-slim
+COPY binary /binary
+RUN chmod +x /binary
+ENTRYPOINT [\"/binary\"]
+";
+
+        // Create tar archive in memory
+        let mut tar_buffer = Vec::new();
+        {
+            let cursor = Cursor::new(&mut tar_buffer);
+            let mut tar_builder = tar::Builder::new(cursor);
+
+            // Add Dockerfile
+            let mut dockerfile_header = tar::Header::new_gnu();
+            dockerfile_header.set_path("Dockerfile")?;
+            dockerfile_header.set_size(dockerfile_content.len() as u64);
+            dockerfile_header.set_mode(0o644);
+            dockerfile_header.set_cksum();
+            tar_builder.append(&dockerfile_header, &dockerfile_content[..])?;
+
+            // Add binary
+            let mut binary_header = tar::Header::new_gnu();
+            binary_header.set_path("binary")?;
+            binary_header.set_size(binary_data.len() as u64);
+            binary_header.set_mode(0o755);
+            binary_header.set_cksum();
+            tar_builder.append(&binary_header, binary_data.as_slice())?;
+
+            tar_builder.finish()?;
+        }
+
+        Ok(tar_buffer)
+    }
+
+    /// Ensure a DockerImage is ready for use.
+    ///
+    /// For remote images: pulls the image if not available locally.
+    /// For local binaries: builds the image from the binary if not already cached.
+    ///
+    /// # Arguments
+    /// * `docker_image` - The DockerImage configuration
+    /// * `service_name` - Name of the service (used for local binary image tags)
+    ///
+    /// # Returns
+    /// The image reference string to use when creating containers.
+    pub async fn ensure_image_ready(
+        &self,
+        docker_image: &DockerImage,
+        service_name: &str,
+    ) -> Result<String> {
+        if let Some(binary_path) = docker_image.binary_path() {
+            self.build_local_image(binary_path, service_name).await
+        } else {
+            docker_image.pull(self).await
+        }
     }
 
     /// Create a new Docker client.
@@ -767,7 +1017,7 @@ impl KupDocker {
         config: ServiceConfig,
         options: CreateAndStartContainerOptions,
     ) -> Result<ServiceHandler> {
-        let image = config.image.pull(self).await?;
+        let image = self.ensure_image_ready(&config.image, container_name).await?;
 
         let container_config =
             self.build_container_config(config, image, ContainerConfigOptions::default());
@@ -815,13 +1065,13 @@ impl KupDocker {
     /// The container is automatically removed after the command completes.
     /// Returns the stdout output as a string.
     pub async fn run_command(&mut self, config: ServiceConfig) -> Result<String> {
-        let image = config.image.pull(self).await?;
-
         // Generate a unique container name
         let container_name = format!(
             "kupcake-cmd-{}",
             names::Generator::default().next().unwrap_or_default()
         );
+
+        let image = self.ensure_image_ready(&config.image, &container_name).await?;
 
         let container_config = self.build_container_config(
             config,

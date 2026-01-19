@@ -167,6 +167,59 @@ impl L2StackBuilder {
         self.sequencers.iter().any(|s| s.op_conductor.is_some())
     }
 
+    /// Set the binary path for op-reth for all nodes (sequencers and validators).
+    pub fn set_op_reth_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
+        let docker_image = crate::docker::DockerImage::from_binary(binary_path);
+        for sequencer in &mut self.sequencers {
+            sequencer.op_reth.docker_image = docker_image.clone();
+        }
+        for validator in &mut self.validators {
+            validator.op_reth.docker_image = docker_image.clone();
+        }
+        self
+    }
+
+    /// Set the binary path for kona-node for all nodes (sequencers and validators).
+    pub fn set_kona_node_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
+        let docker_image = crate::docker::DockerImage::from_binary(binary_path);
+        for sequencer in &mut self.sequencers {
+            sequencer.kona_node.docker_image = docker_image.clone();
+        }
+        for validator in &mut self.validators {
+            validator.kona_node.docker_image = docker_image.clone();
+        }
+        self
+    }
+
+    /// Set the binary path for op-batcher.
+    pub fn set_op_batcher_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
+        self.op_batcher.docker_image = crate::docker::DockerImage::from_binary(binary_path);
+        self
+    }
+
+    /// Set the binary path for op-proposer.
+    pub fn set_op_proposer_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
+        self.op_proposer.docker_image = crate::docker::DockerImage::from_binary(binary_path);
+        self
+    }
+
+    /// Set the binary path for op-challenger.
+    pub fn set_op_challenger_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
+        self.op_challenger.docker_image = crate::docker::DockerImage::from_binary(binary_path);
+        self
+    }
+
+    /// Set the binary path for op-conductor for all sequencers that have conductor config.
+    pub fn set_op_conductor_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
+        let docker_image = crate::docker::DockerImage::from_binary(binary_path);
+        for sequencer in &mut self.sequencers {
+            if let Some(conductor) = &mut sequencer.op_conductor {
+                conductor.docker_image = docker_image.clone();
+            }
+        }
+        self
+    }
+
     /// Start all L2 node components.
     ///
     /// This starts sequencer nodes first (with their op-conductors if configured),
