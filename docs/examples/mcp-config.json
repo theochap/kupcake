@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "kupcake-docs": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/REPLACE/WITH/YOUR/PATH/TO/kupcake-docs/docs"
+      ]
+    }
+  }
+}

@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 📚 Comprehensive Documentation Available
+
+**For detailed documentation, see the `docs/` directory:**
+- [Getting Started Guide](docs/getting-started/quickstart.md) - Quickstart for new users
+- [User Guide](docs/user-guide/cli-reference.md) - Complete CLI reference
+- [Architecture Documentation](docs/architecture/overview.md) - System design and patterns
+- [Service Documentation](docs/services/README.md) - Individual service details
+- [Developer Guide](docs/developer-guide/README.md) - Contributing and development
+- [Examples](docs/examples/README.md) - Runnable example scenarios
+
+This file (CLAUDE.md) is for AI assistant guidance when modifying code. For comprehensive user and developer documentation, refer to the `docs/` directory.
+
 ## Project Overview
 
 Kupcake is a CLI tool that bootstraps a complete Rust-based OP Stack (Optimism) L2 chain locally. It orchestrates Docker containers to run a full stack including L1 (Anvil fork), contract deployment, L2 execution/consensus clients, and monitoring infrastructure.
