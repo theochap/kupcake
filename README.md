@@ -18,6 +18,17 @@ Kupcake spins up a local L1 (via Anvil fork), deploys all OP Stack contracts aut
 - **Custom images** — Override Docker images for any component
 - **Docker-based** — No local toolchain required, just Docker
 
+## 📚 Documentation
+
+**[→ Read the comprehensive documentation](docs/README.md)**
+
+For detailed guides, examples, architecture documentation, and troubleshooting:
+- [**Getting Started**](docs/getting-started/quickstart.md) - 5-minute deployment guide
+- [**User Guide**](docs/user-guide/cli-reference.md) - Complete CLI reference and configuration
+- [**Examples**](docs/examples/README.md) - Runnable example scenarios
+- [**Architecture**](docs/architecture/overview.md) - How Kupcake works internally
+- [**Troubleshooting**](docs/user-guide/troubleshooting.md) - Common issues and solutions
+
 ## Requirements
 
 - [Docker](https://docs.docker.com/get-docker/) (running)

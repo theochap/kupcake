@@ -1,0 +1,32 @@
+# Multi-Sequencer Configuration Example
+# Load with: kupcake --config config.toml
+
+[deployer]
+network_name = "kup-example-multi-sequencer"
+l2_chain_id = 42069
+block_time = 12
+l2_nodes = 7
+sequencer_count = 3
+
+# Docker images (defaults shown)
+[deployer.docker_images]
+anvil_image = "ghcr.io/foundry-rs/foundry"
+anvil_tag = "latest"
+op_reth_image = "ghcr.io/op-rs/op-reth"
+op_reth_tag = "latest"
+kona_node_image = "ghcr.io/op-rs/kona"
+kona_node_tag = "latest"
+op_batcher_image = "ghcr.io/ethereum-optimism/op-batcher"
+op_batcher_tag = "latest"
+op_proposer_image = "ghcr.io/ethereum-optimism/op-proposer"
+op_proposer_tag = "latest"
+op_challenger_image = "ghcr.io/ethereum-optimism/op-challenger"
+op_challenger_tag = "latest"
+op_conductor_image = "ghcr.io/ethereum-optimism/op-conductor"
+op_conductor_tag = "latest"
+op_deployer_image = "ghcr.io/ethereum-optimism/op-deployer"
+op_deployer_tag = "latest"
+prometheus_image = "prom/prometheus"
+prometheus_tag = "latest"
+grafana_image = "grafana/grafana"
+grafana_tag = "latest"
