@@ -224,6 +224,76 @@ let config = Config {
 };
 ```
 
+### Local Binary Deployment
+
+Kupcake supports deploying services from local binaries instead of Docker images.
+
+**Process**:
+
+1. **Hash Computation**: Calculate SHA256 hash of the binary
+2. **Cache Check**: Check if an image with that hash already exists
+3. **Image Building**: If not cached, build a Docker image:
+   - Base image: `debian:trixie-slim` (GLIBC 2.38+)
+   - Copy binary into image
+   - Set binary as entrypoint
+4. **Deployment**: Deploy container using the generated image
+
+**Implementation** (`crates/deploy/src/docker.rs`):
+
+```rust
+pub async fn build_local_image(
+    &self,
+    binary_path: &Path,
+    service_name: &str,
+) -> Result<String> {
+    // Compute SHA256 hash
+    let hash = compute_file_hash(binary_path)?;
+    let short_hash = &hash[..12];
+    let image_ref = format!("kupcake-{}-local:{}", service_name, short_hash);
+
+    // Check if cached
+    if self.docker.inspect_image(&image_ref).await.is_ok() {
+        return Ok(image_ref);
+    }
+
+    // Pull base image
+    self.pull_image("debian", "trixie-slim").await?;
+
+    // Create build context with Dockerfile and binary
+    let tar_bytes = create_build_context(binary_path)?;
+
+    // Build image via Docker API
+    self.docker.build_image(BuildImageOptions {
+        dockerfile: "Dockerfile".to_string(),
+        t: image_ref.clone(),
+        // ...
+    }, None, Some(tar_bytes.into())).await?;
+
+    Ok(image_ref)
+}
+```
+
+**Generated Dockerfile**:
+
+```dockerfile
+FROM debian:trixie-slim
+COPY binary /binary
+RUN chmod +x /binary
+ENTRYPOINT ["/binary"]
+```
+
+**Image Naming**:
+- Pattern: `kupcake-<network>-<service>-local:<hash>`
+- Example: `kupcake-my-testnet-kona-node-local:5f5278820378`
+
+**Caching**: Images are cached by hash, so rebuilding with the same binary reuses the existing image.
+
+**Use Cases**:
+- Testing local builds during development
+- Using custom-compiled binaries with optimizations
+- Working with unreleased versions
+- Debugging with debug builds
+
 ### Networking
 
 All containers run in an isolated Docker network:

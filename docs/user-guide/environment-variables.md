@@ -237,6 +237,91 @@ export KUP_GRAFANA_IMAGE=grafana/grafana
 export KUP_GRAFANA_TAG=latest
 ```
 
+## Local Binary Paths
+
+Deploy services from local binaries instead of Docker images.
+
+**Note**: When a binary path is set, the corresponding image and tag variables are ignored.
+
+### op-reth
+
+```bash
+export KUP_OP_RETH_BINARY=./op-reth/target/release/op-reth
+```
+
+Deploy op-reth from a local binary.
+
+### kona-node
+
+```bash
+export KUP_KONA_NODE_BINARY=./kona/target/release/kona-node
+```
+
+Deploy kona-node from a local binary.
+
+### op-batcher
+
+```bash
+export KUP_OP_BATCHER_BINARY=./optimism/op-batcher/bin/op-batcher
+```
+
+Deploy op-batcher from a local binary.
+
+### op-proposer
+
+```bash
+export KUP_OP_PROPOSER_BINARY=./optimism/op-proposer/bin/op-proposer
+```
+
+Deploy op-proposer from a local binary.
+
+### op-challenger
+
+```bash
+export KUP_OP_CHALLENGER_BINARY=./optimism/op-challenger/bin/op-challenger
+```
+
+Deploy op-challenger from a local binary.
+
+### op-conductor
+
+```bash
+export KUP_OP_CONDUCTOR_BINARY=./optimism/op-conductor/bin/op-conductor
+```
+
+Deploy op-conductor from a local binary.
+
+### Example: Development with Local Binaries
+
+```bash
+#!/bin/bash
+# dev-deploy.sh - Deploy with locally built components
+
+# Build services locally
+cd ~/kona && cargo build --release --bin kona-node
+cd ~/op-reth && cargo build --release
+
+# Set binary paths
+export KUP_KONA_NODE_BINARY=~/kona/target/release/kona-node
+export KUP_OP_RETH_BINARY=~/op-reth/target/release/op-reth
+
+# Network config
+export KUP_NETWORK_NAME=dev-local
+export KUP_BLOCK_TIME=2
+export KUP_PUBLISH_ALL_PORTS=true
+export KUP_DETACH=true
+
+# Deploy
+kupcake
+```
+
+**Binary Requirements**:
+- Must be compiled for Linux
+- Must be compatible with GLIBC 2.38 or earlier
+- Must be executable (`chmod +x`)
+
+**See**: [Docker Images Guide - Local Binary Deployment](docker-images.md#local-binary-deployment)
+
 ## Complete Example: CI/CD Configuration
 
 ```bash

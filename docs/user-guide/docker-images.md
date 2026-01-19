@@ -129,6 +129,209 @@ kupcake \
   --op-reth-tag custom
 ```
 
+## Local Binary Deployment
+
+**New in Kupcake**: Deploy services from local binaries instead of Docker images.
+
+This is useful for:
+- Testing local builds during development
+- Using custom-compiled binaries with specific optimizations
+- Working with unreleased versions
+- Debugging with locally-built debug binaries
+
+### How It Works
+
+When you provide a binary path, Kupcake:
+1. Computes a SHA256 hash of the binary
+2. Checks if a Docker image with that hash already exists (caching)
+3. If not, creates a lightweight Docker image using `debian:trixie-slim` as the base
+4. Copies the binary into the image and sets it as the entrypoint
+5. Deploys the container using the generated image
+
+**Base Image**: `debian:trixie-slim` (provides GLIBC 2.38+ support)
+
+### Supported Services
+
+All OP Stack services support local binary deployment:
+
+- `--op-reth-binary <path>`
+- `--kona-node-binary <path>`
+- `--op-batcher-binary <path>`
+- `--op-proposer-binary <path>`
+- `--op-challenger-binary <path>`
+- `--op-conductor-binary <path>`
+
+### Basic Usage
+
+Deploy with a local kona-node binary:
+
+```bash
+# Build kona-node locally
+cd kona
+cargo build --release --bin kona-node
+
+# Deploy using the local binary
+kupcake --kona-node-binary ./target/release/kona-node
+```
+
+### Multiple Local Binaries
+
+Deploy multiple services from local binaries:
+
+```bash
+kupcake \
+  --op-reth-binary ./op-reth/target/release/op-reth \
+  --kona-node-binary ./kona/target/release/kona-node \
+  --op-batcher-binary ./optimism/op-batcher/bin/op-batcher
+```
+
+### Environment Variables
+
+```bash
+export KUP_KONA_NODE_BINARY=./kona/target/release/kona-node
+export KUP_OP_RETH_BINARY=./op-reth/target/release/op-reth
+kupcake
+```
+
+### Mixed Deployment
+
+Mix local binaries with Docker images:
+
+```bash
+kupcake \
+  --kona-node-binary ./kona/target/release/kona-node \
+  --op-reth-tag v1.0.0 \
+  --op-batcher-tag latest
+```
+
+### Image Naming and Caching
+
+Generated images follow this naming pattern:
+
+```
+kupcake-<network-name>-<service>-local:<hash>
+```
+
+Example:
+```
+kupcake-my-testnet-kona-node-local:5f5278820378
+```
+
+The hash is the first 12 characters of the binary's SHA256 hash. If you rebuild with the same binary, the cached image is reused.
+
+### Verifying Local Binary Images
+
+List local binary images:
+
+```bash
+docker images --filter "reference=kupcake-*-local*"
+```
+
+Check which binary was used:
+
+```bash
+docker inspect kupcake-my-testnet-kona-node-local:5f5278820378 \
+  | jq '.[0].Config.Labels'
+```
+
+### Debug Builds
+
+Use debug builds for troubleshooting:
+
+```bash
+# Build with debug symbols
+cargo build --bin kona-node
+
+# Deploy debug build
+kupcake --kona-node-binary ./target/debug/kona-node
+```
+
+**Note**: Debug builds are much larger and slower than release builds.
+
+### Binary Requirements
+
+Your binary must:
+- Be compiled for Linux (the Docker container OS)
+- Be statically linked or have all dependencies available in `debian:trixie-slim`
+- Require GLIBC 2.38 or earlier
+- Be executable (`chmod +x`)
+
+### Cross-Compilation Example
+
+If compiling on macOS for Linux:
+
+```bash
+# Install cross-compilation target
+rustup target add x86_64-unknown-linux-gnu
+
+# Build for Linux
+cargo build --release --target x86_64-unknown-linux-gnu --bin kona-node
+
+# Use the Linux binary
+kupcake --kona-node-binary ./target/x86_64-unknown-linux-gnu/release/kona-node
+```
+
+### Troubleshooting Local Binaries
+
+#### GLIBC Version Mismatch
+
+```
+Error: /binary: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_X.XX' not found
+```
+
+**Solution**: Your binary requires a newer GLIBC than provided by `debian:trixie-slim` (2.38). Options:
+- Build with an older toolchain
+- Use a statically-linked binary
+- Build inside a Docker container with the same base image
+
+#### Binary Not Executable
+
+```
+Error: exec format error
+```
+
+**Solution**:
+- Ensure binary is for Linux, not macOS/Windows
+- Check architecture matches (amd64 vs arm64)
+- Verify binary is executable: `chmod +x <binary>`
+
+#### Build Context Too Large
+
+If binary is very large (>1GB), image building may be slow.
+
+**Solution**:
+- Strip debug symbols: `strip <binary>`
+- Use release builds instead of debug builds
+- Enable LTO in Cargo.toml for smaller binaries
+
+### Example: Testing Local Kona Changes
+
+```bash
+# 1. Clone and modify kona
+git clone https://github.com/anton-rs/kona
+cd kona
+# Make your changes...
+
+# 2. Build the binary
+cargo build --release --bin kona-node
+
+# 3. Deploy with local binary
+cd /path/to/kupcake
+kupcake \
+  --network my-test \
+  --kona-node-binary ../kona/target/release/kona-node \
+  --publish-all-ports \
+  --detach
+
+# 4. Test your changes
+curl http://localhost:<port> -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"optimism_syncStatus","params":[],"id":1}'
+
+# 5. Clean up
+kupcake cleanup my-test
+```
+
 ## Verifying Images
 
 ### Check Running Images

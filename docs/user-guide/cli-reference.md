@@ -425,6 +425,131 @@ kupcake \
 
 See: [Docker Images Guide](docker-images.md)
 
+## Local Binary Deployment
+
+Deploy services from local binaries instead of Docker images.
+
+**Format**: `--<service>-binary <PATH>`
+
+When a binary path is provided, Kupcake creates a lightweight Docker image from the binary using `debian:trixie-slim` as the base. The image is cached based on the binary's SHA256 hash.
+
+### op-reth
+
+```bash
+--op-reth-binary <PATH>
+```
+
+**Environment Variable**: `KUP_OP_RETH_BINARY`
+
+Deploy op-reth from a local binary:
+
+```bash
+kupcake --op-reth-binary ./op-reth/target/release/op-reth
+```
+
+### kona-node
+
+```bash
+--kona-node-binary <PATH>
+```
+
+**Environment Variable**: `KUP_KONA_NODE_BINARY`
+
+Deploy kona-node from a local binary:
+
+```bash
+kupcake --kona-node-binary ./kona/target/release/kona-node
+```
+
+### op-batcher
+
+```bash
+--op-batcher-binary <PATH>
+```
+
+**Environment Variable**: `KUP_OP_BATCHER_BINARY`
+
+Deploy op-batcher from a local binary:
+
+```bash
+kupcake --op-batcher-binary ./optimism/op-batcher/bin/op-batcher
+```
+
+### op-proposer
+
+```bash
+--op-proposer-binary <PATH>
+```
+
+**Environment Variable**: `KUP_OP_PROPOSER_BINARY`
+
+Deploy op-proposer from a local binary:
+
+```bash
+kupcake --op-proposer-binary ./optimism/op-proposer/bin/op-proposer
+```
+
+### op-challenger
+
+```bash
+--op-challenger-binary <PATH>
+```
+
+**Environment Variable**: `KUP_OP_CHALLENGER_BINARY`
+
+Deploy op-challenger from a local binary:
+
+```bash
+kupcake --op-challenger-binary ./optimism/op-challenger/bin/op-challenger
+```
+
+### op-conductor
+
+```bash
+--op-conductor-binary <PATH>
+```
+
+**Environment Variable**: `KUP_OP_CONDUCTOR_BINARY`
+
+Deploy op-conductor from a local binary:
+
+```bash
+kupcake --op-conductor-binary ./optimism/op-conductor/bin/op-conductor
+```
+
+### Examples
+
+Deploy with single local binary:
+
+```bash
+kupcake --kona-node-binary ./kona/target/release/kona-node
+```
+
+Deploy with multiple local binaries:
+
+```bash
+kupcake \
+  --op-reth-binary ./op-reth/target/release/op-reth \
+  --kona-node-binary ./kona/target/release/kona-node \
+  --op-batcher-binary ./optimism/op-batcher/bin/op-batcher
+```
+
+Mix local binaries with Docker images:
+
+```bash
+kupcake \
+  --kona-node-binary ./kona/target/release/kona-node \
+  --op-reth-tag v1.0.0 \
+  --op-batcher-tag latest
+```
+
+**Binary Requirements**:
+- Must be compiled for Linux (the Docker container OS)
+- Must be compatible with GLIBC 2.38 or earlier
+- Must be executable (`chmod +x`)
+
+**See**: [Docker Images Guide - Local Binary Deployment](docker-images.md#local-binary-deployment)
+
 ## Environment Variables
 
 All CLI options can be set via environment variables with the `KUP_` prefix:

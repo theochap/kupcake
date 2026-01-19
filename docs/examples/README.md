@@ -112,6 +112,24 @@ cd custom-images && ./run.sh
 
 ---
 
+### [Local Binary](local-binary/)
+
+**Demonstrates**: Deploying services from locally-built binaries
+
+```bash
+cd local-binary && ./run.sh
+```
+
+**What it does**:
+- Deploy with locally-compiled kona-node binary
+- Kupcake builds a Docker image from the binary
+- Cached by binary hash for fast rebuilds
+- Mix local binaries with Docker images
+
+**Use Case**: Testing local code changes, debugging with debug builds, development workflow
+
+---
+
 ### [Fast Blocks](fast-blocks/)
 
 **Demonstrates**: Configuring faster block times for development
