@@ -273,6 +273,42 @@ kupcake --block-time 2   # Fast blocks (2s)
 kupcake --block-time 12  # Mainnet-like (12s)
 ```
 
+#### `--genesis-timestamp <UNIX_TIMESTAMP>`
+
+Manually specify the L2 genesis timestamp (Unix timestamp in seconds).
+
+**Default**: Automatically calculated
+**Environment Variable**: `KUP_GENESIS_TIMESTAMP`
+
+**Automatic Calculation**:
+- When forking L1: `latest_block_timestamp - (block_time * block_number)`
+- In local mode: Current Unix timestamp
+
+This option overrides the automatic calculation and sets an explicit genesis timestamp.
+
+**Use Cases**:
+- Testing with specific timestamps
+- Aligning genesis with external events
+- Reproducing specific blockchain states
+- Deterministic deployments for CI/CD
+
+**Examples**:
+```bash
+# Use a specific timestamp (January 19, 2026 12:00:00 UTC)
+kupcake --genesis-timestamp 1768464000
+
+# Combine with L1 fork and custom timestamp
+kupcake --l1 sepolia --genesis-timestamp 1768464000
+
+# Local mode with custom timestamp
+kupcake --genesis-timestamp 1768464000
+```
+
+**Notes**:
+- The timestamp is included in the deployment configuration hash
+- Changing the timestamp will trigger contract redeployment
+- The timestamp should be reasonable for the target L1 chain
+
 #### `--l2-nodes <COUNT>`
 
 Total number of L2 nodes to deploy.

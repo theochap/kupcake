@@ -91,6 +91,7 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         .detach(args.detach)
         .publish_all_ports(args.publish_all_ports)
         .block_time(args.block_time)
+        .maybe_genesis_timestamp(args.genesis_timestamp)
         .l2_node_count(args.l2_nodes)
         .sequencer_count(args.sequencer_count)
         // Docker images

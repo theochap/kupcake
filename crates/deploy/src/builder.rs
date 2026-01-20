@@ -125,6 +125,8 @@ pub struct DeployerBuilder {
     monitoring_enabled: bool,
     /// Block time in seconds for both L1 (Anvil) and L2 derivation.
     block_time: u64,
+    /// Manual override for L2 genesis timestamp (Unix timestamp in seconds).
+    genesis_timestamp: Option<u64>,
     /// Number of L2 nodes (sequencers + validators).
     l2_node_count: usize,
     /// Number of sequencer nodes.
@@ -158,6 +160,7 @@ impl DeployerBuilder {
             dashboards_path: None,
             monitoring_enabled: true,
             block_time: 12,
+            genesis_timestamp: None,
             l2_node_count: 1,
             sequencer_count: 1,
             anvil_docker: DockerImage::new(ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG),
@@ -191,6 +194,27 @@ impl DeployerBuilder {
     /// Defaults to 12 seconds (Ethereum mainnet block time).
     pub fn block_time(mut self, block_time: u64) -> Self {
         self.block_time = block_time;
+        self
+    }
+
+    /// Manually override the L2 genesis timestamp.
+    ///
+    /// When provided, this timestamp will be used instead of the automatically
+    /// calculated value. The automatic calculation is:
+    /// - When forking L1: `latest_block_timestamp - (block_time * block_number)`
+    /// - In local mode: current Unix timestamp
+    ///
+    /// Use this when you need a specific genesis timestamp for testing or alignment.
+    pub fn genesis_timestamp(mut self, timestamp: u64) -> Self {
+        self.genesis_timestamp = Some(timestamp);
+        self
+    }
+
+    /// Set the genesis timestamp if `Some`, otherwise do nothing.
+    pub fn maybe_genesis_timestamp(mut self, timestamp: Option<u64>) -> Self {
+        if let Some(t) = timestamp {
+            self.genesis_timestamp = Some(t);
+        }
         self
     }
 
@@ -543,8 +567,25 @@ impl DeployerBuilder {
             .canonicalize()
             .context("Failed to canonicalize output data directory path")?;
 
-        // Fetch genesis timestamp and fork block number if L1 RPC URL is provided
-        let (genesis_timestamp, fork_block_number) = if let Some(ref rpc_url) = self.l1_rpc_url {
+        // Determine genesis timestamp and fork block number
+        let (genesis_timestamp, fork_block_number) = if let Some(manual_timestamp) = self.genesis_timestamp {
+            // Use manually specified timestamp
+            let fork_block_number = if self.l1_rpc_url.is_some() {
+                // If forking, still fetch the fork block number
+                let block = fetch_latest_block(self.l1_rpc_url.as_ref().unwrap())
+                    .await
+                    .context("Failed to fetch latest block from L1 RPC")?;
+                Some(block.number)
+            } else {
+                None
+            };
+            tracing::info!(
+                genesis_timestamp = manual_timestamp,
+                "Using manually specified genesis timestamp"
+            );
+            (Some(manual_timestamp), fork_block_number)
+        } else if let Some(ref rpc_url) = self.l1_rpc_url {
+            // Fetch and calculate genesis timestamp from L1 RPC
             let block = fetch_latest_block(rpc_url)
                 .await
                 .context("Failed to fetch latest block from L1 RPC")?;

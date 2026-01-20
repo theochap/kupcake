@@ -233,7 +233,11 @@ Anvil generates test accounts on startup. The deployer extracts account info fro
 
 ### Genesis Timestamp Calculation
 
-When forking L1, the genesis timestamp is calculated as: `latest_block_timestamp - (block_time * block_number)`. This ensures the L2 genesis aligns with L1 block 0 time.
+By default, the genesis timestamp is automatically calculated:
+- When forking L1: `latest_block_timestamp - (block_time * block_number)` - ensures L2 genesis aligns with L1 block 0 time
+- In local mode: Current Unix timestamp
+
+This can be manually overridden using the `--genesis-timestamp` CLI argument or the `genesis_timestamp()` method on `DeployerBuilder`. When a manual timestamp is provided, it is used instead of the automatic calculation.
 
 ### JWT Secret Management
 

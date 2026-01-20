@@ -174,6 +174,16 @@ pub struct DeployArgs {
     #[arg(long, env = "KUP_BLOCK_TIME", default_value_t = 12)]
     pub block_time: u64,
 
+    /// Manually specify the L2 genesis timestamp (Unix timestamp in seconds).
+    ///
+    /// When forking from L1, the genesis timestamp is automatically calculated
+    /// as: latest_block_timestamp - (block_time * block_number)
+    /// This option overrides that calculation and sets an explicit genesis timestamp.
+    ///
+    /// Use this when you need a specific genesis timestamp for testing or alignment.
+    #[arg(long, env = "KUP_GENESIS_TIMESTAMP")]
+    pub genesis_timestamp: Option<u64>,
+
     /// The total number of L2 nodes to deploy.
     ///
     /// This is the sum of sequencers and validators.
@@ -219,6 +229,7 @@ impl Default for DeployArgs {
             detach: false,
             publish_all_ports: false,
             block_time: 12,
+            genesis_timestamp: None,
             l2_nodes: 5,
             sequencer_count: 2,
             config: None,

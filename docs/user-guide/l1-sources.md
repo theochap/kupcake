@@ -87,13 +87,31 @@ When Anvil forks a chain:
 
 ## Genesis Timestamp Calculation
 
-For forked chains, the L2 genesis timestamp is calculated as:
+By default, the L2 genesis timestamp is automatically calculated:
 
+**For forked chains**:
 ```
 genesis_timestamp = latest_block_timestamp - (block_time × block_number)
 ```
-
 This ensures the L2 genesis aligns with L1 block 0 time.
+
+**For local mode**:
+```
+genesis_timestamp = current_unix_timestamp
+```
+
+**Manual Override**:
+
+You can manually specify the genesis timestamp using the `--genesis-timestamp` flag:
+
+```bash
+kupcake --l1 sepolia --genesis-timestamp 1768464000
+```
+
+This is useful for:
+- Testing with specific timestamps
+- Deterministic deployments
+- Reproducing specific blockchain states
 
 ## Comparing L1 Source Modes
 
