@@ -271,6 +271,7 @@ impl Default for KonaNodeBuilder {
 }
 
 /// Handler for a running kona-node instance.
+#[derive(Clone)]
 pub struct KonaNodeHandler {
     /// Docker container ID.
     pub container_id: String,

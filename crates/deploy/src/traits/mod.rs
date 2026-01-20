@@ -21,9 +21,18 @@ mod service;
 mod stages;
 mod standard;
 
-pub use context::{ContractsContext, L1Context, L2Context, MonitoringContext};
+// L2 fleet module (convenience wrapper for deploying multiple L2 nodes)
+pub mod l2_fleet;
+
+pub use context::{
+    ContractsContext, L1Context, L2NodeContext, L2BatchingContext, L2ProposalContext,
+    L2FaultProofContext, L2NodesResult, MonitoringContext,
+};
 pub use deployer::{Deployer, End};
 pub use runner::DeployChain;
 pub use service::KupcakeService;
-pub use stages::{ContractsStage, DeploymentStage, L1Stage, L2Stage, MonitoringStage, NextStage};
+pub use stages::{
+    ContractsStage, DeploymentStage, L1Stage, L2NodeStage, L2BatchingStage, L2ProposalStage,
+    L2FaultProofStage, MonitoringStage, NextStage,
+};
 pub use standard::{NoMonitoringDeployer, StandardDeployer, StandardDeploymentResult};

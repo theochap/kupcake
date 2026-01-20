@@ -106,6 +106,7 @@ impl Default for OpRethBuilder {
 }
 
 /// Handler for a running op-reth instance.
+#[derive(Clone)]
 pub struct OpRethHandler {
     /// Port for P2P discovery (container port).
     pub discovery_port: u16,

@@ -412,6 +412,7 @@ impl L2NodeBuilder {
 }
 
 /// Handler for a running L2 node (op-reth + kona-node pair).
+#[derive(Clone)]
 pub struct L2NodeHandler {
     /// Role of this node.
     pub role: L2NodeRole,

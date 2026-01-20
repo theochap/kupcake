@@ -185,3 +185,27 @@ impl OpBatcherBuilder {
         })
     }
 }
+
+// KupcakeService trait implementation for trait-based deployment
+impl crate::traits::KupcakeService for OpBatcherBuilder {
+    type Stage = crate::traits::L2BatchingStage;
+    type Handler = OpBatcherHandler;
+    type Context<'a> = crate::traits::L2BatchingContext<'a>;
+
+    const SERVICE_NAME: &'static str = "op-batcher";
+
+    async fn deploy<'a>(self, ctx: Self::Context<'a>) -> anyhow::Result<Self::Handler>
+    where
+        Self: 'a,
+    {
+        let host_config_path = ctx.outdata.join("l2-stack");
+        self.start(
+            ctx.docker,
+            &host_config_path,
+            ctx.anvil,
+            ctx.primary_op_reth,
+            ctx.primary_kona_node,
+        )
+        .await
+    }
+}

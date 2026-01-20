@@ -89,6 +89,7 @@ impl Default for OpConductorBuilder {
 }
 
 /// Handler for a running op-conductor instance.
+#[derive(Clone)]
 pub struct OpConductorHandler {
     /// Docker container ID.
     pub container_id: String,

@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -10,7 +9,7 @@ use crate::{
     OpProposerBuilder,
     deployer::L2StackHandler,
     fs,
-    services::l2_node::{ConductorContext, L2NodeBuilder, L2NodeHandler},
+    services::l2_node::L2NodeBuilder,
 };
 
 /// Combined configuration for all L2 components for the op-stack.
@@ -243,138 +242,85 @@ impl L2StackBuilder {
             fs::FsHandler::create_host_config_directory(&host_config_path)?;
         }
 
-        // Mutable lists of peer enodes for P2P discovery
-        // Each node adds its enode after starting, so subsequent nodes can use it as a bootnode
-        let mut kona_node_enodes: Vec<String> = Vec::new();
-        let mut op_reth_enodes: Vec<String> = Vec::new();
+        // Use trait-based deployment for type-safe, staged deployment
 
-        // Determine if we need conductor coordination
-        let needs_conductor = self.needs_conductor();
-
-        // Start all sequencer nodes (with conductors if configured)
-        let mut sequencer_handlers: Vec<L2NodeHandler> = Vec::with_capacity(self.sequencers.len());
-        for (i, sequencer) in self.sequencers.iter().enumerate() {
-            // Determine conductor context for this sequencer
-            let conductor_context = if needs_conductor && sequencer.op_conductor.is_some() {
-                if i == 0 {
-                    ConductorContext::Leader { index: i }
-                } else {
-                    ConductorContext::Follower { index: i }
-                }
-            } else {
-                ConductorContext::None
-            };
-
-            if i == 0 {
-                tracing::info!(
-                    has_conductor = sequencer.op_conductor.is_some(),
-                    "Starting primary sequencer node (op-reth + kona-node)..."
-                );
-            } else {
-                tracing::info!(
-                    index = i + 1,
-                    has_conductor = sequencer.op_conductor.is_some(),
-                    "Starting sequencer node (op-reth + kona-node)..."
-                );
-            }
-
-            let sequencer_handler = sequencer
-                .start(
-                    docker,
-                    &host_config_path,
-                    anvil_handler,
-                    None, // Sequencers don't follow another sequencer
-                    &mut kona_node_enodes,
-                    &mut op_reth_enodes,
-                    l1_chain_id,
-                    conductor_context,
-                )
-                .await
-                .context(format!("Failed to start sequencer node {}", i + 1))?;
-
-            sequencer_handlers.push(sequencer_handler);
-        }
-
-        // Get the primary sequencer's RPC URL for validators to follow
-        let sequencer_rpc = sequencer_handlers[0].op_reth.http_rpc_url.clone();
-
-        // Start validator nodes (no conductors)
-        let mut validator_handlers: Vec<L2NodeHandler> = Vec::with_capacity(self.validators.len());
-        for (i, validator) in self.validators.iter().enumerate() {
-            tracing::info!("Starting validator node {} (op-reth + kona-node)...", i + 1);
-
-            let validator_handler = validator
-                .start(
-                    docker,
-                    &host_config_path,
-                    anvil_handler,
-                    Some(&sequencer_rpc),
-                    &mut kona_node_enodes,
-                    &mut op_reth_enodes,
-                    l1_chain_id,
-                    ConductorContext::None,
-                )
-                .await
-                .context(format!("Failed to start validator node {}", i + 1))?;
-
-            validator_handlers.push(validator_handler);
-        }
+        // Stage 1: Deploy all L2 nodes (sequencers + validators) via L2NodeFleet
+        use crate::traits::{l2_fleet::L2NodeFleet, KupcakeService};
+        use crate::traits::{L2NodeContext, L2BatchingContext, L2ProposalContext, L2FaultProofContext};
 
         tracing::info!(
-            kona_node_peer_count = kona_node_enodes.len(),
-            op_reth_peer_count = op_reth_enodes.len(),
             sequencer_count = self.sequencers.len(),
             validator_count = self.validators.len(),
-            conductors_started = sequencer_handlers.iter().filter(|s| s.op_conductor.is_some()).count(),
+            "Deploying L2 node fleet..."
+        );
+
+        let node_fleet = L2NodeFleet {
+            sequencers: self.sequencers.clone(),
+            validators: self.validators.clone(),
+        };
+
+        let node_ctx = L2NodeContext {
+            docker,
+            outdata: host_config_path.clone(),
+            anvil: anvil_handler,
+            l1_chain_id,
+            l2_chain_id: 0, // L2 chain ID is not used by nodes, will be removed in future refactor
+        };
+
+        let nodes_result = node_fleet.deploy(node_ctx).await?;
+
+        tracing::info!(
+            kona_node_peer_count = nodes_result.kona_node_enodes.len(),
+            op_reth_peer_count = nodes_result.op_reth_enodes.len(),
+            sequencer_count = nodes_result.sequencers.len(),
+            validator_count = nodes_result.validators.len(),
+            conductors_started = nodes_result.sequencers.iter().filter(|s| s.op_conductor.is_some()).count(),
             "All L2 nodes started with P2P peer discovery"
         );
 
         // Get references to the primary sequencer for the remaining components
-        let primary_sequencer = &sequencer_handlers[0];
+        let primary_sequencer = &nodes_result.sequencers[0];
 
+        // Stage 2: Deploy op-batcher
         tracing::info!("Starting op-batcher...");
 
-        // Start op-batcher (connects to primary sequencer)
-        let op_batcher_handler = self
-            .op_batcher
-            .start(
-                docker,
-                &host_config_path,
-                anvil_handler,
-                &primary_sequencer.op_reth,
-                &primary_sequencer.kona_node,
-            )
-            .await?;
+        let batcher_ctx = L2BatchingContext {
+            docker,
+            outdata: host_config_path.clone(),
+            anvil: anvil_handler,
+            primary_op_reth: &primary_sequencer.op_reth,
+            primary_kona_node: &primary_sequencer.kona_node,
+        };
 
+        let op_batcher_handler = self.op_batcher.clone().deploy(batcher_ctx).await?;
+
+        // Stage 3: Deploy op-proposer
         tracing::info!("Starting op-proposer...");
 
-        // Start op-proposer (connects to primary sequencer)
-        let op_proposer_handler = self
-            .op_proposer
-            .start(
-                docker,
-                &host_config_path,
-                anvil_handler,
-                &primary_sequencer.kona_node,
-            )
-            .await?;
+        let proposer_ctx = L2ProposalContext {
+            docker,
+            outdata: host_config_path.clone(),
+            anvil: anvil_handler,
+            primary_kona_node: &primary_sequencer.kona_node,
+        };
 
+        let op_proposer_handler = self.op_proposer.clone().deploy(proposer_ctx).await?;
+
+        // Stage 4: Deploy op-challenger
         tracing::info!("Starting op-challenger...");
 
-        // Start op-challenger (connects to primary sequencer)
-        let op_challenger_handler = self
-            .op_challenger
-            .start(
-                docker,
-                &host_config_path,
-                anvil_handler,
-                &primary_sequencer.kona_node,
-                &self.sequencers[0].op_reth,
-            )
-            .await?;
+        let challenger_ctx = L2FaultProofContext {
+            docker,
+            outdata: host_config_path,
+            anvil: anvil_handler,
+            primary_kona_node: &primary_sequencer.kona_node,
+            primary_op_reth: &primary_sequencer.op_reth,
+        };
+
+        let op_challenger_handler = self.op_challenger.clone().deploy(challenger_ctx).await?;
 
         // Log all sequencer endpoints
-        for (i, sequencer) in sequencer_handlers.iter().enumerate() {
+        for (i, sequencer) in nodes_result.sequencers.iter().enumerate() {
             tracing::info!(
                 role = "sequencer",
                 index = i,
@@ -386,7 +332,7 @@ impl L2StackBuilder {
         }
 
         // Log all validator endpoints
-        for (i, validator) in validator_handlers.iter().enumerate() {
+        for (i, validator) in nodes_result.validators.iter().enumerate() {
             tracing::info!(
                 role = "validator",
                 index = i,
@@ -405,8 +351,8 @@ impl L2StackBuilder {
         );
 
         Ok(L2StackHandler {
-            sequencers: sequencer_handlers,
-            validators: validator_handlers,
+            sequencers: nodes_result.sequencers,
+            validators: nodes_result.validators,
             op_batcher: op_batcher_handler,
             op_proposer: op_proposer_handler,
             op_challenger: op_challenger_handler,
@@ -415,10 +361,13 @@ impl L2StackBuilder {
 }
 
 // KupcakeService trait implementation
+// NOTE: L2StackBuilder is a composite service that internally uses the new L2 stages.
+// It's kept for backward compatibility and convenience, but users can also chain
+// individual L2 services directly in the Deployer.
 impl crate::traits::KupcakeService for L2StackBuilder {
-    type Stage = crate::traits::L2Stage;
+    type Stage = crate::traits::L2NodeStage;
     type Handler = L2StackHandler;
-    type Context<'a> = crate::traits::L2Context<'a>;
+    type Context<'a> = crate::traits::L2NodeContext<'a>;
 
     const SERVICE_NAME: &'static str = "l2-stack";
 

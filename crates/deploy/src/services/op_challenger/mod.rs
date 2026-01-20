@@ -14,7 +14,7 @@ use crate::docker::{
     CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig,
 };
 
-use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethBuilder};
+use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler};
 
 /// Default port for op-challenger (for internal URL reference only - op-challenger has no RPC server).
 pub const DEFAULT_RPC_PORT: u16 = 8561;
@@ -77,7 +77,7 @@ impl OpChallengerBuilder {
         host_config_path: &PathBuf,
         anvil_handler: &AnvilHandler,
         kona_node_handler: &KonaNodeHandler,
-        op_reth_config: &OpRethBuilder,
+        trace_rpc_url: String,
     ) -> Result<OpChallengerHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
@@ -104,10 +104,7 @@ impl OpChallengerBuilder {
 
         let cmd = OpChallengerCmdBuilder::new(
             anvil_handler.l1_rpc_url.to_string(),
-            format!(
-                "http://{}:{}",
-                op_reth_config.container_name, op_reth_config.http_port
-            ),
+            trace_rpc_url,
             kona_node_handler.rpc_url.to_string(),
             challenger_private_key.to_string(),
             dgf_address,
@@ -158,5 +155,30 @@ impl OpChallengerBuilder {
             container_name: handler.container_name,
             rpc_url,
         })
+    }
+}
+
+// KupcakeService trait implementation for trait-based deployment
+impl crate::traits::KupcakeService for OpChallengerBuilder {
+    type Stage = crate::traits::L2FaultProofStage;
+    type Handler = OpChallengerHandler;
+    type Context<'a> = crate::traits::L2FaultProofContext<'a>;
+
+    const SERVICE_NAME: &'static str = "op-challenger";
+
+    async fn deploy<'a>(self, ctx: Self::Context<'a>) -> anyhow::Result<Self::Handler>
+    where
+        Self: 'a,
+    {
+        let host_config_path = ctx.outdata.join("l2-stack");
+        let trace_rpc_url = ctx.primary_op_reth.http_rpc_url.to_string();
+        self.start(
+            ctx.docker,
+            &host_config_path,
+            ctx.anvil,
+            ctx.primary_kona_node,
+            trace_rpc_url,
+        )
+        .await
     }
 }

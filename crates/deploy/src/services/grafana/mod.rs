@@ -539,6 +539,83 @@ providers:
     }
 }
 
+/// Helper to generate metrics targets for a set of nodes with consistent naming.
+fn node_metrics_targets<'a>(
+    nodes: impl Iterator<Item = (usize, &'a crate::services::L2NodeHandler)> + 'a,
+    role: &'a str,
+    suffix_fn: impl Fn(usize) -> String + 'a,
+) -> impl Iterator<Item = MetricsTarget> + 'a {
+    use crate::services::kona_node::DEFAULT_METRICS_PORT as KONA_METRICS_PORT;
+    use crate::services::op_reth::DEFAULT_METRICS_PORT as RETH_METRICS_PORT;
+
+    nodes.flat_map(move |(i, node)| {
+        let suffix = suffix_fn(i);
+        let role_str = role.to_string();
+        [
+            MetricsTarget {
+                job_name: format!("op-reth{}", suffix),
+                container_name: node.op_reth.container_name.clone(),
+                port: RETH_METRICS_PORT,
+                service_label: format!("op-reth-{}", role_str),
+                layer_label: "execution".to_string(),
+            },
+            MetricsTarget {
+                job_name: format!("kona-node{}", suffix),
+                container_name: node.kona_node.container_name.clone(),
+                port: KONA_METRICS_PORT,
+                service_label: format!("kona-node-{}", role_str),
+                layer_label: "consensus".to_string(),
+            },
+        ]
+    })
+}
+
+/// Build metrics targets for Prometheus scraping from individual L2 components.
+fn build_metrics_targets(
+    l2_nodes: &crate::traits::L2NodesResult,
+    op_batcher: &crate::services::OpBatcherHandler,
+    op_proposer: &crate::services::OpProposerHandler,
+    op_challenger: &crate::services::OpChallengerHandler,
+) -> Vec<MetricsTarget> {
+    use crate::services::op_batcher::DEFAULT_METRICS_PORT as BATCHER_METRICS_PORT;
+    use crate::services::op_challenger::DEFAULT_METRICS_PORT as CHALLENGER_METRICS_PORT;
+    use crate::services::op_proposer::DEFAULT_METRICS_PORT as PROPOSER_METRICS_PORT;
+
+    // Generate targets for sequencers and validators using helper
+    let sequencer_targets = node_metrics_targets(
+        l2_nodes.sequencers.iter().enumerate(),
+        "sequencer",
+        |i| if i == 0 { String::new() } else { format!("-sequencer-{}", i) },
+    );
+
+    let validator_targets = node_metrics_targets(
+        l2_nodes.validators.iter().enumerate(),
+        "validator",
+        |i| format!("-validator-{}", i + 1),
+    );
+
+    // Generate targets for batcher, proposer, and challenger
+    let service_targets = [
+        ("op-batcher", &op_batcher.container_name, BATCHER_METRICS_PORT, "batcher"),
+        ("op-proposer", &op_proposer.container_name, PROPOSER_METRICS_PORT, "proposer"),
+        ("op-challenger", &op_challenger.container_name, CHALLENGER_METRICS_PORT, "challenger"),
+    ]
+    .into_iter()
+    .map(|(job, container, port, layer)| MetricsTarget {
+        job_name: job.to_string(),
+        container_name: container.clone(),
+        port,
+        service_label: job.to_string(),
+        layer_label: layer.to_string(),
+    });
+
+    // Combine all targets
+    sequencer_targets
+        .chain(validator_targets)
+        .chain(service_targets)
+        .collect()
+}
+
 // KupcakeService trait implementation
 impl crate::traits::KupcakeService for MonitoringConfig {
     type Stage = crate::traits::MonitoringStage;
@@ -558,7 +635,14 @@ impl crate::traits::KupcakeService for MonitoringConfig {
         tracing::info!("Starting monitoring stack (Prometheus + Grafana)...");
 
         let host_config_path = ctx.outdata.join("monitoring");
-        let metrics_targets = ctx.l2_stack.metrics_targets();
+
+        // Build metrics targets from individual L2 components
+        let metrics_targets = build_metrics_targets(
+            ctx.l2_nodes,
+            ctx.op_batcher,
+            ctx.op_proposer,
+            ctx.op_challenger,
+        );
 
         let handler = self
             .start(ctx.docker, host_config_path, metrics_targets, ctx.dashboards_path)

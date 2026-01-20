@@ -1,26 +1,53 @@
 //! Standard deployer type aliases replicating current Kupcake behavior.
 
-use crate::{AnvilConfig, L2StackBuilder, MonitoringConfig, OpDeployerConfig};
+use crate::{AnvilConfig, MonitoringConfig, OpBatcherBuilder, OpChallengerBuilder, OpDeployerConfig, OpProposerBuilder};
 
 use super::deployer::{Deployer, End};
+use super::l2_fleet::L2NodeFleet;
 
 /// Standard OP Stack deployment chain with monitoring.
 ///
-/// This type alias replicates the current Kupcake deployment behavior:
+/// This type alias chains through all deployment stages:
 /// 1. Deploy Anvil (L1)
 /// 2. Deploy contracts via op-deployer
-/// 3. Deploy L2 stack (op-reth + kona-node nodes, batcher, proposer, challenger)
-/// 4. Deploy monitoring (Prometheus + Grafana)
+/// 3. Deploy L2 nodes (op-reth + kona-node trios)
+/// 4. Deploy op-batcher
+/// 5. Deploy op-proposer
+/// 6. Deploy op-challenger
+/// 7. Deploy monitoring (Prometheus + Grafana)
 pub type StandardDeployer = Deployer<
     AnvilConfig,
-    Deployer<OpDeployerConfig, Deployer<L2StackBuilder, Deployer<MonitoringConfig, End>>>,
+    Deployer<
+        OpDeployerConfig,
+        Deployer<
+            L2NodeFleet,
+            Deployer<
+                OpBatcherBuilder,
+                Deployer<
+                    OpProposerBuilder,
+                    Deployer<OpChallengerBuilder, Deployer<MonitoringConfig, End>>,
+                >,
+            >,
+        >,
+    >,
 >;
 
 /// OP Stack deployment chain without monitoring.
 ///
 /// Same as StandardDeployer but without the monitoring stage.
-pub type NoMonitoringDeployer =
-    Deployer<AnvilConfig, Deployer<OpDeployerConfig, Deployer<L2StackBuilder, End>>>;
+pub type NoMonitoringDeployer = Deployer<
+    AnvilConfig,
+    Deployer<
+        OpDeployerConfig,
+        Deployer<
+            L2NodeFleet,
+            Deployer<
+                OpBatcherBuilder,
+                Deployer<OpProposerBuilder, Deployer<OpChallengerBuilder, End>>,
+            >,
+        >,
+    >,
+>;
 
 /// Result type for standard deployment.
 ///
@@ -32,7 +59,10 @@ impl StandardDeployer {
     pub fn default_stack() -> Self {
         Deployer::new(AnvilConfig::default())
             .then(OpDeployerConfig::default())
-            .then(L2StackBuilder::default())
+            .then(L2NodeFleet::default())
+            .then(OpBatcherBuilder::default())
+            .then(OpProposerBuilder::default())
+            .then(OpChallengerBuilder::default())
             .then(MonitoringConfig::default())
     }
 }
@@ -42,6 +72,9 @@ impl NoMonitoringDeployer {
     pub fn default_stack() -> Self {
         Deployer::new(AnvilConfig::default())
             .then(OpDeployerConfig::default())
-            .then(L2StackBuilder::default())
+            .then(L2NodeFleet::default())
+            .then(OpBatcherBuilder::default())
+            .then(OpProposerBuilder::default())
+            .then(OpChallengerBuilder::default())
     }
 }

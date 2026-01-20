@@ -100,8 +100,123 @@ where
                 next: Deployer {
                     service: self.next.next.service,
                     next: Deployer::new(service),
-                        },
                 },
+            },
+        }
+    }
+}
+
+// Implement then() on Deployer<S, Deployer<S2, Deployer<S3, Deployer<S4, End>>>> - for 4-service chains
+impl<S, S2, S3, S4> Deployer<S, Deployer<S2, Deployer<S3, Deployer<S4, End>>>>
+where
+    S: KupcakeService,
+    S2: KupcakeService,
+    S3: KupcakeService,
+    S4: KupcakeService,
+{
+    /// Chain another service after this one.
+    pub fn then<S5>(
+        self,
+        service: S5,
+    ) -> Deployer<S, Deployer<S2, Deployer<S3, Deployer<S4, Deployer<S5, End>>>>>
+    where
+        S5: KupcakeService,
+        S4::Stage: NextStage<Next = S5::Stage>,
+    {
+        Deployer {
+            service: self.service,
+            next: Deployer {
+                service: self.next.service,
+                next: Deployer {
+                    service: self.next.next.service,
+                    next: Deployer {
+                        service: self.next.next.next.service,
+                        next: Deployer::new(service),
+                    },
+                },
+            },
+        }
+    }
+}
+
+// Implement then() on Deployer<S, Deployer<S2, Deployer<S3, Deployer<S4, Deployer<S5, End>>>>> - for 5-service chains
+impl<S, S2, S3, S4, S5> Deployer<S, Deployer<S2, Deployer<S3, Deployer<S4, Deployer<S5, End>>>>>
+where
+    S: KupcakeService,
+    S2: KupcakeService,
+    S3: KupcakeService,
+    S4: KupcakeService,
+    S5: KupcakeService,
+{
+    /// Chain another service after this one.
+    pub fn then<S6>(
+        self,
+        service: S6,
+    ) -> Deployer<S, Deployer<S2, Deployer<S3, Deployer<S4, Deployer<S5, Deployer<S6, End>>>>>>
+    where
+        S6: KupcakeService,
+        S5::Stage: NextStage<Next = S6::Stage>,
+    {
+        Deployer {
+            service: self.service,
+            next: Deployer {
+                service: self.next.service,
+                next: Deployer {
+                    service: self.next.next.service,
+                    next: Deployer {
+                        service: self.next.next.next.service,
+                        next: Deployer {
+                            service: self.next.next.next.next.service,
+                            next: Deployer::new(service),
+                        },
+                    },
+                },
+            },
+        }
+    }
+}
+
+// Implement then() on Deployer<S, Deployer<S2, Deployer<S3, Deployer<S4, Deployer<S5, Deployer<S6, End>>>>>> - for 6-service chains
+impl<S, S2, S3, S4, S5, S6>
+    Deployer<S, Deployer<S2, Deployer<S3, Deployer<S4, Deployer<S5, Deployer<S6, End>>>>>>
+where
+    S: KupcakeService,
+    S2: KupcakeService,
+    S3: KupcakeService,
+    S4: KupcakeService,
+    S5: KupcakeService,
+    S6: KupcakeService,
+{
+    /// Chain another service after this one.
+    pub fn then<S7>(
+        self,
+        service: S7,
+    ) -> Deployer<
+        S,
+        Deployer<S2, Deployer<S3, Deployer<S4, Deployer<S5, Deployer<S6, Deployer<S7, End>>>>>>,
+    >
+    where
+        S7: KupcakeService,
+        S6::Stage: NextStage<Next = S7::Stage>,
+    {
+        Deployer {
+            service: self.service,
+            next: Deployer {
+                service: self.next.service,
+                next: Deployer {
+                    service: self.next.next.service,
+                    next: Deployer {
+                        service: self.next.next.next.service,
+                        next: Deployer {
+                            service: self.next.next.next.next.service,
+                            next: Deployer {
+                                service: self.next.next.next.next.next.service,
+                                next: Deployer::new(service),
+                            },
+                        },
+                    },
+                },
+            },
         }
     }
 }

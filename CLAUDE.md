@@ -144,13 +144,19 @@ Services must be deployed in a fixed order, enforced at compile-time via stage m
 
 1. **L1Stage** - Anvil (Ethereum L1 fork)
 2. **ContractsStage** - op-deployer (OP Stack contract deployment)
-3. **L2Stage** - L2StackBuilder (L2 nodes, batcher, proposer, challenger)
-4. **MonitoringStage** - MonitoringConfig (Prometheus + Grafana)
+3. **L2NodeStage** - L2NodeFleet (L2 node trios: op-reth + kona-node + optional op-conductor)
+4. **L2BatchingStage** - OpBatcherBuilder (batch submission to L1)
+5. **L2ProposalStage** - OpProposerBuilder (output root submission to L1)
+6. **L2FaultProofStage** - OpChallengerBuilder (fault proof verification)
+7. **MonitoringStage** - MonitoringConfig (Prometheus + Grafana)
 
 The `NextStage` trait ensures only valid transitions are possible:
 - `L1Stage -> ContractsStage`
-- `ContractsStage -> L2Stage`
-- `L2Stage -> MonitoringStage`
+- `ContractsStage -> L2NodeStage`
+- `L2NodeStage -> L2BatchingStage`
+- `L2BatchingStage -> L2ProposalStage`
+- `L2ProposalStage -> L2FaultProofStage`
+- `L2FaultProofStage -> MonitoringStage`
 
 #### Deployment Contexts
 
@@ -158,8 +164,11 @@ Each stage receives appropriate context with dependencies from previous stages:
 
 - **L1Context** - Docker client, output path, chain IDs
 - **ContractsContext** - Adds `AnvilHandler` (L1 RPC, accounts)
-- **L2Context** - Includes `AnvilHandler` for L2 node configuration
-- **MonitoringContext** - Adds `L2StackHandler` for metrics scraping
+- **L2NodeContext** - Includes `AnvilHandler` for L2 node configuration
+- **L2BatchingContext** - Adds primary sequencer handlers (op-reth, kona-node)
+- **L2ProposalContext** - Includes primary sequencer's kona-node handler
+- **L2FaultProofContext** - Adds primary sequencer handlers for trace access
+- **MonitoringContext** - Includes all L2 service handlers for metrics scraping
 
 #### Deployer Chain
 
@@ -172,8 +181,14 @@ type StandardDeployer = Deployer<
     Deployer<
         OpDeployerConfig,
         Deployer<
-            L2StackBuilder,
-            Deployer<MonitoringConfig, End>
+            L2NodeFleet,
+            Deployer<
+                OpBatcherBuilder,
+                Deployer<
+                    OpProposerBuilder,
+                    Deployer<OpChallengerBuilder, Deployer<MonitoringConfig, End>>
+                >
+            >
         >
     >
 >;
@@ -181,7 +196,10 @@ type StandardDeployer = Deployer<
 // Fluent API for building chains
 let deployer = Deployer::new(AnvilConfig::default())
     .then(OpDeployerConfig::default())
-    .then(L2StackBuilder::default())
+    .then(L2NodeFleet::default())
+    .then(OpBatcherBuilder::default())
+    .then(OpProposerBuilder::default())
+    .then(OpChallengerBuilder::default())
     .then(MonitoringConfig::default());
 ```
 
@@ -191,8 +209,8 @@ The `then()` method enforces stage ordering at compile-time - invalid chains won
 
 Pre-configured type aliases for common scenarios:
 
-- **StandardDeployer** - Full stack with monitoring (L1 + Contracts + L2 + Monitoring)
-- **NoMonitoringDeployer** - Without monitoring (L1 + Contracts + L2)
+- **StandardDeployer** - Full stack with monitoring (L1 + Contracts + L2 services + Monitoring)
+- **NoMonitoringDeployer** - Without monitoring (L1 + Contracts + L2 services)
 
 ```rust
 // Using the standard deployer
@@ -201,9 +219,47 @@ let result = deployer.deploy_chain(&mut docker, outdata, l1_id, l2_id, dashboard
 
 // Access handlers with named fields
 println!("L1 RPC: {}", result.anvil.l1_rpc_url);
-println!("L2 nodes: {}", result.l2_stack.node_count());
+println!("Sequencer count: {}", result.l2_nodes.sequencers.len());
+println!("Validator count: {}", result.l2_nodes.validators.len());
+println!("Op-batcher: {}", result.op_batcher.container_name);
 if let Some(mon) = result.monitoring {
     println!("Grafana: {}", mon.grafana.host_url);
+}
+```
+
+#### L2 Deployment Architecture
+
+All L2 services implement the same `KupcakeService` trait and are integrated into the main deployment stage chain. The L2 stages form a sequence within the overall deployment:
+
+**Key Components:**
+
+- **L2NodeFleet** - Service that deploys all sequencers and validators with enode accumulation
+- **L2 Stage Markers** - L2NodeStage, L2BatchingStage, L2ProposalStage, L2FaultProofStage
+- **L2 Context Types** - Stage-specific contexts (`L2NodeContext`, `L2BatchingContext`, etc.)
+
+**L2 Node Trio Deployment:**
+
+Each L2 node is deployed as a trio:
+- **op-reth** (execution layer) - starts first, waits for readiness
+- **kona-node** (consensus layer) - starts after op-reth, connects via JWT
+- **op-conductor** (optional, for multi-sequencer) - starts after both nodes are ready
+
+Nodes are deployed sequentially to accumulate enodes for P2P discovery. Each node adds its enode to shared lists so subsequent nodes can use them as bootnodes.
+
+**Example KupcakeService Implementation for L2:**
+
+```rust
+impl KupcakeService for OpBatcherBuilder {
+    type Stage = L2BatchingStage;
+    type Handler = OpBatcherHandler;
+    type Context<'a> = L2BatchingContext<'a>;
+    const SERVICE_NAME: &'static str = "op-batcher";
+
+    async fn deploy<'a>(self, ctx: Self::Context<'a>) -> Result<Self::Handler> {
+        let host_config_path = ctx.outdata.join("l2-stack");
+        self.start(ctx.docker, &host_config_path, ctx.anvil,
+                   ctx.primary_op_reth, ctx.primary_kona_node).await
+    }
 }
 ```
 
@@ -378,6 +434,13 @@ When adding new services:
 - Use the appropriate `Context` type for your stage (L1Context, ContractsContext, L2Context, MonitoringContext)
 - The `deploy()` method should call your existing `start()` or similar method
 - `SERVICE_NAME` is used for logging and identification
+
+**When adding new L2 components** (batcher, proposer, challenger, or node variants):
+- Implement `KupcakeService` trait (same as other services)
+- Use appropriate L2 stage: `L2NodeStage`, `L2BatchingStage`, `L2ProposalStage`, or `L2FaultProofStage`
+- Use corresponding L2 context: `L2NodeContext`, `L2BatchingContext`, `L2ProposalContext`, or `L2FaultProofContext`
+- The pattern is identical to other services - L2 components are fully integrated into the main trait system
+- See `crates/deploy/src/services/op_batcher/mod.rs` for a complete example
 
 When modifying container configuration:
 - Container arguments are built in `cmd.rs` files using the builder pattern

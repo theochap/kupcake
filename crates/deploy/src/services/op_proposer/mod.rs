@@ -168,3 +168,26 @@ impl OpProposerBuilder {
         })
     }
 }
+
+// KupcakeService trait implementation for trait-based deployment
+impl crate::traits::KupcakeService for OpProposerBuilder {
+    type Stage = crate::traits::L2ProposalStage;
+    type Handler = OpProposerHandler;
+    type Context<'a> = crate::traits::L2ProposalContext<'a>;
+
+    const SERVICE_NAME: &'static str = "op-proposer";
+
+    async fn deploy<'a>(self, ctx: Self::Context<'a>) -> anyhow::Result<Self::Handler>
+    where
+        Self: 'a,
+    {
+        let host_config_path = ctx.outdata.join("l2-stack");
+        self.start(
+            ctx.docker,
+            &host_config_path,
+            ctx.anvil,
+            ctx.primary_kona_node,
+        )
+        .await
+    }
+}
