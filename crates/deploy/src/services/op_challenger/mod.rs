@@ -11,7 +11,7 @@ use url::Url;
 pub use cmd::OpChallengerCmdBuilder;
 
 use crate::docker::{
-    CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig,
+    CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig,
 };
 
 use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethBuilder};
@@ -129,6 +129,7 @@ impl OpChallengerBuilder {
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports(port_mappings)
+            .expose(ExposedPort::tcp(self.metrics_port))
             .bind(host_config_path, &container_config_path, "rw");
 
         let handler = docker

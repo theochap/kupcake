@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    docker::{CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig},
+    docker::{CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig},
     fs::FsHandler,
 };
 
@@ -371,6 +371,7 @@ providers:
         let service_config = ServiceConfig::new(self.prometheus.docker_image.clone())
             .cmd(cmd)
             .ports(port_mappings)
+            .expose(ExposedPort::tcp(self.prometheus.port))
             .bind_str(format!(
                 "{}:{}:ro",
                 host_config_path.join("prometheus.yml").display(),
@@ -443,6 +444,7 @@ providers:
 
         let service_config = ServiceConfig::new(self.grafana.docker_image.clone())
             .ports(port_mappings)
+            .expose(ExposedPort::tcp(GRAFANA_INTERNAL_PORT))
             .bind_str(format!(
                 "{}:/etc/grafana/provisioning:ro",
                 grafana_provisioning_path.display()

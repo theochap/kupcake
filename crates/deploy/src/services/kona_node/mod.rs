@@ -362,6 +362,8 @@ impl KonaNodeBuilder {
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports(port_mappings)
+            .expose(ExposedPort::tcp(self.rpc_port))
+            .expose(ExposedPort::tcp(self.metrics_port))
             .expose(ExposedPort::tcp(DEFAULT_P2P_PORT))
             .expose(ExposedPort::udp(DEFAULT_P2P_PORT))
             .bind(host_config_path, &container_config_path, "rw");

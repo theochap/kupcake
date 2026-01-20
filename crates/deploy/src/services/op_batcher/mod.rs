@@ -132,17 +132,13 @@ impl OpBatcherBuilder {
         .flatten()
         .collect();
 
-        // When publish_all_ports is enabled, expose all ports (Docker will publish them automatically)
-        let mut service_config = ServiceConfig::new(self.docker_image.clone())
+        // Always expose all ports to the Docker network (regardless of publish_all_ports)
+        let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports(port_mappings)
+            .expose(ExposedPort::tcp(self.rpc_port))
+            .expose(ExposedPort::tcp(self.metrics_port))
             .bind(host_config_path, &container_config_path, "rw");
-
-        if docker.config.publish_all_ports {
-            service_config = service_config
-                .expose(ExposedPort::tcp(self.rpc_port))
-                .expose(ExposedPort::tcp(self.metrics_port));
-        }
 
         let handler = docker
             .start_service(

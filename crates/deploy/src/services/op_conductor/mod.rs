@@ -14,7 +14,7 @@ use url::Url;
 pub use cmd::OpConductorCmdBuilder;
 
 use crate::docker::{
-    CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig,
+    CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig,
 };
 
 use super::op_reth::OpRethHandler;
@@ -195,6 +195,8 @@ impl OpConductorBuilder {
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports(port_mappings)
+            .expose(ExposedPort::tcp(self.rpc_port))
+            .expose(ExposedPort::tcp(self.consensus_port))
             .bind(host_config_path, &container_config_path, "rw");
 
         let handler = docker

@@ -13,7 +13,7 @@ pub use cmd::AnvilCmdBuilder;
 
 use crate::{
     AccountInfo,
-    docker::{CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig},
+    docker::{CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig},
     fs::FsHandler,
 };
 
@@ -224,6 +224,7 @@ impl AnvilConfig {
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .entrypoint(vec!["anvil".to_string()])
             .cmd(cmd)
+            .expose(ExposedPort::tcp(ANVIL_INTERNAL_PORT))
             .ports(port_mappings)
             .bind(&host_config_path, &container_config_path, "rw");
 

@@ -221,6 +221,8 @@ impl OpRethBuilder {
         .collect();
 
         let exposed_ports: Vec<ExposedPort> = [
+            ExposedPort::tcp(self.http_port),
+            ExposedPort::tcp(self.ws_port),
             ExposedPort::tcp(self.authrpc_port),
             ExposedPort::tcp(self.metrics_port),
             ExposedPort::tcp(self.listen_port),
