@@ -33,28 +33,81 @@ pub fn is_known_l1_chain(chain_id: u64) -> bool {
     chain_id == MAINNET_CHAIN_ID || chain_id == SEPOLIA_CHAIN_ID
 }
 
-/// Generate an L1 chain config file for local/custom Anvil chains.
+/// Generate an L1 chain config file for local/custom Anvil chains by fetching
+/// chain data from the L1 RPC endpoint.
 ///
 /// This is needed because kona-node doesn't have custom chain IDs in its registry.
 /// The config specifies that all hardforks are activated from genesis.
-fn generate_local_l1_config(
+async fn generate_local_l1_config_from_rpc(
     host_config_path: &PathBuf,
-    chain_id: u64,
+    l1_rpc_url: &str,
+    block_time: u64,
 ) -> Result<PathBuf, anyhow::Error> {
+    let client = reqwest::Client::new();
+
+    // Fetch chain ID via eth_chainId
+    let chain_id_response: serde_json::Value = client
+        .post(l1_rpc_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "eth_chainId",
+            "params": [],
+            "id": 1
+        }))
+        .send()
+        .await
+        .context("Failed to call eth_chainId")?
+        .json()
+        .await
+        .context("Failed to parse eth_chainId response")?;
+
+    let chain_id_hex = chain_id_response["result"]
+        .as_str()
+        .context("Invalid chain ID in response")?;
+    let chain_id = u64::from_str_radix(chain_id_hex.trim_start_matches("0x"), 16)
+        .context("Failed to parse chain ID")?;
+
+    // Fetch genesis block via eth_getBlockByNumber
+    let genesis_response: serde_json::Value = client
+        .post(l1_rpc_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getBlockByNumber",
+            "params": ["0x0", false],
+            "id": 2
+        }))
+        .send()
+        .await
+        .context("Failed to call eth_getBlockByNumber")?
+        .json()
+        .await
+        .context("Failed to parse eth_getBlockByNumber response")?;
+
+    let genesis_time_hex = genesis_response["result"]["timestamp"]
+        .as_str()
+        .context("Invalid genesis timestamp in response")?;
+    let genesis_time = u64::from_str_radix(genesis_time_hex.trim_start_matches("0x"), 16)
+        .context("Failed to parse genesis timestamp")?;
+
     let config = json!({
         "chain_id": chain_id,
-        "genesis_time": 0,
-        "block_time": 2,
+        "genesis_time": genesis_time,
+        "block_time": block_time,
         "hardforks": {
-            "bedrock": 0,
-            "regolith": 0,
-            "canyon": 0,
-            "delta": 0,
-            "ecotone": 0,
-            "fjord": 0,
-            "granite": 0,
-            "holocene": 0,
-            "isthmus": 0,
+            "frontier": 0,
+            "homestead": 0,
+            "dao": 0,
+            "tangerine_whistle": 0,
+            "spurious_dragon": 0,
+            "byzantium": 0,
+            "constantinople": 0,
+            "petersburg": 0,
+            "istanbul": 0,
+            "muir_glacier": 0,
+            "berlin": 0,
+            "london": 0,
+            "arrow_glacier": 0,
+            "gray_glacier": 0,
             "merge": 0,
             "shanghai": 0,
             "cancun": 0
@@ -66,7 +119,13 @@ fn generate_local_l1_config(
         serde_json::to_string_pretty(&config).context("Failed to serialize L1 config")?;
     std::fs::write(&config_path, config_content).context("Failed to write L1 config file")?;
 
-    tracing::debug!(path = %config_path.display(), chain_id, "Generated L1 config file for local chain");
+    tracing::debug!(
+        path = %config_path.display(),
+        chain_id,
+        genesis_time,
+        block_time,
+        "Generated L1 config file from RPC for local chain"
+    );
     Ok(config_path)
 }
 
@@ -312,9 +371,21 @@ impl KonaNodeBuilder {
         .extra_args(self.extra_args.clone());
 
         // For local/custom chains (not Mainnet or Sepolia), generate and use a custom L1 config file
+        // fetched from the L1 RPC endpoint. Use host URL since we're calling from the host, not from
+        // inside a container.
         if !is_known_l1_chain(l1_chain_id) {
-            generate_local_l1_config(host_config_path, l1_chain_id)
-                .context("Failed to generate L1 config for local chain")?;
+            let l1_rpc_for_host = anvil_handler
+                .l1_host_url
+                .as_ref()
+                .unwrap_or(&anvil_handler.l1_rpc_url);
+
+            generate_local_l1_config_from_rpc(
+                host_config_path,
+                l1_rpc_for_host.as_str(),
+                self.l1_slot_duration,
+            )
+            .await
+            .context("Failed to generate L1 config from RPC for local chain")?;
             cmd_builder = cmd_builder
                 .l1_config_file(container_config_path.join("l1-config.json").display().to_string());
         }
