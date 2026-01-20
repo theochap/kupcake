@@ -538,3 +538,34 @@ providers:
         })
     }
 }
+
+// KupcakeService trait implementation
+impl crate::traits::KupcakeService for MonitoringConfig {
+    type Stage = crate::traits::MonitoringStage;
+    type Handler = Option<MonitoringHandler>;
+    type Context<'a> = crate::traits::MonitoringContext<'a>;
+
+    const SERVICE_NAME: &'static str = "monitoring";
+
+    async fn deploy<'a>(self, ctx: Self::Context<'a>) -> anyhow::Result<Self::Handler>
+    where
+        Self: 'a,
+    {
+        if !self.enabled {
+            return Ok(None);
+        }
+
+        tracing::info!("Starting monitoring stack (Prometheus + Grafana)...");
+
+        let host_config_path = ctx.outdata.join("monitoring");
+        let metrics_targets = ctx.l2_stack.metrics_targets();
+
+        let handler = self
+            .start(ctx.docker, host_config_path, metrics_targets, ctx.dashboards_path)
+            .await
+            .context("Failed to start monitoring stack")?;
+
+        Ok(Some(handler))
+    }
+}
+

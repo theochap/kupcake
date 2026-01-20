@@ -64,7 +64,7 @@ impl AnvilAccounts {
     /// Create named accounts from a vector of account infos.
     ///
     /// Returns an error if fewer than 10 accounts are provided.
-    pub fn from_account_infos(accounts: Vec<AccountInfo>) -> Result<Self, anyhow::Error> {
+    pub fn from_account_infos(mut accounts: Vec<AccountInfo>) -> Result<Self, anyhow::Error> {
         if accounts.len() < Self::MIN_REQUIRED_ACCOUNTS {
             anyhow::bail!(
                 "Not enough accounts provided. Need at least {}, got {}",
@@ -73,20 +73,26 @@ impl AnvilAccounts {
             );
         }
 
-        let mut accounts = accounts.into_iter();
+        // Extract the extra accounts first (anything beyond index 10)
+        let extra_accounts = accounts.split_off(Self::MIN_REQUIRED_ACCOUNTS);
+
+        // Now accounts has exactly MIN_REQUIRED_ACCOUNTS elements
+        let mut iter = accounts.into_iter();
 
         Ok(Self {
-            deployer: accounts.next().unwrap(),
-            l1_fee_vault_recipient: accounts.next().unwrap(),
-            sequencer_fee_vault_recipient: accounts.next().unwrap(),
-            l1_proxy_admin_owner: accounts.next().unwrap(),
-            l2_proxy_admin_owner: accounts.next().unwrap(),
-            system_config_owner: accounts.next().unwrap(),
-            unsafe_block_signer: accounts.next().unwrap(),
-            batcher: accounts.next().unwrap(),
-            proposer: accounts.next().unwrap(),
-            challenger: accounts.next().unwrap(),
-            extra_accounts: accounts.collect(),
+            deployer: iter.next().context("Missing deployer account")?,
+            l1_fee_vault_recipient: iter.next().context("Missing l1_fee_vault_recipient account")?,
+            sequencer_fee_vault_recipient: iter
+                .next()
+                .context("Missing sequencer_fee_vault_recipient account")?,
+            l1_proxy_admin_owner: iter.next().context("Missing l1_proxy_admin_owner account")?,
+            l2_proxy_admin_owner: iter.next().context("Missing l2_proxy_admin_owner account")?,
+            system_config_owner: iter.next().context("Missing system_config_owner account")?,
+            unsafe_block_signer: iter.next().context("Missing unsafe_block_signer account")?,
+            batcher: iter.next().context("Missing batcher account")?,
+            proposer: iter.next().context("Missing proposer account")?,
+            challenger: iter.next().context("Missing challenger account")?,
+            extra_accounts,
         })
     }
 
@@ -314,5 +320,22 @@ impl Default for AnvilConfig {
             fork_block_number: None,
             extra_args: Vec::new(),
         }
+    }
+}
+
+// KupcakeService trait implementation
+impl crate::traits::KupcakeService for AnvilConfig {
+    type Stage = crate::traits::L1Stage;
+    type Handler = AnvilHandler;
+    type Context<'a> = crate::traits::L1Context<'a>;
+
+    const SERVICE_NAME: &'static str = "anvil";
+
+    async fn deploy<'a>(self, ctx: Self::Context<'a>) -> anyhow::Result<Self::Handler>
+    where
+        Self: 'a,
+    {
+        let host_config_path = ctx.outdata.join("anvil");
+        self.start(ctx.docker, host_config_path, ctx.l1_chain_id).await
     }
 }

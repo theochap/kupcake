@@ -118,6 +118,95 @@ Services are organized as L2 node pairs (op-reth + kona-node):
 - **L2StackBuilder** - Collection of all L2 nodes plus op-batcher, op-proposer, op-challenger
 - **L2StackHandler** - Runtime handlers for all L2 stack components
 
+### Trait-Based Architecture
+
+Kupcake uses a trait-based architecture for flexible and type-safe service deployment:
+
+#### KupcakeService Trait
+
+All services implement the `KupcakeService` trait (`crates/deploy/src/traits/service.rs`):
+
+```rust
+pub trait KupcakeService: Clone + Serialize + DeserializeOwned + Send + Sync + 'static {
+    type Stage: DeploymentStage;        // Deployment stage (L1, Contracts, L2, Monitoring)
+    type Handler: Send + 'static;        // Runtime handler returned after deployment
+    type Context<'a>;                    // Stage-specific deployment context
+
+    const SERVICE_NAME: &'static str;    // Service identifier for logging
+
+    fn deploy<'a>(self, ctx: Self::Context<'a>) -> impl Future<Output = Result<Self::Handler>>;
+}
+```
+
+#### Deployment Stages
+
+Services must be deployed in a fixed order, enforced at compile-time via stage markers:
+
+1. **L1Stage** - Anvil (Ethereum L1 fork)
+2. **ContractsStage** - op-deployer (OP Stack contract deployment)
+3. **L2Stage** - L2StackBuilder (L2 nodes, batcher, proposer, challenger)
+4. **MonitoringStage** - MonitoringConfig (Prometheus + Grafana)
+
+The `NextStage` trait ensures only valid transitions are possible:
+- `L1Stage -> ContractsStage`
+- `ContractsStage -> L2Stage`
+- `L2Stage -> MonitoringStage`
+
+#### Deployment Contexts
+
+Each stage receives appropriate context with dependencies from previous stages:
+
+- **L1Context** - Docker client, output path, chain IDs
+- **ContractsContext** - Adds `AnvilHandler` (L1 RPC, accounts)
+- **L2Context** - Includes `AnvilHandler` for L2 node configuration
+- **MonitoringContext** - Adds `L2StackHandler` for metrics scraping
+
+#### Deployer Chain
+
+The `Deployer<S, Next>` type represents a recursive chain of services:
+
+```rust
+// Type-safe deployment pipeline
+type StandardDeployer = Deployer<
+    AnvilConfig,
+    Deployer<
+        OpDeployerConfig,
+        Deployer<
+            L2StackBuilder,
+            Deployer<MonitoringConfig, End>
+        >
+    >
+>;
+
+// Fluent API for building chains
+let deployer = Deployer::new(AnvilConfig::default())
+    .then(OpDeployerConfig::default())
+    .then(L2StackBuilder::default())
+    .then(MonitoringConfig::default());
+```
+
+The `then()` method enforces stage ordering at compile-time - invalid chains won't compile.
+
+#### Standard Deployers
+
+Pre-configured type aliases for common scenarios:
+
+- **StandardDeployer** - Full stack with monitoring (L1 + Contracts + L2 + Monitoring)
+- **NoMonitoringDeployer** - Without monitoring (L1 + Contracts + L2)
+
+```rust
+// Using the standard deployer
+let deployer = StandardDeployer::default_stack();
+let result = deployer.deploy_chain(&mut docker, outdata, l1_id, l2_id, dashboards).await?;
+
+// Access handlers with named fields
+println!("L1 RPC: {}", result.anvil.l1_rpc_url);
+println!("L2 nodes: {}", result.l2_stack.node_count());
+if let Some(mon) = result.monitoring {
+    println!("Grafana: {}", mon.grafana.host_url);
+}
+```
+
 ### Multi-Sequencer Support
 
 When `sequencer_count > 1`:
@@ -153,6 +242,9 @@ Deployer
 - **Config** types - Serializable configuration (used in Kupcake.toml)
 - **Handler** types - Runtime handles to running containers
 - **DockerImage** - Image name and tag tuple for each service
+- **Deployer<S, Next>** - Recursive chain type for type-safe service deployment
+- **Stage markers** (L1Stage, ContractsStage, L2Stage, MonitoringStage) - Zero-sized types enforcing deployment order
+- **Context types** (L1Context, ContractsContext, L2Context, MonitoringContext) - Stage-specific deployment dependencies
 
 ### Docker Networking
 
@@ -262,8 +354,30 @@ When adding new services:
 3. Define `{Service}Handler` (runtime handle)
 4. Create `cmd.rs` with container argument builder
 5. Add default image/tag constants
-6. Export types in `services/mod.rs`
-7. Integrate into `Deployer` or `L2StackBuilder`
+6. **Implement `KupcakeService` trait**:
+   ```rust
+   impl KupcakeService for YourServiceConfig {
+       type Stage = YourDeploymentStage;  // L1Stage, ContractsStage, L2Stage, or MonitoringStage
+       type Handler = YourServiceHandler;
+       type Context<'a> = YourContext<'a>;  // Stage-specific context type
+
+       const SERVICE_NAME: &'static str = "your-service";
+
+       async fn deploy<'a>(self, ctx: Self::Context<'a>) -> Result<Self::Handler> {
+           // Deploy your service using the context
+           let host_config_path = ctx.outdata.join("your-service");
+           self.start(ctx.docker, host_config_path, /* other args */).await
+       }
+   }
+   ```
+7. Export types in `services/mod.rs`
+8. Integrate into `Deployer` or `L2StackBuilder`
+
+**Important trait implementation notes:**
+- The `Stage` associated type determines where in the deployment pipeline your service runs
+- Use the appropriate `Context` type for your stage (L1Context, ContractsContext, L2Context, MonitoringContext)
+- The `deploy()` method should call your existing `start()` or similar method
+- `SERVICE_NAME` is used for logging and identification
 
 When modifying container configuration:
 - Container arguments are built in `cmd.rs` files using the builder pattern

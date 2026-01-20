@@ -47,6 +47,90 @@ impl L2StackHandler {
     pub fn all_nodes(&self) -> impl Iterator<Item = &L2NodeHandler> {
         self.sequencers.iter().chain(self.validators.iter())
     }
+
+    /// Build metrics targets for Prometheus scraping from L2 stack handlers.
+    pub fn metrics_targets(&self) -> Vec<MetricsTarget> {
+        use services::kona_node::DEFAULT_METRICS_PORT as KONA_METRICS_PORT;
+        use services::op_batcher::DEFAULT_METRICS_PORT as BATCHER_METRICS_PORT;
+        use services::op_challenger::DEFAULT_METRICS_PORT as CHALLENGER_METRICS_PORT;
+        use services::op_proposer::DEFAULT_METRICS_PORT as PROPOSER_METRICS_PORT;
+        use services::op_reth::DEFAULT_METRICS_PORT as RETH_METRICS_PORT;
+
+        let mut targets = Vec::new();
+
+        // Add metrics targets for sequencer nodes
+        for (i, node) in self.sequencers.iter().enumerate() {
+            let suffix = if i == 0 {
+                String::new()
+            } else {
+                format!("-sequencer-{}", i)
+            };
+
+            targets.push(MetricsTarget {
+                job_name: format!("op-reth{}", suffix),
+                container_name: node.op_reth.container_name.clone(),
+                port: RETH_METRICS_PORT,
+                service_label: "op-reth-sequencer".to_string(),
+                layer_label: "execution".to_string(),
+            });
+
+            targets.push(MetricsTarget {
+                job_name: format!("kona-node{}", suffix),
+                container_name: node.kona_node.container_name.clone(),
+                port: KONA_METRICS_PORT,
+                service_label: "kona-node-sequencer".to_string(),
+                layer_label: "consensus".to_string(),
+            });
+        }
+
+        // Add metrics targets for validator nodes
+        for (i, node) in self.validators.iter().enumerate() {
+            let suffix = format!("-validator-{}", i + 1);
+
+            targets.push(MetricsTarget {
+                job_name: format!("op-reth{}", suffix),
+                container_name: node.op_reth.container_name.clone(),
+                port: RETH_METRICS_PORT,
+                service_label: "op-reth-validator".to_string(),
+                layer_label: "execution".to_string(),
+            });
+
+            targets.push(MetricsTarget {
+                job_name: format!("kona-node{}", suffix),
+                container_name: node.kona_node.container_name.clone(),
+                port: KONA_METRICS_PORT,
+                service_label: "kona-node-validator".to_string(),
+                layer_label: "consensus".to_string(),
+            });
+        }
+
+        // Add metrics targets for batcher, proposer, and challenger
+        targets.push(MetricsTarget {
+            job_name: "op-batcher".to_string(),
+            container_name: self.op_batcher.container_name.clone(),
+            port: BATCHER_METRICS_PORT,
+            service_label: "op-batcher".to_string(),
+            layer_label: "batcher".to_string(),
+        });
+
+        targets.push(MetricsTarget {
+            job_name: "op-proposer".to_string(),
+            container_name: self.op_proposer.container_name.clone(),
+            port: PROPOSER_METRICS_PORT,
+            service_label: "op-proposer".to_string(),
+            layer_label: "proposer".to_string(),
+        });
+
+        targets.push(MetricsTarget {
+            job_name: "op-challenger".to_string(),
+            container_name: self.op_challenger.container_name.clone(),
+            port: CHALLENGER_METRICS_PORT,
+            service_label: "op-challenger".to_string(),
+            layer_label: "challenger".to_string(),
+        });
+
+        targets
+    }
 }
 
 /// Main deployer that orchestrates the entire OP Stack deployment.
@@ -126,89 +210,6 @@ impl Deployer {
 }
 
 impl Deployer {
-    /// Build metrics targets for Prometheus scraping from L2 stack handlers.
-    fn build_metrics_targets(l2_stack: &L2StackHandler) -> Vec<MetricsTarget> {
-        use services::kona_node::DEFAULT_METRICS_PORT as KONA_METRICS_PORT;
-        use services::op_batcher::DEFAULT_METRICS_PORT as BATCHER_METRICS_PORT;
-        use services::op_challenger::DEFAULT_METRICS_PORT as CHALLENGER_METRICS_PORT;
-        use services::op_proposer::DEFAULT_METRICS_PORT as PROPOSER_METRICS_PORT;
-        use services::op_reth::DEFAULT_METRICS_PORT as RETH_METRICS_PORT;
-
-        let mut targets = Vec::new();
-
-        // Add metrics targets for sequencer nodes
-        for (i, node) in l2_stack.sequencers.iter().enumerate() {
-            let suffix = if i == 0 {
-                String::new()
-            } else {
-                format!("-sequencer-{}", i)
-            };
-
-            targets.push(MetricsTarget {
-                job_name: format!("op-reth{}", suffix),
-                container_name: node.op_reth.container_name.clone(),
-                port: RETH_METRICS_PORT,
-                service_label: "op-reth-sequencer".to_string(),
-                layer_label: "execution".to_string(),
-            });
-
-            targets.push(MetricsTarget {
-                job_name: format!("kona-node{}", suffix),
-                container_name: node.kona_node.container_name.clone(),
-                port: KONA_METRICS_PORT,
-                service_label: "kona-node-sequencer".to_string(),
-                layer_label: "consensus".to_string(),
-            });
-        }
-
-        // Add metrics targets for validator nodes
-        for (i, node) in l2_stack.validators.iter().enumerate() {
-            let suffix = format!("-validator-{}", i + 1);
-
-            targets.push(MetricsTarget {
-                job_name: format!("op-reth{}", suffix),
-                container_name: node.op_reth.container_name.clone(),
-                port: RETH_METRICS_PORT,
-                service_label: "op-reth-validator".to_string(),
-                layer_label: "execution".to_string(),
-            });
-
-            targets.push(MetricsTarget {
-                job_name: format!("kona-node{}", suffix),
-                container_name: node.kona_node.container_name.clone(),
-                port: KONA_METRICS_PORT,
-                service_label: "kona-node-validator".to_string(),
-                layer_label: "consensus".to_string(),
-            });
-        }
-
-        // Add metrics targets for batcher, proposer, and challenger
-        targets.push(MetricsTarget {
-            job_name: "op-batcher".to_string(),
-            container_name: l2_stack.op_batcher.container_name.clone(),
-            port: BATCHER_METRICS_PORT,
-            service_label: "op-batcher".to_string(),
-            layer_label: "batcher".to_string(),
-        });
-
-        targets.push(MetricsTarget {
-            job_name: "op-proposer".to_string(),
-            container_name: l2_stack.op_proposer.container_name.clone(),
-            port: PROPOSER_METRICS_PORT,
-            service_label: "op-proposer".to_string(),
-            layer_label: "proposer".to_string(),
-        });
-
-        targets.push(MetricsTarget {
-            job_name: "op-challenger".to_string(),
-            container_name: l2_stack.op_challenger.container_name.clone(),
-            port: CHALLENGER_METRICS_PORT,
-            service_label: "op-challenger".to_string(),
-            layer_label: "challenger".to_string(),
-        });
-
-        targets
-    }
 
     /// Print detached mode information including container names and stop command.
     fn print_detached_info(
@@ -339,7 +340,7 @@ impl Deployer {
             tracing::info!("Starting monitoring stack (Prometheus + Grafana)...");
 
             let monitoring_data_path = self.outdata.join("monitoring");
-            let metrics_targets = Self::build_metrics_targets(&l2_stack);
+            let metrics_targets = l2_stack.metrics_targets();
 
             Some(
                 self.monitoring

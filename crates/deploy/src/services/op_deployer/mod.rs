@@ -451,3 +451,27 @@ impl OpDeployerConfig {
         Ok(())
     }
 }
+
+// KupcakeService trait implementation
+impl crate::traits::KupcakeService for OpDeployerConfig {
+    type Stage = crate::traits::ContractsStage;
+    type Handler = ();
+    type Context<'a> = crate::traits::ContractsContext<'a>;
+
+    const SERVICE_NAME: &'static str = "op-deployer";
+
+    async fn deploy<'a>(self, ctx: Self::Context<'a>) -> anyhow::Result<Self::Handler>
+    where
+        Self: 'a,
+    {
+        let host_config_path = ctx.outdata.join("l2-stack");
+        self.deploy_contracts(
+            ctx.docker,
+            host_config_path,
+            ctx.anvil,
+            ctx.l1_chain_id,
+            ctx.l2_chain_id,
+        )
+        .await
+    }
+}

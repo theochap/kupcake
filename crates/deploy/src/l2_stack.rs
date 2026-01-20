@@ -414,6 +414,24 @@ impl L2StackBuilder {
     }
 }
 
+// KupcakeService trait implementation
+impl crate::traits::KupcakeService for L2StackBuilder {
+    type Stage = crate::traits::L2Stage;
+    type Handler = L2StackHandler;
+    type Context<'a> = crate::traits::L2Context<'a>;
+
+    const SERVICE_NAME: &'static str = "l2-stack";
+
+    async fn deploy<'a>(self, ctx: Self::Context<'a>) -> anyhow::Result<Self::Handler>
+    where
+        Self: 'a,
+    {
+        let host_config_path = ctx.outdata.join("l2-stack");
+        self.start(ctx.docker, host_config_path, ctx.anvil, ctx.l1_chain_id)
+            .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

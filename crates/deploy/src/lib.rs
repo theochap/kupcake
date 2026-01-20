@@ -11,6 +11,8 @@ pub use builder::{DeployerBuilder, OutDataPath};
 mod deployer;
 pub use deployer::Deployer;
 
+pub mod traits;
+
 mod docker;
 mod fs;
 pub mod services;

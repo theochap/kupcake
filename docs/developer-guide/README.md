@@ -95,9 +95,39 @@ kupcake/
 
 ## Key Concepts
 
+### Trait-Based Service Architecture
+
+All services implement the `KupcakeService` trait for type-safe, composable deployment:
+
+```rust
+pub trait KupcakeService: Clone + Serialize + DeserializeOwned + Send + Sync + 'static {
+    type Stage: DeploymentStage;        // Deployment stage (L1, Contracts, L2, Monitoring)
+    type Handler: Send + 'static;        // Runtime handler returned after deployment
+    type Context<'a>;                    // Stage-specific deployment context
+
+    const SERVICE_NAME: &'static str;    // Service identifier for logging
+
+    fn deploy<'a>(self, ctx: Self::Context<'a>) -> impl Future<Output = Result<Self::Handler>>;
+}
+```
+
+**Key benefits**:
+- **Type safety**: Invalid deployment chains won't compile
+- **Stage ordering**: Services must be deployed in correct sequence
+- **Context injection**: Dependencies passed automatically based on stage
+- **Serialization**: All configs can be saved to Kupcake.toml
+
+**Deployment stages** (enforced at compile-time):
+1. **L1Stage** - Anvil (Ethereum L1 fork)
+2. **ContractsStage** - op-deployer (contract deployment)
+3. **L2Stage** - L2 nodes, batcher, proposer, challenger
+4. **MonitoringStage** - Prometheus, Grafana
+
+See [Architecture Overview](../architecture/overview.md#trait-based-service-architecture) for details.
+
 ### Builder Pattern
 
-All services follow the Builder pattern:
+Services follow the Builder pattern in conjunction with the trait:
 
 ```rust
 pub struct OpRethBuilder {
@@ -125,6 +155,19 @@ impl OpRethBuilder {
             container_name: self.container_name(),
             // ...
         })
+    }
+}
+
+// Implement KupcakeService trait
+impl crate::traits::KupcakeService for OpRethBuilder {
+    type Stage = crate::traits::L2Stage;
+    type Handler = OpRethHandler;
+    type Context<'a> = crate::traits::L2Context<'a>;
+
+    const SERVICE_NAME: &'static str = "op-reth";
+
+    async fn deploy<'a>(self, ctx: Self::Context<'a>) -> Result<Self::Handler> {
+        self.build(ctx.docker).await
     }
 }
 ```
@@ -227,17 +270,24 @@ See [Code Style Guide](code-style.md) for complete guidelines.
 
 ## Adding a New Service
 
-See [Adding Services Guide](adding-services.md) for step-by-step instructions.
+See [Adding Services Guide](adding-services.md) for comprehensive step-by-step instructions.
 
 Basic steps:
 
 1. Create `crates/deploy/src/services/<service>/mod.rs`
-2. Define `<Service>Config` or `<Service>Builder`
-3. Define `<Service>Handler`
+2. Define `<Service>Config` or `<Service>Builder` (must be serializable)
+3. Define `<Service>Handler` for runtime
 4. Create `cmd.rs` with container command builder
 5. Add default image/tag constants
-6. Export types in `services/mod.rs`
-7. Integrate into `Deployer` or `L2StackBuilder`
+6. **Implement `KupcakeService` trait** with appropriate Stage, Handler, and Context types
+7. Export types in `services/mod.rs`
+8. Integrate into `Deployer` chain or `L2StackBuilder`
+
+**Critical**: The `KupcakeService` trait implementation determines when and how your service is deployed. Choose the correct stage:
+- **L1Stage** - For L1 infrastructure (like Anvil)
+- **ContractsStage** - For contract deployment
+- **L2Stage** - For L2 nodes and services
+- **MonitoringStage** - For monitoring infrastructure
 
 ## Testing
 

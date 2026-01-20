@@ -69,22 +69,32 @@ Kupcake is a Rust CLI tool that orchestrates Docker containers to deploy a compl
 
 **Key Types**:
 - **DeployerBuilder** - Constructs deployment configuration
-- **Deployer** - Executes deployment steps
+- **Deployer<S, Next>** - Recursive chain of services with type-safe stage ordering
 - **KupDocker** - Docker API wrapper (bollard)
+- **KupcakeService** trait - Unified service interface all services implement
+- **Stage markers** - L1Stage, ContractsStage, L2Stage, MonitoringStage (zero-sized types)
+- **Context types** - L1Context, ContractsContext, L2Context, MonitoringContext
 
 **Files**:
 - `crates/deploy/src/builder.rs` - DeployerBuilder
-- `crates/deploy/src/deployer.rs` - Deployer
+- `crates/deploy/src/deployer.rs` - Deployer execution logic
 - `crates/deploy/src/docker.rs` - KupDocker
+- `crates/deploy/src/traits/service.rs` - KupcakeService trait
+- `crates/deploy/src/traits/deployer.rs` - Deployer<S, Next> chain type
+- `crates/deploy/src/traits/stages.rs` - Stage markers and transitions
+- `crates/deploy/src/traits/context.rs` - Deployment contexts
+- `crates/deploy/src/traits/runner.rs` - DeployChain execution trait
+- `crates/deploy/src/traits/standard.rs` - StandardDeployer and NoMonitoringDeployer
 
 ### 3. Service Layer (`crates/deploy/src/services`)
 
 **Purpose**: Define and manage individual services.
 
 **Pattern**: Each service has:
-- **Config/Builder** - Configuration before deployment
+- **Config/Builder** - Configuration before deployment (implements `KupcakeService` trait)
 - **Handler** - Runtime handle to running container(s)
 - **cmd.rs** - Command builder for container arguments
+- **Trait implementation** - Must implement `KupcakeService` with appropriate Stage, Handler, and Context types
 
 **Services**:
 - `anvil/` - L1 fork
@@ -101,9 +111,139 @@ Kupcake is a Rust CLI tool that orchestrates Docker containers to deploy a compl
 
 ## Design Patterns
 
+### Trait-Based Service Architecture
+
+Kupcake uses a trait-based architecture for flexible and type-safe service deployment. All services implement the `KupcakeService` trait, which provides a unified interface for deployment operations.
+
+**Core Trait** (`crates/deploy/src/traits/service.rs`):
+
+```rust
+pub trait KupcakeService: Clone + Serialize + DeserializeOwned + Send + Sync + 'static {
+    type Stage: DeploymentStage;        // Deployment stage (L1, Contracts, L2, Monitoring)
+    type Handler: Send + 'static;        // Runtime handler returned after deployment
+    type Context<'a>;                    // Stage-specific deployment context
+
+    const SERVICE_NAME: &'static str;    // Service identifier for logging
+
+    fn deploy<'a>(self, ctx: Self::Context<'a>) -> impl Future<Output = Result<Self::Handler>>;
+}
+```
+
+**Benefits**:
+- **Type safety** - Invalid deployment chains won't compile
+- **Compile-time ordering** - Stages must be deployed in correct sequence
+- **Flexible composition** - Services can be chained using `.then()` API
+- **Serialization** - All configs can be saved to Kupcake.toml
+
+#### Deployment Stages
+
+Services must be deployed in a fixed order, enforced at compile-time via stage markers:
+
+1. **L1Stage** - Anvil (Ethereum L1 fork)
+2. **ContractsStage** - op-deployer (OP Stack contract deployment)
+3. **L2Stage** - L2StackBuilder (L2 nodes, batcher, proposer, challenger)
+4. **MonitoringStage** - Prometheus + Grafana (optional)
+
+The `NextStage` trait ensures only valid transitions are possible:
+
+```rust
+pub trait NextStage: DeploymentStage {
+    type Next: DeploymentStage;
+}
+
+impl NextStage for L1Stage {
+    type Next = ContractsStage;  // L1 → Contracts
+}
+
+impl NextStage for ContractsStage {
+    type Next = L2Stage;  // Contracts → L2
+}
+
+impl NextStage for L2Stage {
+    type Next = MonitoringStage;  // L2 → Monitoring
+}
+// MonitoringStage has no NextStage - it's terminal
+```
+
+Invalid transitions (e.g., L1Stage → L2Stage) will not compile.
+
+#### Deployment Contexts
+
+Each stage receives appropriate context with dependencies from previous stages:
+
+- **L1Context** - Docker client, output path, chain IDs
+- **ContractsContext** - Adds `AnvilHandler` (L1 RPC, accounts)
+- **L2Context** - Includes `AnvilHandler` for L2 node configuration
+- **MonitoringContext** - Adds `L2StackHandler` for metrics scraping
+
+Example:
+
+```rust
+pub struct L1Context<'a> {
+    pub docker: &'a mut KupDocker,
+    pub outdata: PathBuf,
+    pub l1_chain_id: u64,
+    pub l2_chain_id: u64,
+}
+
+pub struct ContractsContext<'a> {
+    pub docker: &'a mut KupDocker,
+    pub outdata: PathBuf,
+    pub l1_chain_id: u64,
+    pub l2_chain_id: u64,
+    pub anvil: &'a AnvilHandler,  // Added from L1 stage
+}
+```
+
+#### Deployer Chain
+
+The `Deployer<S, Next>` type represents a recursive chain of services:
+
+```rust
+// Type-safe deployment pipeline
+type StandardDeployer = Deployer<
+    AnvilConfig,
+    Deployer<
+        OpDeployerConfig,
+        Deployer<
+            L2StackBuilder,
+            Deployer<MonitoringConfig, End>
+        >
+    >
+>;
+
+// Fluent API for building chains
+let deployer = Deployer::new(AnvilConfig::default())
+    .then(OpDeployerConfig::default())
+    .then(L2StackBuilder::default())
+    .then(MonitoringConfig::default());
+```
+
+The `then()` method enforces stage ordering at compile-time - invalid chains won't compile.
+
+#### Standard Deployers
+
+Pre-configured type aliases for common scenarios:
+
+- **StandardDeployer** - Full stack with monitoring (L1 + Contracts + L2 + Monitoring)
+- **NoMonitoringDeployer** - Without monitoring (L1 + Contracts + L2)
+
+```rust
+// Using the standard deployer
+let deployer = StandardDeployer::default_stack();
+let result = deployer.deploy_chain(&mut docker, outdata, l1_id, l2_id, dashboards).await?;
+
+// Access handlers with named fields
+println!("L1 RPC: {}", result.anvil.l1_rpc_url);
+println!("L2 nodes: {}", result.l2_stack.node_count());
+if let Some(mon) = result.monitoring {
+    println!("Grafana: {}", mon.grafana.host_url);
+}
+```
+
 ### Builder Pattern
 
-All services follow the Builder pattern:
+All services follow the Builder pattern in conjunction with the trait:
 
 ```rust
 pub struct OpRethBuilder {
@@ -119,12 +259,26 @@ impl OpRethBuilder {
         // Return runtime handler
     }
 }
+
+// Implement KupcakeService trait
+impl crate::traits::KupcakeService for OpRethBuilder {
+    type Stage = crate::traits::L2Stage;
+    type Handler = OpRethHandler;
+    type Context<'a> = crate::traits::L2Context<'a>;
+
+    const SERVICE_NAME: &'static str = "op-reth";
+
+    async fn deploy<'a>(self, ctx: Self::Context<'a>) -> Result<Self::Handler> {
+        self.build(ctx.docker).await
+    }
+}
 ```
 
 **Benefits**:
 - Immutable configuration before deployment
 - Validation at build time
 - Clear separation of config and runtime
+- Unified trait interface for all services
 
 ### Handler Pattern
 
