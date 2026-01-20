@@ -169,15 +169,20 @@ pub struct L2StackBuilder {
 
 Kupcake deploys services in this order (see [Deployment Flow](deployment-flow.md)):
 
-1. **Create Docker network**
-2. **Start Anvil** (L1 fork)
-3. **Deploy contracts** (op-deployer init + apply)
-4. **Generate genesis/rollup configs**
-5. **Start all op-reth instances** (execution layer)
-6. **Start all kona-node instances** (consensus layer)
-7. **Start op-batcher, op-proposer, op-challenger**
-8. **Start op-conductor** (if multi-sequencer)
-9. **Start Prometheus and Grafana**
+1. **Compute deployment configuration hash** (SHA-256 of deployment-relevant parameters)
+2. **Create Docker network**
+3. **Start Anvil** (L1 fork)
+4. **Check deployment version** - Compare current hash with saved hash
+   - If unchanged, skip contract deployment (saves 30-60s)
+   - If changed, missing, or corrupted, redeploy contracts
+5. **Deploy contracts** (op-deployer init + apply) - Only if needed
+6. **Save deployment version** - Store hash, timestamp, and Kupcake version
+7. **Generate genesis/rollup configs**
+8. **Start all op-reth instances** (execution layer)
+9. **Start all kona-node instances** (consensus layer)
+10. **Start op-batcher, op-proposer, op-challenger**
+11. **Start op-conductor** (if multi-sequencer)
+12. **Start Prometheus and Grafana**
 
 Each step waits for the previous step to complete.
 
@@ -330,6 +335,59 @@ let toml = toml::to_string_pretty(&config)?;
 fs::write("./data/Kupcake.toml", toml)?;
 ```
 
+### Deployment Versioning
+
+Kupcake implements a hash-based versioning system to skip unnecessary contract redeployments (`crates/deploy/src/deployment_hash.rs`):
+
+**Implementation**:
+
+```rust
+// 1. Compute hash of deployment-relevant parameters
+let config = DeploymentConfigHash::from_deployer(&deployer);
+let hash = config.compute_hash(); // SHA-256 hash
+
+// 2. Check if deployment is needed
+let version_file = Path::new(".deployment-version.json");
+if let Ok(prev_version) = DeploymentVersion::load_from_file(version_file) {
+    if prev_version.config_hash == hash {
+        // Skip deployment - configuration unchanged
+        return Ok(());
+    }
+}
+
+// 3. Deploy contracts...
+
+// 4. Save version metadata
+let version = DeploymentVersion {
+    config_hash: hash,
+    deployed_at: current_timestamp(),
+    kupcake_version: env!("CARGO_PKG_VERSION"),
+};
+version.save_to_file(version_file)?;
+```
+
+**Hash Scope**:
+
+Included in hash (affects contract deployment):
+- `l1_chain_id` - Determines OPCM contracts
+- `l2_chain_id` - Embedded in contracts
+- `fork_url` - L1 state source
+- `fork_block_number` - Fork point
+- `timestamp` - Genesis alignment
+- EIP-1559 parameters
+
+Excluded from hash (runtime-only):
+- `block_time` - Anvil mining rate
+- Docker images/tags
+- Port mappings
+- Container names
+- Sequencer/validator counts
+
+**Behavior**:
+- `--redeploy` flag bypasses all checks
+- Missing/corrupted version file triggers redeployment
+- Logs both hashes when configuration changes
+
 ### File System Structure
 
 ```
@@ -339,6 +397,7 @@ fs::write("./data/Kupcake.toml", toml)?;
 │   ├── anvil.json            # Account information
 │   └── state.json            # State snapshots
 ├── l2-stack/
+│   ├── .deployment-version.json  # Deployment version metadata
 │   ├── genesis.json          # L2 genesis config
 │   ├── rollup.json           # Rollup config
 │   ├── state.json            # Contract addresses

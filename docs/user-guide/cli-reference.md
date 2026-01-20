@@ -140,19 +140,45 @@ kupcake  # Random chain ID
 
 #### `--redeploy`
 
-Force redeployment of all contracts, even if they already exist.
+Force redeployment of all contracts, bypassing configuration hash checks.
 
-**Default**: `false` (reuse existing contracts if data directory exists)
+**Default**: `false` (skip redeployment if configuration unchanged)
 **Environment Variable**: `KUP_REDEPLOY`
+
+**Behavior**:
+
+By default, Kupcake computes a hash of deployment-relevant parameters (L1/L2 chain IDs, fork URL, etc.) and skips contract deployment if the configuration hasn't changed. This saves 30-60 seconds on subsequent runs.
+
+The `--redeploy` flag bypasses this optimization and always redeploys contracts, even if the configuration is identical.
+
+**When deployment is automatically skipped**:
+- Configuration hash matches saved hash
+- All deployment files exist (genesis.json, rollup.json, state.json)
+
+**When deployment is automatically triggered**:
+- Configuration hash changed (e.g., different L2 chain ID)
+- Deployment version file missing or corrupted
+- Data directory doesn't exist
 
 **Use Cases**:
 - Reset contract state
 - Deploy with updated contract code
 - Fix broken deployment
+- Override automatic hash checking
 
 **Example**:
 ```bash
+# Redeploy even if configuration unchanged
 kupcake --redeploy --config ./data-my-network/Kupcake.toml
+
+# First run creates deployment version
+kupcake --l2-chain 42069
+
+# Second run skips deployment (config unchanged)
+kupcake --l2-chain 42069
+
+# Change triggers redeployment
+kupcake --l2-chain 12345
 ```
 
 #### `--outdata <PATH>`

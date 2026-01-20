@@ -47,10 +47,20 @@ The op-deployer runs in two phases:
 - And many more...
 
 **Data Location**: `./data-<network-name>/l2-stack/`
+- `.deployment-version.json` - Deployment version metadata (hash, timestamp, version)
 - `intent.toml` - Deployment intent configuration
 - `state.json` - Deployed contract addresses
 - `genesis.json` - L2 genesis state
 - `rollup.json` - Rollup configuration for consensus clients
+
+**Deployment Optimization**:
+
+Kupcake uses configuration hashing to avoid unnecessary contract redeployments. The `.deployment-version.json` file stores:
+- SHA-256 hash of deployment-relevant parameters (L1/L2 chain IDs, fork URL, etc.)
+- Timestamp of deployment
+- Kupcake version used
+
+On subsequent runs, if the configuration hash matches, contract deployment is skipped (saves 30-60 seconds). Use `--redeploy` to force redeployment.
 
 ### L2 Execution Layer (op-reth)
 
@@ -187,6 +197,7 @@ After deployment, your data directory looks like this:
 │   └── state.json                        # L1 state snapshots
 │
 ├── l2-stack/                             # L2 and contract deployment data
+│   ├── .deployment-version.json          # Deployment version metadata
 │   ├── genesis.json                      # L2 genesis configuration
 │   ├── rollup.json                       # Rollup config (used by kona-node)
 │   ├── intent.toml                       # op-deployer deployment intent

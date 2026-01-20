@@ -167,6 +167,35 @@ Deployment configuration is saved to `{outdata}/Kupcake.toml` and can be reloade
 - Modifying and redeploying
 - Sharing configurations
 
+### Deployment Versioning
+
+Kupcake implements a configuration hash-based versioning system to avoid unnecessary contract redeployments (`crates/deploy/src/deployment_hash.rs`):
+
+**How it works:**
+1. Before deploying contracts, compute a SHA-256 hash of deployment-relevant parameters
+2. Save hash to `{outdata}/l2-stack/.deployment-version.json` after successful deployment
+3. On subsequent runs, compare current config hash with saved hash
+4. Skip contract deployment if hashes match (saves 30-60s)
+
+**Parameters included in hash (affect contract deployment):**
+- `l1_chain_id` - Determines which OPCM contracts are used
+- `l2_chain_id` - Embedded in deployed contracts and genesis
+- `fork_url` - Changes which L1 state is forked
+- `fork_block_number` - Changes L1 fork point
+- `timestamp` - Affects genesis timestamp alignment
+- EIP-1559 parameters (denominator, elasticity)
+
+**Parameters excluded from hash (runtime-only):**
+- `block_time` - Only affects Anvil mining rate
+- Docker images/tags, port mappings, container names
+- Sequencer/validator counts
+- Monitoring settings
+
+**Behavior:**
+- `--redeploy` flag bypasses all hash checks and always redeploys
+- Missing or corrupted version file triggers redeployment (safe fallback)
+- Configuration changes log both previous and current hashes
+
 ### File System Structure
 
 ```
@@ -176,6 +205,7 @@ Deployment configuration is saved to `{outdata}/Kupcake.toml` and can be reloade
 │   ├── anvil.json            # Anvil account information
 │   └── state.json            # Anvil state snapshots
 ├── l2-stack/
+│   ├── .deployment-version.json  # Deployment version metadata (hash, timestamp, version)
 │   ├── genesis.json          # L2 genesis config
 │   ├── rollup.json           # Rollup config for consensus
 │   ├── intent.toml           # op-deployer intent file

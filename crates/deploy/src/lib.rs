@@ -11,6 +11,9 @@ pub use builder::{DeployerBuilder, OutDataPath};
 mod deployer;
 pub use deployer::Deployer;
 
+mod deployment_hash;
+pub use deployment_hash::{DeploymentConfigHash, DeploymentVersion};
+
 mod docker;
 mod fs;
 pub mod services;

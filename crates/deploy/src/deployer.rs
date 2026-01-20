@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::{
-    AnvilConfig, AnvilHandler, KupDocker, KupDockerConfig, L2StackBuilder, MetricsTarget,
-    MonitoringConfig, OpBatcherHandler, OpChallengerHandler, OpDeployerConfig, OpProposerHandler,
-    services, services::l2_node::L2NodeHandler, services::MonitoringHandler,
+    AnvilConfig, AnvilHandler, DeploymentConfigHash, DeploymentVersion, KupDocker, KupDockerConfig,
+    L2StackBuilder, MetricsTarget, MonitoringConfig, OpBatcherHandler, OpChallengerHandler,
+    OpDeployerConfig, OpProposerHandler, services, services::l2_node::L2NodeHandler,
+    services::MonitoringHandler,
 };
 
 /// The default name for the kupcake configuration file.
@@ -122,6 +123,63 @@ impl Deployer {
         let config_path = self.outdata.join(KUPCONF_FILENAME);
         self.save_to_file(&config_path)?;
         Ok(config_path)
+    }
+
+    /// Determine if contract deployment is needed based on configuration hash.
+    ///
+    /// Returns `true` if contracts should be deployed, `false` if they can be skipped.
+    ///
+    /// Deployment is needed if:
+    /// - `force_deploy` flag is set
+    /// - L2 stack directory doesn't exist
+    /// - Deployment version file is missing or corrupted
+    /// - Configuration hash has changed
+    fn needs_contract_deployment(
+        force_deploy: bool,
+        l2_nodes_data_path: &PathBuf,
+        version_file_path: &PathBuf,
+        current_hash: &str,
+    ) -> bool {
+        if force_deploy {
+            tracing::info!("Force deploy flag set, redeploying contracts");
+            return true;
+        }
+
+        if !l2_nodes_data_path.exists() {
+            tracing::info!("L2 stack directory does not exist, deploying contracts");
+            return true;
+        }
+
+        if !version_file_path.exists() {
+            tracing::warn!("Deployment version file missing, assuming stale deployment");
+            return true;
+        }
+
+        match DeploymentVersion::load_from_file(version_file_path) {
+            Ok(prev_version) => {
+                if prev_version.config_hash == current_hash {
+                    tracing::info!(
+                        config_hash = %current_hash,
+                        "Deployment configuration unchanged, skipping contract deployment"
+                    );
+                    false
+                } else {
+                    tracing::info!(
+                        previous_hash = %prev_version.config_hash,
+                        current_hash = %current_hash,
+                        "Deployment configuration changed, redeploying contracts"
+                    );
+                    true
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to load deployment version file, redeploying contracts"
+                );
+                true
+            }
+        }
     }
 }
 
@@ -274,6 +332,10 @@ impl Deployer {
     pub async fn deploy(self, force_deploy: bool) -> Result<DeploymentResult> {
         tracing::info!("Starting deployment process...");
 
+        // Compute hash of current deployment configuration before any moves occur
+        let current_config = DeploymentConfigHash::from_deployer(&self);
+        let current_hash = current_config.compute_hash();
+
         // Save values we'll need after self is consumed
         let detach = self.detach;
         let outdata = self.outdata.clone();
@@ -296,9 +358,17 @@ impl Deployer {
         // Deploy L1 contracts - the deployer output goes to the same directory
         // that will be used for L2 nodes config (genesis.json, rollup.json)
         let l2_nodes_data_path = self.outdata.join("l2-stack");
+        let version_file_path = l2_nodes_data_path.join(".deployment-version.json");
 
-        // Deploy L1 contracts if force_deploy is true or if the deployer output directory does not exist yet.
-        if force_deploy || !l2_nodes_data_path.exists() {
+        // Determine if we need to deploy contracts
+        let needs_deployment = Self::needs_contract_deployment(
+            force_deploy,
+            &l2_nodes_data_path,
+            &version_file_path,
+            &current_hash,
+        );
+
+        if needs_deployment {
             tracing::info!("Deploying L1 contracts...");
 
             self.op_deployer
@@ -310,8 +380,17 @@ impl Deployer {
                     self.l2_chain_id,
                 )
                 .await?;
-        } else {
-            tracing::info!("L1 contracts already deployed, skipping deployment");
+
+            // Save version file after successful deployment
+            let version = DeploymentVersion::new(current_hash.clone());
+            version
+                .save_to_file(&version_file_path)
+                .context("Failed to save deployment version")?;
+
+            tracing::info!(
+                config_hash = %current_hash,
+                "Deployment version saved"
+            );
         }
 
         let node_count = self.l2_stack.node_count();
