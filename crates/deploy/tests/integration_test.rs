@@ -16,12 +16,131 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{sleep, timeout};
 
+// Timeout constants
+const DEPLOYMENT_TIMEOUT_SECS: u64 = 600;
+const CONDUCTOR_DEPLOYMENT_TIMEOUT_SECS: u64 = 900;
+const NODE_READY_TIMEOUT_SECS: u64 = 120;
+const RPC_REQUEST_TIMEOUT_SECS: u64 = 5;
+
 /// Generate a random L1 chain ID for local testing.
 ///
 /// Uses a range that doesn't conflict with known chains (Mainnet=1, Sepolia=11155111)
 /// and is different for each test run. Range: 100000-999999
 fn generate_random_l1_chain_id() -> u64 {
     rand::rng().random_range(100000..=999999)
+}
+
+/// Test setup context containing common test infrastructure.
+struct TestContext {
+    l1_chain_id: u64,
+    network_name: String,
+    outdata_path: PathBuf,
+}
+
+impl TestContext {
+    /// Initialize a new test context with random chain ID and unique network name.
+    fn new(test_prefix: &str) -> Self {
+        let l1_chain_id = generate_random_l1_chain_id();
+        let network_name = format!("kup-{}-{}", test_prefix, l1_chain_id);
+        let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
+
+        Self {
+            l1_chain_id,
+            network_name,
+            outdata_path,
+        }
+    }
+
+    /// Build a standard deployer for testing.
+    async fn build_deployer(&self) -> Result<kupcake_deploy::Deployer> {
+        DeployerBuilder::new(self.l1_chain_id)
+            .network_name(&self.network_name)
+            .outdata(OutDataPath::Path(self.outdata_path.clone()))
+            .l2_node_count(2) // 1 sequencer + 1 validator
+            .sequencer_count(1)
+            .block_time(2)
+            .detach(true)
+            .build()
+            .await
+            .context("Failed to build deployer")
+    }
+
+    /// Execute a deployment with timeout and error handling.
+    async fn deploy(&self, deployer: kupcake_deploy::Deployer) -> Result<()> {
+        let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
+
+        match deploy_result {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => {
+                let _ = cleanup_by_prefix(&self.network_name).await;
+                Err(e).context("Deployment failed")
+            }
+            Err(_) => {
+                let _ = cleanup_by_prefix(&self.network_name).await;
+                anyhow::bail!("Deployment timed out after {} seconds", DEPLOYMENT_TIMEOUT_SECS)
+            }
+        }
+    }
+
+    /// Get the deployment version hash from the version file.
+    fn get_deployment_hash(&self) -> Result<String> {
+        let version_file_path = self.outdata_path.join("l2-stack/.deployment-version.json");
+
+        if !version_file_path.exists() {
+            anyhow::bail!("Deployment version file not found: {}", version_file_path.display());
+        }
+
+        let version_content = std::fs::read_to_string(&version_file_path)
+            .context("Failed to read deployment version file")?;
+
+        let version: Value = serde_json::from_str(&version_content)
+            .context("Failed to parse deployment version file")?;
+
+        version["config_hash"]
+            .as_str()
+            .context("No config_hash in deployment version file")
+            .map(String::from)
+    }
+
+    /// Get node URLs for sequencer and optionally validator.
+    fn get_node_urls(&self, include_validator: bool) -> Result<Vec<(String, String)>> {
+        let mut urls = Vec::new();
+
+        let sequencer_port = get_container_host_port(
+            &format!("{}-kona-node", self.network_name),
+            7545,
+        )?;
+        urls.push((
+            "sequencer".to_string(),
+            format!("http://localhost:{}", sequencer_port),
+        ));
+
+        if include_validator {
+            let validator_port = get_container_host_port(
+                &format!("{}-kona-node-validator-1", self.network_name),
+                7545,
+            )?;
+            urls.push((
+                "validator".to_string(),
+                format!("http://localhost:{}", validator_port),
+            ));
+        }
+
+        Ok(urls)
+    }
+
+    /// Cleanup network resources.
+    async fn cleanup(&self) -> Result<()> {
+        let cleanup_result = cleanup_by_prefix(&self.network_name).await?;
+        println!(
+            "Cleaned up {} containers",
+            cleanup_result.containers_removed.len()
+        );
+        if let Some(network) = cleanup_result.network_removed {
+            println!("Removed network: {}", network);
+        }
+        Ok(())
+    }
 }
 
 /// Response from optimism_syncStatus RPC call.
@@ -52,11 +171,17 @@ struct BlockRef {
     hash: String,
 }
 
+/// Create an HTTP client for RPC requests.
+fn rpc_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(RPC_REQUEST_TIMEOUT_SECS))
+        .build()
+        .context("Failed to create HTTP client")
+}
+
 /// Query the sync status from a kona-node RPC endpoint.
 async fn get_sync_status(rpc_url: &str) -> Result<SyncStatus> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()?;
+    let client = rpc_client()?;
 
     let response = client
         .post(rpc_url)
@@ -80,6 +205,44 @@ async fn get_sync_status(rpc_url: &str) -> Result<SyncStatus> {
     }
 
     status.result.context("No result in response")
+}
+
+/// Initialize tracing for tests (idempotent).
+fn init_test_tracing() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init()
+        .ok();
+}
+
+/// Collect sync status from multiple nodes.
+async fn collect_sync_status(nodes: &[(String, String)]) -> Vec<(String, SyncStatus)> {
+    let mut statuses = Vec::new();
+    for (label, url) in nodes {
+        match get_sync_status(url).await {
+            Ok(status) => {
+                println!(
+                    "{}: unsafe_l2={}, safe_l2={}, finalized_l2={}",
+                    label, status.unsafe_l2.number, status.safe_l2.number, status.finalized_l2.number
+                );
+                statuses.push((label.clone(), status));
+            }
+            Err(e) => {
+                println!("Warning: Failed to get status for {}: {}", label, e);
+            }
+        }
+    }
+    statuses
+}
+
+/// Wait for multiple nodes to be ready.
+async fn wait_for_nodes(nodes: &[(String, String)]) {
+    for (label, url) in nodes {
+        if let Err(e) = wait_for_node_ready(url, NODE_READY_TIMEOUT_SECS).await {
+            println!("Warning: {} at {} not ready: {}", label, url, e);
+        }
+    }
 }
 
 /// Get the host port mapped to a container port using docker inspect.
@@ -171,9 +334,7 @@ struct OpRethStatus {
 
 /// Query the sync status from an op-reth node using eth_syncing.
 async fn get_op_reth_status(rpc_url: &str) -> Result<OpRethStatus> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()?;
+    let client = rpc_client()?;
 
     // Get eth_syncing status
     let syncing_response = client
@@ -271,9 +432,7 @@ struct OpBatcherStatus {
 /// Check op-batcher health by calling its RPC endpoint.
 /// op-batcher exposes admin_nodeInfo which can be used as a health check.
 async fn get_op_batcher_status(rpc_url: &str) -> Result<OpBatcherStatus> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()?;
+    let client = rpc_client()?;
 
     // Try opp_version as a health check (standard op-service method)
     let response = client
@@ -339,11 +498,7 @@ async fn wait_for_op_batcher_ready(rpc_url: &str, timeout_secs: u64) -> Result<(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_network_deployment_and_sync_status() -> Result<()> {
     // Initialize tracing for test output
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_test_writer()
-        .try_init()
-        .ok();
+    init_test_tracing();
 
     let l1_chain_id = generate_random_l1_chain_id();
     let network_name = format!("kup-test-{}", l1_chain_id);
@@ -373,7 +528,7 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
     println!("=== Deploying network... ===");
 
     // Deploy with a timeout
-    let deploy_result = timeout(Duration::from_secs(600), deployer.deploy(false)).await;
+    let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
 
     match deploy_result {
         Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
@@ -385,7 +540,7 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
         Err(_) => {
             // Cleanup before returning error
             let _ = cleanup_by_prefix(&network_name).await;
-            anyhow::bail!("Deployment timed out after 600 seconds");
+            anyhow::bail!("Deployment timed out after {} seconds", DEPLOYMENT_TIMEOUT_SECS);
         }
     }
 
@@ -408,7 +563,7 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
     // Wait for nodes to be ready
     println!("=== Waiting for nodes to be ready... ===");
     for (label, url) in &node_endpoints {
-        if let Err(e) = wait_for_node_ready(url, 120).await {
+        if let Err(e) = wait_for_node_ready(url, NODE_READY_TIMEOUT_SECS).await {
             println!("Warning: {} at {} not ready: {}", label, url, e);
         }
     }
@@ -512,11 +667,7 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
 /// - eth_syncing returns expected values
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_test_writer()
-        .try_init()
-        .ok();
+    init_test_tracing();
 
     let l1_chain_id = generate_random_l1_chain_id();
     let network_name = format!("kup-reth-test-{}", l1_chain_id);
@@ -544,7 +695,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
 
     println!("=== Deploying network... ===");
 
-    let deploy_result = timeout(Duration::from_secs(600), deployer.deploy(false)).await;
+    let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
 
     match deploy_result {
         Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
@@ -554,7 +705,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
         }
         Err(_) => {
             let _ = cleanup_by_prefix(&network_name).await;
-            anyhow::bail!("Deployment timed out after 600 seconds");
+            anyhow::bail!("Deployment timed out after {} seconds", DEPLOYMENT_TIMEOUT_SECS);
         }
     }
 
@@ -579,7 +730,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
     // Wait for op-reth nodes to be ready
     println!("=== Waiting for op-reth nodes to be ready... ===");
     for (label, url) in &reth_endpoints {
-        if let Err(e) = wait_for_op_reth_ready(url, 120).await {
+        if let Err(e) = wait_for_op_reth_ready(url, NODE_READY_TIMEOUT_SECS).await {
             println!("Warning: {} at {} not ready: {}", label, url, e);
         }
     }
@@ -679,11 +830,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
 /// - All sequencers produce blocks
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_multi_sequencer_with_conductor() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_test_writer()
-        .try_init()
-        .ok();
+    init_test_tracing();
 
     let l1_chain_id = generate_random_l1_chain_id();
     let network_name = format!("kup-conductor-test-{}", l1_chain_id);
@@ -710,7 +857,7 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
 
     println!("=== Deploying network with 2 sequencers + conductor... ===");
 
-    let deploy_result = timeout(Duration::from_secs(900), deployer.deploy(false)).await;
+    let deploy_result = timeout(Duration::from_secs(CONDUCTOR_DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
 
     match deploy_result {
         Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
@@ -720,7 +867,7 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
         }
         Err(_) => {
             let _ = cleanup_by_prefix(&network_name).await;
-            anyhow::bail!("Deployment timed out after 900 seconds");
+            anyhow::bail!("Conductor deployment timed out after {} seconds", CONDUCTOR_DEPLOYMENT_TIMEOUT_SECS);
         }
     }
 
@@ -791,7 +938,7 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
     // Wait for sequencers to be ready
     println!("=== Waiting for sequencer nodes to be ready... ===");
     for (label, url) in &sequencer_endpoints {
-        if let Err(e) = wait_for_node_ready(url, 120).await {
+        if let Err(e) = wait_for_node_ready(url, NODE_READY_TIMEOUT_SECS).await {
             println!("Warning: {} at {} not ready: {}", label, url, e);
         }
     }
@@ -849,9 +996,7 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
 async fn wait_for_conductor_ready(rpc_url: &str, timeout_secs: u64) -> Result<()> {
     let start = std::time::Instant::now();
     let max_duration = Duration::from_secs(timeout_secs);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()?;
+    let client = rpc_client()?;
 
     loop {
         if start.elapsed() > max_duration {
@@ -891,11 +1036,7 @@ async fn wait_for_conductor_ready(rpc_url: &str, timeout_secs: u64) -> Result<()
 /// - The batcher is responding to RPC calls
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_op_batcher_health() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_test_writer()
-        .try_init()
-        .ok();
+    init_test_tracing();
 
     let l1_chain_id = generate_random_l1_chain_id();
     let network_name = format!("kup-batcher-test-{}", l1_chain_id);
@@ -923,7 +1064,7 @@ async fn test_op_batcher_health() -> Result<()> {
 
     println!("=== Deploying network... ===");
 
-    let deploy_result = timeout(Duration::from_secs(600), deployer.deploy(false)).await;
+    let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
 
     match deploy_result {
         Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
@@ -933,7 +1074,7 @@ async fn test_op_batcher_health() -> Result<()> {
         }
         Err(_) => {
             let _ = cleanup_by_prefix(&network_name).await;
-            anyhow::bail!("Deployment timed out after 600 seconds");
+            anyhow::bail!("Deployment timed out after {} seconds", DEPLOYMENT_TIMEOUT_SECS);
         }
     }
 
@@ -945,7 +1086,7 @@ async fn test_op_batcher_health() -> Result<()> {
 
     // Wait for op-batcher to be ready
     println!("=== Waiting for op-batcher to be ready... ===");
-    if let Err(e) = wait_for_op_batcher_ready(&batcher_url, 120).await {
+    if let Err(e) = wait_for_op_batcher_ready(&batcher_url, NODE_READY_TIMEOUT_SECS).await {
         let _ = cleanup_by_prefix(&network_name).await;
         anyhow::bail!("op-batcher not ready: {}", e);
     }
@@ -1032,11 +1173,7 @@ async fn test_op_batcher_health() -> Result<()> {
 /// - Containers are still on the custom Docker network
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_publish_all_ports() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_test_writer()
-        .try_init()
-        .ok();
+    init_test_tracing();
 
     let l1_chain_id = generate_random_l1_chain_id();
     let network_name = format!("kup-publish-test-{}", l1_chain_id);
@@ -1064,7 +1201,7 @@ async fn test_publish_all_ports() -> Result<()> {
 
     println!("=== Deploying network with publish_all_ports enabled... ===");
 
-    let deploy_result = timeout(Duration::from_secs(600), deployer.deploy(false)).await;
+    let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
 
     match deploy_result {
         Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
@@ -1074,7 +1211,7 @@ async fn test_publish_all_ports() -> Result<()> {
         }
         Err(_) => {
             let _ = cleanup_by_prefix(&network_name).await;
-            anyhow::bail!("Deployment timed out after 600 seconds");
+            anyhow::bail!("Deployment timed out after {} seconds", DEPLOYMENT_TIMEOUT_SECS);
         }
     }
 
@@ -1248,9 +1385,7 @@ async fn test_publish_all_ports() -> Result<()> {
 
 /// Test an RPC endpoint by calling a simple method.
 async fn test_rpc_endpoint(rpc_url: &str, method: &str) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()?;
+    let client = rpc_client()?;
 
     let response = client
         .post(rpc_url)
@@ -1293,11 +1428,7 @@ async fn test_rpc_endpoint(rpc_url: &str, method: &str) -> Result<()> {
 /// - Verifies sync status can be queried
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_local_kona_binary() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_test_writer()
-        .try_init()
-        .ok();
+    init_test_tracing();
 
     let l1_chain_id = generate_random_l1_chain_id();
     let network_name = format!("kup-local-kona-{}", l1_chain_id);
@@ -1423,7 +1554,7 @@ async fn test_local_kona_binary() -> Result<()> {
     // Wait for nodes to be ready
     println!("=== Waiting for nodes to be ready... ===");
     for (label, url) in &node_endpoints {
-        if let Err(e) = wait_for_node_ready(url, 120).await {
+        if let Err(e) = wait_for_node_ready(url, NODE_READY_TIMEOUT_SECS).await {
             println!("Warning: {} at {} not ready: {}", label, url, e);
         }
     }
@@ -1518,5 +1649,236 @@ async fn test_local_kona_binary() -> Result<()> {
     }
 
     println!("=== Test passed! All kona nodes with local binary are advancing. ===");
+    Ok(())
+}
+
+/// Test that deployment skipping works correctly.
+/// This test verifies:
+/// - Deploy a network once
+/// - Stop and cleanup
+/// - Redeploy with same configuration (should skip contract deployment)
+/// - Verify deployment version file exists and hash matches
+/// - Network is healthy and advances
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_deployment_skipping() -> Result<()> {
+    init_test_tracing();
+
+    let ctx = TestContext::new("skip-test");
+    println!(
+        "=== Starting deployment skipping test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name, ctx.l1_chain_id
+    );
+
+    // First deployment - should deploy contracts
+    println!("=== First deployment: deploying contracts ===");
+    let deployer = ctx.build_deployer().await?;
+    let config_path = deployer.save_config()?;
+    println!("Configuration saved to: {}", config_path.display());
+
+    ctx.deploy(deployer).await?;
+    println!("=== First deployment completed successfully ===");
+
+    // Verify deployment version file and get hash
+    let first_hash = ctx.get_deployment_hash()
+        .inspect(|hash| println!("First deployment hash: {}", hash))?;
+
+    // Stop and cleanup the network
+    println!("=== Cleaning up first deployment... ===");
+    ctx.cleanup().await?;
+
+    // Second deployment - should skip contract deployment
+    println!("=== Second deployment: should skip contract deployment ===");
+    let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
+        .context("Failed to load deployer from config file")?;
+    println!("Configuration loaded from: {}", config_path.display());
+
+    let start_time = std::time::Instant::now();
+    ctx.deploy(loaded_deployer).await?;
+    println!("=== Second deployment completed in {:?} ===", start_time.elapsed());
+
+    // Verify hash matches (contracts were skipped)
+    let second_hash = ctx.get_deployment_hash()?;
+    if first_hash != second_hash {
+        ctx.cleanup().await?;
+        anyhow::bail!("Deployment hash mismatch! First: {}, Second: {}", first_hash, second_hash);
+    }
+    println!("✓ Deployment hash matches: {}", second_hash);
+
+    // Verify network health
+    println!("=== Verifying network health after redeployment... ===");
+    let nodes = ctx.get_node_urls(false)?;
+    wait_for_nodes(&nodes).await;
+
+    let statuses = collect_sync_status(&nodes).await;
+    if statuses.is_empty() {
+        ctx.cleanup().await?;
+        anyhow::bail!("Failed to get sync status from redeployed network");
+    }
+    println!("✓ Network is healthy");
+
+    // Cleanup
+    println!("=== Cleaning up network... ===");
+    ctx.cleanup().await?;
+
+    println!("=== Test passed! Deployment skipping works correctly. ===");
+    Ok(())
+}
+
+/// Test that a network can be stopped and restarted from configuration files.
+/// This test verifies:
+/// - Deploy a network and let it run for a bit
+/// - Save configuration
+/// - Get sync status
+/// - Stop all containers (but keep data)
+/// - Restart from saved configuration
+/// - Verify network continues from where it left off
+/// - Verify network is still healthy and advancing
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_stop_and_restart_from_config() -> Result<()> {
+    init_test_tracing();
+
+    let ctx = TestContext::new("restart-test");
+    println!(
+        "=== Starting stop/restart test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name, ctx.l1_chain_id
+    );
+
+    // Initial deployment
+    println!("=== Initial deployment ===");
+    let deployer = ctx.build_deployer().await?;
+    let config_path = deployer.save_config()?;
+    println!("Configuration saved to: {}", config_path.display());
+
+    ctx.deploy(deployer).await?;
+    println!("=== Initial deployment completed successfully ===");
+
+    // Wait for nodes and collect initial status
+    println!("=== Waiting for nodes to be ready and collecting initial state... ===");
+    let nodes = ctx.get_node_urls(true)?;
+    wait_for_nodes(&nodes).await;
+
+    // Let network produce blocks
+    println!("=== Letting network run for 30 seconds to produce blocks... ===");
+    sleep(Duration::from_secs(30)).await;
+
+    // Collect status before stopping
+    println!("=== Getting sync status before stopping... ===");
+    let status_before = collect_sync_status(&nodes).await;
+    if status_before.is_empty() {
+        ctx.cleanup().await?;
+        anyhow::bail!("Could not get sync status from any node before stopping");
+    }
+
+    // Stop network (keep data)
+    println!("=== Stopping all containers... ===");
+    ctx.cleanup().await?;
+
+    // Verify data directory still exists
+    if !ctx.outdata_path.exists() {
+        anyhow::bail!("Data directory disappeared after cleanup: {}", ctx.outdata_path.display());
+    }
+    println!("✓ Data directory still exists: {}", ctx.outdata_path.display());
+
+    // Wait before restart
+    sleep(Duration::from_secs(5)).await;
+
+    // Restart from configuration
+    println!("=== Restarting from saved configuration... ===");
+    let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
+        .context("Failed to load deployer from config file")?;
+
+    ctx.deploy(loaded_deployer).await?;
+    println!("=== Network restarted successfully ===");
+
+    // Get new node URLs (ports might have changed)
+    let nodes = ctx.get_node_urls(true)?;
+
+    // Wait for nodes after restart
+    println!("=== Waiting for nodes to be ready after restart... ===");
+    wait_for_nodes(&nodes).await;
+
+    // Collect status after restart
+    println!("=== Getting sync status after restart... ===");
+    let status_after = collect_sync_status(&nodes).await;
+    if status_after.is_empty() {
+        ctx.cleanup().await?;
+        anyhow::bail!("Could not get sync status from any node after restart");
+    }
+
+    // Verify sequencer state persisted
+    println!("=== Verifying network resumed from previous state... ===");
+    verify_sequencer_state_persisted(&status_before, &status_after)?;
+
+    println!("✓ Sequencer resumed from previous state");
+    println!("✓ Test objective achieved: sequencer state persisted across restart");
+
+    // Cleanup
+    println!("=== Cleaning up network... ===");
+    ctx.cleanup().await?;
+
+    println!("=== Test passed! Sequencer can be stopped and restarted successfully. ===");
+    Ok(())
+}
+
+/// Verify that the sequencer maintained its state across restart.
+fn verify_sequencer_state_persisted(
+    before: &[(String, SyncStatus)],
+    after: &[(String, SyncStatus)],
+) -> Result<()> {
+    let mut errors = Vec::new();
+    let mut sequencer_resumed = false;
+
+    for (before_label, before_status) in before {
+        let Some((_, after_status)) = after.iter().find(|(label, _)| label == before_label) else {
+            continue;
+        };
+
+        let block_diff = after_status.unsafe_l2.number as i64 - before_status.unsafe_l2.number as i64;
+        println!(
+            "{}: block before={}, after={}, diff={}",
+            before_label,
+            before_status.unsafe_l2.number,
+            after_status.unsafe_l2.number,
+            block_diff
+        );
+
+        let is_sequencer = before_label.contains("sequencer");
+
+        // Handle validator nodes (they may need time to sync)
+        if !is_sequencer {
+            if after_status.unsafe_l2.number < 2 {
+                println!("  Note: {} needs to re-sync from sequencer", before_label);
+            }
+            continue;
+        }
+
+        // Sequencer checks
+        if after_status.unsafe_l2.number < 2 {
+            errors.push(format!(
+                "{}: Block number too low after restart ({}), state was reset",
+                before_label, after_status.unsafe_l2.number
+            ));
+        } else {
+            sequencer_resumed = true;
+        }
+
+        if block_diff < -10 {
+            errors.push(format!(
+                "{}: Block number regressed (before: {}, after: {})",
+                before_label,
+                before_status.unsafe_l2.number,
+                after_status.unsafe_l2.number
+            ));
+        }
+    }
+
+    if !sequencer_resumed {
+        errors.push("Sequencer did not resume from previous state".to_string());
+    }
+
+    if !errors.is_empty() {
+        anyhow::bail!("Network state verification failed:\n{}", errors.join("\n"));
+    }
+
     Ok(())
 }

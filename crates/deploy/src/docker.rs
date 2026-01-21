@@ -675,8 +675,27 @@ ENTRYPOINT [\"/binary\"]
     }
 
     /// Create a Docker network for container communication.
+    ///
+    /// If the network already exists, this function will use the existing network
+    /// instead of failing.
     pub async fn create_network(docker: &Docker, network_name: &str) -> Result<String> {
         tracing::info!("Creating Docker network: {}", network_name);
+
+        // First, check if the network already exists
+        match docker.inspect_network::<String>(network_name, None).await {
+            Ok(network_info) => {
+                let network_id = network_info.id.unwrap_or_else(|| network_name.to_string());
+                tracing::info!(
+                    network_id = %network_id,
+                    network_name = %network_name,
+                    "Docker network already exists, reusing it"
+                );
+                return Ok(network_id);
+            }
+            Err(_) => {
+                // Network doesn't exist, create it
+            }
+        }
 
         let create_network_options = CreateNetworkOptions {
             name: network_name.to_string(),
