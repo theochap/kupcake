@@ -1,6 +1,7 @@
 //! op-reth execution client service.
 
 mod cmd;
+pub mod rpc;
 
 use std::path::PathBuf;
 

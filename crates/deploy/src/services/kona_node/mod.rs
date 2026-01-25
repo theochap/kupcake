@@ -1,6 +1,7 @@
 //! kona-node consensus client service.
 
 mod cmd;
+pub mod rpc;
 
 use std::path::PathBuf;
 

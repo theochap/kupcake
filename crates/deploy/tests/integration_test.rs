@@ -10,9 +10,10 @@ use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use kupcake_deploy::{DeployerBuilder, OutDataPath, cleanup_by_prefix};
+use kupcake_deploy::{
+    DeployerBuilder, DeploymentResult, OutDataPath, cleanup_by_prefix, rpc, services::SyncStatus,
+};
 use rand::Rng;
-use serde::Deserialize;
 use serde_json::Value;
 use tokio::time::{sleep, timeout};
 
@@ -20,7 +21,6 @@ use tokio::time::{sleep, timeout};
 const DEPLOYMENT_TIMEOUT_SECS: u64 = 600;
 const CONDUCTOR_DEPLOYMENT_TIMEOUT_SECS: u64 = 900;
 const NODE_READY_TIMEOUT_SECS: u64 = 120;
-const RPC_REQUEST_TIMEOUT_SECS: u64 = 5;
 
 /// Generate a random L1 chain ID for local testing.
 ///
@@ -66,11 +66,13 @@ impl TestContext {
     }
 
     /// Execute a deployment with timeout and error handling.
-    async fn deploy(&self, deployer: kupcake_deploy::Deployer) -> Result<()> {
+    ///
+    /// Returns the DeploymentResult on success.
+    async fn deploy(&self, deployer: kupcake_deploy::Deployer) -> Result<DeploymentResult> {
         let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
 
         match deploy_result {
-            Ok(Ok(_)) => Ok(()),
+            Ok(Ok(deployment)) => Ok(deployment),
             Ok(Err(e)) => {
                 let _ = cleanup_by_prefix(&self.network_name).await;
                 Err(e).context("Deployment failed")
@@ -102,33 +104,6 @@ impl TestContext {
             .map(String::from)
     }
 
-    /// Get node URLs for sequencer and optionally validator.
-    fn get_node_urls(&self, include_validator: bool) -> Result<Vec<(String, String)>> {
-        let mut urls = Vec::new();
-
-        let sequencer_port = get_container_host_port(
-            &format!("{}-kona-node", self.network_name),
-            7545,
-        )?;
-        urls.push((
-            "sequencer".to_string(),
-            format!("http://localhost:{}", sequencer_port),
-        ));
-
-        if include_validator {
-            let validator_port = get_container_host_port(
-                &format!("{}-kona-node-validator-1", self.network_name),
-                7545,
-            )?;
-            urls.push((
-                "validator".to_string(),
-                format!("http://localhost:{}", validator_port),
-            ));
-        }
-
-        Ok(urls)
-    }
-
     /// Cleanup network resources.
     async fn cleanup(&self) -> Result<()> {
         let cleanup_result = cleanup_by_prefix(&self.network_name).await?;
@@ -143,69 +118,54 @@ impl TestContext {
     }
 }
 
-/// Response from optimism_syncStatus RPC call.
-#[derive(Debug, Deserialize)]
-struct SyncStatusResponse {
-    result: Option<SyncStatus>,
-    error: Option<RpcError>,
-}
+/// Collect sync status from all L2 nodes in a deployment.
+async fn collect_all_sync_status(deployment: &DeploymentResult) -> Vec<(String, SyncStatus)> {
+    let mut statuses = Vec::new();
 
-#[derive(Debug, Deserialize)]
-struct RpcError {
-    message: String,
-}
+    for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
+        let label = if node.is_sequencer() {
+            if idx == 0 {
+                "sequencer".to_string()
+            } else {
+                format!("sequencer-{}", idx)
+            }
+        } else {
+            format!("validator-{}", idx - deployment.l2_stack.sequencers.len() + 1)
+        };
 
-/// Sync status from kona-node.
-#[derive(Debug, Clone, Deserialize)]
-struct SyncStatus {
-    unsafe_l2: BlockRef,
-    safe_l2: BlockRef,
-    finalized_l2: BlockRef,
-}
-
-/// Block reference with number and hash.
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-struct BlockRef {
-    number: u64,
-    hash: String,
-}
-
-/// Create an HTTP client for RPC requests.
-fn rpc_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(RPC_REQUEST_TIMEOUT_SECS))
-        .build()
-        .context("Failed to create HTTP client")
-}
-
-/// Query the sync status from a kona-node RPC endpoint.
-async fn get_sync_status(rpc_url: &str) -> Result<SyncStatus> {
-    let client = rpc_client()?;
-
-    let response = client
-        .post(rpc_url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "optimism_syncStatus",
-            "params": [],
-            "id": 1
-        }))
-        .send()
-        .await
-        .context("Failed to send RPC request")?;
-
-    let status: SyncStatusResponse = response
-        .json()
-        .await
-        .context("Failed to parse sync status response")?;
-
-    if let Some(error) = status.error {
-        anyhow::bail!("RPC error: {}", error.message);
+        match node.kona_node.sync_status().await {
+            Ok(status) => {
+                println!(
+                    "{}: unsafe_l2={}, safe_l2={}, finalized_l2={}",
+                    label, status.unsafe_l2.number, status.safe_l2.number, status.finalized_l2.number
+                );
+                statuses.push((label, status));
+            }
+            Err(e) => {
+                println!("Warning: Failed to get status for {}: {}", label, e);
+            }
+        }
     }
 
-    status.result.context("No result in response")
+    statuses
 }
+
+/// Wait for all L2 nodes in a deployment to be ready.
+async fn wait_for_all_nodes(deployment: &DeploymentResult) {
+    for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
+        let label = if node.is_sequencer() {
+            format!("sequencer-{}", idx)
+        } else {
+            format!("validator-{}", idx - deployment.l2_stack.sequencers.len())
+        };
+
+        if let Err(e) = node.kona_node.wait_until_ready(NODE_READY_TIMEOUT_SECS).await {
+            println!("Warning: {} not ready: {}", label, e);
+        }
+    }
+}
+
+
 
 /// Initialize tracing for tests (idempotent).
 fn init_test_tracing() {
@@ -216,33 +176,20 @@ fn init_test_tracing() {
         .ok();
 }
 
-/// Collect sync status from multiple nodes.
-async fn collect_sync_status(nodes: &[(String, String)]) -> Vec<(String, SyncStatus)> {
-    let mut statuses = Vec::new();
-    for (label, url) in nodes {
-        match get_sync_status(url).await {
-            Ok(status) => {
-                println!(
-                    "{}: unsafe_l2={}, safe_l2={}, finalized_l2={}",
-                    label, status.unsafe_l2.number, status.safe_l2.number, status.finalized_l2.number
-                );
-                statuses.push((label.clone(), status));
-            }
-            Err(e) => {
-                println!("Warning: Failed to get status for {}: {}", label, e);
-            }
-        }
-    }
-    statuses
+/// Query sync status from a kona-node RPC URL.
+/// Helper for tests that don't have access to deployment result yet.
+async fn get_sync_status(rpc_url: &str) -> Result<SyncStatus> {
+    let client = rpc::create_client()?;
+    rpc::json_rpc_call(&client, rpc_url, "optimism_syncStatus", vec![]).await
 }
 
-/// Wait for multiple nodes to be ready.
-async fn wait_for_nodes(nodes: &[(String, String)]) {
-    for (label, url) in nodes {
-        if let Err(e) = wait_for_node_ready(url, NODE_READY_TIMEOUT_SECS).await {
-            println!("Warning: {} at {} not ready: {}", label, url, e);
-        }
-    }
+/// Wait for a kona-node to be ready by polling its RPC endpoint.
+/// Helper for tests that don't have access to deployment result yet.
+async fn wait_for_node_ready(rpc_url: &str, timeout_secs: u64) -> Result<()> {
+    rpc::wait_until_ready("kona-node", timeout_secs, || async {
+        get_sync_status(rpc_url).await.map(|_| ())
+    })
+    .await
 }
 
 /// Get the host port mapped to a container port using docker inspect.
@@ -277,149 +224,6 @@ fn get_container_host_port(container_name: &str, container_port: u16) -> Result<
     })
 }
 
-/// Wait for a node to be ready by polling its sync status endpoint.
-async fn wait_for_node_ready(rpc_url: &str, timeout_secs: u64) -> Result<()> {
-    let start = std::time::Instant::now();
-    let max_duration = Duration::from_secs(timeout_secs);
-
-    loop {
-        if start.elapsed() > max_duration {
-            anyhow::bail!("Timeout waiting for node at {} to be ready", rpc_url);
-        }
-
-        match get_sync_status(rpc_url).await {
-            Ok(_) => {
-                println!("Node at {} is ready", rpc_url);
-                return Ok(());
-            }
-            Err(_) => {
-                sleep(Duration::from_secs(2)).await;
-            }
-        }
-    }
-}
-
-/// Sync progress from eth_syncing when actively syncing.
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-struct EthSyncProgress {
-    #[serde(rename = "startingBlock", deserialize_with = "deserialize_hex_u64")]
-    starting_block: u64,
-    #[serde(rename = "currentBlock", deserialize_with = "deserialize_hex_u64")]
-    current_block: u64,
-    #[serde(rename = "highestBlock", deserialize_with = "deserialize_hex_u64")]
-    highest_block: u64,
-}
-
-/// Deserialize hex string to u64.
-fn deserialize_hex_u64<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let s: String = Deserialize::deserialize(deserializer)?;
-    let s = s.trim_start_matches("0x");
-    u64::from_str_radix(s, 16).map_err(serde::de::Error::custom)
-}
-
-/// Status of an op-reth node.
-#[derive(Debug, Clone)]
-struct OpRethStatus {
-    /// Whether the node is syncing (true) or synced (false).
-    is_syncing: bool,
-    /// Current block number.
-    block_number: u64,
-    /// Sync progress if syncing.
-    sync_progress: Option<EthSyncProgress>,
-}
-
-/// Query the sync status from an op-reth node using eth_syncing.
-async fn get_op_reth_status(rpc_url: &str) -> Result<OpRethStatus> {
-    let client = rpc_client()?;
-
-    // Get eth_syncing status
-    let syncing_response = client
-        .post(rpc_url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "eth_syncing",
-            "params": [],
-            "id": 1
-        }))
-        .send()
-        .await
-        .context("Failed to send eth_syncing request")?;
-
-    let syncing_body: Value = syncing_response
-        .json()
-        .await
-        .context("Failed to parse eth_syncing response")?;
-
-    let (is_syncing, sync_progress) = match &syncing_body["result"] {
-        Value::Bool(false) => (false, None),
-        Value::Object(_) => {
-            let progress: EthSyncProgress = serde_json::from_value(syncing_body["result"].clone())
-                .context("Failed to parse sync progress")?;
-            (true, Some(progress))
-        }
-        _ => anyhow::bail!("Unexpected eth_syncing response: {:?}", syncing_body),
-    };
-
-    // Get current block number
-    let block_response = client
-        .post(rpc_url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "eth_blockNumber",
-            "params": [],
-            "id": 2
-        }))
-        .send()
-        .await
-        .context("Failed to send eth_blockNumber request")?;
-
-    let block_body: Value = block_response
-        .json()
-        .await
-        .context("Failed to parse eth_blockNumber response")?;
-
-    let block_hex = block_body["result"]
-        .as_str()
-        .context("eth_blockNumber result is not a string")?;
-    let block_number = u64::from_str_radix(block_hex.trim_start_matches("0x"), 16)
-        .context("Failed to parse block number")?;
-
-    Ok(OpRethStatus {
-        is_syncing,
-        block_number,
-        sync_progress,
-    })
-}
-
-/// Wait for op-reth to be ready by polling its RPC endpoint.
-async fn wait_for_op_reth_ready(rpc_url: &str, timeout_secs: u64) -> Result<()> {
-    let start = std::time::Instant::now();
-    let max_duration = Duration::from_secs(timeout_secs);
-
-    loop {
-        if start.elapsed() > max_duration {
-            anyhow::bail!("Timeout waiting for op-reth at {} to be ready", rpc_url);
-        }
-
-        match get_op_reth_status(rpc_url).await {
-            Ok(status) => {
-                println!(
-                    "op-reth at {} is ready (block: {}, syncing: {})",
-                    rpc_url, status.block_number, status.is_syncing
-                );
-                return Ok(());
-            }
-            Err(_) => {
-                sleep(Duration::from_secs(2)).await;
-            }
-        }
-    }
-}
-
 /// Status of op-batcher.
 #[derive(Debug, Clone)]
 struct OpBatcherStatus {
@@ -432,7 +236,7 @@ struct OpBatcherStatus {
 /// Check op-batcher health by calling its RPC endpoint.
 /// op-batcher exposes admin_nodeInfo which can be used as a health check.
 async fn get_op_batcher_status(rpc_url: &str) -> Result<OpBatcherStatus> {
-    let client = rpc_client()?;
+    let client = rpc::create_client()?;
 
     // Try opp_version as a health check (standard op-service method)
     let response = client
@@ -474,24 +278,15 @@ async fn get_op_batcher_status(rpc_url: &str) -> Result<OpBatcherStatus> {
 
 /// Wait for op-batcher to be ready by polling its RPC endpoint.
 async fn wait_for_op_batcher_ready(rpc_url: &str, timeout_secs: u64) -> Result<()> {
-    let start = std::time::Instant::now();
-    let max_duration = Duration::from_secs(timeout_secs);
-
-    loop {
-        if start.elapsed() > max_duration {
-            anyhow::bail!("Timeout waiting for op-batcher at {} to be ready", rpc_url);
+    rpc::wait_until_ready("op-batcher", timeout_secs, || async {
+        let status = get_op_batcher_status(rpc_url).await?;
+        if status.is_healthy {
+            Ok(())
+        } else {
+            anyhow::bail!("op-batcher not healthy yet")
         }
-
-        match get_op_batcher_status(rpc_url).await {
-            Ok(status) if status.is_healthy => {
-                println!("op-batcher at {} is ready", rpc_url);
-                return Ok(());
-            }
-            Ok(_) | Err(_) => {
-                sleep(Duration::from_secs(2)).await;
-            }
-        }
-    }
+    })
+    .await
 }
 
 /// Test that deploys a network and verifies all nodes have advancing heads.
@@ -530,8 +325,11 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
     // Deploy with a timeout
     let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
 
-    match deploy_result {
-        Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
+    let deployment = match deploy_result {
+        Ok(Ok(deployment)) => {
+            println!("=== Deployment completed successfully ===");
+            deployment
+        }
         Ok(Err(e)) => {
             // Cleanup before returning error
             let _ = cleanup_by_prefix(&network_name).await;
@@ -542,52 +340,15 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
             let _ = cleanup_by_prefix(&network_name).await;
             anyhow::bail!("Deployment timed out after {} seconds", DEPLOYMENT_TIMEOUT_SECS);
         }
-    }
+    };
 
-    // Get the actual mapped ports for kona-node containers
-    // kona-node uses port 7545 internally
-    let sequencer_port = get_container_host_port(&format!("{}-kona-node", network_name), 7545)
-        .context("Failed to get sequencer kona-node port")?;
-    let validator_port =
-        get_container_host_port(&format!("{}-kona-node-validator-1", network_name), 7545)
-            .context("Failed to get validator kona-node port")?;
-
-    let node_endpoints = vec![
-        ("sequencer", format!("http://localhost:{}", sequencer_port)),
-        (
-            "validator-1",
-            format!("http://localhost:{}", validator_port),
-        ),
-    ];
-
-    // Wait for nodes to be ready
+    // Wait for all nodes to be ready using handlers
     println!("=== Waiting for nodes to be ready... ===");
-    for (label, url) in &node_endpoints {
-        if let Err(e) = wait_for_node_ready(url, NODE_READY_TIMEOUT_SECS).await {
-            println!("Warning: {} at {} not ready: {}", label, url, e);
-        }
-    }
+    wait_for_all_nodes(&deployment).await;
 
-    // Get initial sync status
+    // Get initial sync status using handlers
     println!("=== Getting initial sync status... ===");
-    let mut initial_status: Vec<(String, String, SyncStatus)> = Vec::new();
-    for (label, url) in &node_endpoints {
-        match get_sync_status(url).await {
-            Ok(status) => {
-                println!(
-                    "{}: unsafe_l2={}, safe_l2={}, finalized_l2={}",
-                    label,
-                    status.unsafe_l2.number,
-                    status.safe_l2.number,
-                    status.finalized_l2.number
-                );
-                initial_status.push((label.to_string(), url.clone(), status));
-            }
-            Err(e) => {
-                println!("{}: failed to get sync status: {}", label, e);
-            }
-        }
-    }
+    let initial_status = collect_all_sync_status(&deployment).await;
 
     if initial_status.is_empty() {
         let _ = cleanup_by_prefix(&network_name).await;
@@ -603,60 +364,39 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
     let mut all_advancing = true;
     let mut errors = Vec::new();
 
-    for (label, url, initial) in &initial_status {
-        match get_sync_status(url).await {
-            Ok(current) => {
-                let unsafe_advanced = current.unsafe_l2.number > initial.unsafe_l2.number;
-                let safe_advanced = current.safe_l2.number > initial.safe_l2.number;
+    let current_status = collect_all_sync_status(&deployment).await;
 
-                println!(
-                    "{}: unsafe {} -> {} ({}), safe {} -> {} ({})",
-                    label,
-                    initial.unsafe_l2.number,
-                    current.unsafe_l2.number,
-                    if unsafe_advanced {
-                        "ADVANCING"
-                    } else {
-                        "STALLED"
-                    },
-                    initial.safe_l2.number,
-                    current.safe_l2.number,
-                    if safe_advanced {
-                        "ADVANCING"
-                    } else {
-                        "STALLED"
-                    },
-                );
+    for (label, current) in &current_status {
+        // Find the corresponding initial status
+        if let Some((_, initial)) = initial_status.iter().find(|(l, _)| l == label) {
+            let unsafe_advanced = current.unsafe_l2.number > initial.unsafe_l2.number;
+            let safe_advanced = current.safe_l2.number > initial.safe_l2.number;
 
-                if !unsafe_advanced {
-                    errors.push(format!("{}: unsafe head not advancing", label));
-                    all_advancing = false;
-                }
-            }
-            Err(e) => {
-                errors.push(format!("{}: failed to get current status: {}", label, e));
+            println!(
+                "{}: unsafe {} -> {} ({}), safe {} -> {} ({})",
+                label,
+                initial.unsafe_l2.number,
+                current.unsafe_l2.number,
+                if unsafe_advanced { "ADVANCING" } else { "STALLED" },
+                initial.safe_l2.number,
+                current.safe_l2.number,
+                if safe_advanced { "ADVANCING" } else { "STALLED" },
+            );
+
+            if !unsafe_advanced && !safe_advanced {
                 all_advancing = false;
+                errors.push(format!("{} is not advancing", label));
             }
         }
     }
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
-    let cleanup_result = cleanup_by_prefix(&network_name).await?;
-    println!(
-        "Cleaned up {} containers",
-        cleanup_result.containers_removed.len()
-    );
-    if let Some(network) = cleanup_result.network_removed {
-        println!("Removed network: {}", network);
-    }
+    cleanup_by_prefix(&network_name).await?;
 
-    // Assert after cleanup so we always clean up
     if !all_advancing {
-        anyhow::bail!("Not all nodes are advancing:\n{}", errors.join("\n"));
+        anyhow::bail!("Some nodes are not advancing: {:?}", errors);
     }
 
-    println!("=== Test passed! All nodes are advancing. ===");
     Ok(())
 }
 
@@ -697,8 +437,11 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
 
     let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
 
-    match deploy_result {
-        Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
+    let deployment = match deploy_result {
+        Ok(Ok(deployment)) => {
+            println!("=== Deployment completed successfully ===");
+            deployment
+        }
         Ok(Err(e)) => {
             let _ = cleanup_by_prefix(&network_name).await;
             return Err(e).context("Deployment failed");
@@ -707,39 +450,33 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
             let _ = cleanup_by_prefix(&network_name).await;
             anyhow::bail!("Deployment timed out after {} seconds", DEPLOYMENT_TIMEOUT_SECS);
         }
-    }
+    };
 
-    // Get the ports for op-reth containers (HTTP RPC on 9545)
-    let sequencer_reth_port = get_container_host_port(&format!("{}-op-reth", network_name), 9545)
-        .context("Failed to get sequencer op-reth port")?;
-    let validator_reth_port =
-        get_container_host_port(&format!("{}-op-reth-validator-1", network_name), 9545)
-            .context("Failed to get validator op-reth port")?;
-
-    let reth_endpoints = vec![
-        (
-            "sequencer-reth",
-            format!("http://localhost:{}", sequencer_reth_port),
-        ),
-        (
-            "validator-reth",
-            format!("http://localhost:{}", validator_reth_port),
-        ),
-    ];
-
-    // Wait for op-reth nodes to be ready
+    // Wait for op-reth nodes to be ready using handlers
     println!("=== Waiting for op-reth nodes to be ready... ===");
-    for (label, url) in &reth_endpoints {
-        if let Err(e) = wait_for_op_reth_ready(url, NODE_READY_TIMEOUT_SECS).await {
-            println!("Warning: {} at {} not ready: {}", label, url, e);
+    for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
+        let label = if node.is_sequencer() {
+            "sequencer-reth".to_string()
+        } else {
+            format!("validator-{}-reth", idx)
+        };
+
+        if let Err(e) = node.op_reth.wait_until_ready(NODE_READY_TIMEOUT_SECS).await {
+            println!("Warning: {} not ready: {}", label, e);
         }
     }
 
-    // Get initial block numbers
+    // Get initial block numbers using handlers
     println!("=== Getting initial op-reth status... ===");
-    let mut initial_blocks: Vec<(String, String, u64)> = Vec::new();
-    for (label, url) in &reth_endpoints {
-        match get_op_reth_status(url).await {
+    let mut initial_blocks = Vec::new();
+    for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
+        let label = if node.is_sequencer() {
+            "sequencer-reth".to_string()
+        } else {
+            format!("validator-{}-reth", idx)
+        };
+
+        match node.op_reth.sync_status().await {
             Ok(status) => {
                 println!(
                     "{}: block={}, syncing={}{}",
@@ -755,7 +492,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
                         ))
                         .unwrap_or_default()
                 );
-                initial_blocks.push((label.to_string(), url.clone(), status.block_number));
+                initial_blocks.push((label.clone(), status.block_number));
             }
             Err(e) => {
                 println!("{}: failed to get status: {}", label, e);
@@ -772,31 +509,40 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
     println!("=== Waiting 30 seconds for blocks to be produced... ===");
     sleep(Duration::from_secs(30)).await;
 
-    // Check that block numbers have advanced
+    // Check that block numbers have advanced using handlers
     println!("=== Checking that op-reth block numbers have advanced... ===");
     let mut all_advancing = true;
     let mut errors = Vec::new();
 
-    for (label, url, initial_block) in &initial_blocks {
-        match get_op_reth_status(url).await {
-            Ok(status) => {
-                let advanced = status.block_number > *initial_block;
-                println!(
-                    "{}: block {} -> {} ({})",
-                    label,
-                    initial_block,
-                    status.block_number,
-                    if advanced { "ADVANCING" } else { "STALLED" }
-                );
+    for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
+        let label = if node.is_sequencer() {
+            "sequencer-reth".to_string()
+        } else {
+            format!("validator-{}-reth", idx)
+        };
 
-                if !advanced {
-                    errors.push(format!("{}: block number not advancing", label));
+        // Find the initial block for this node
+        if let Some((_, initial_block)) = initial_blocks.iter().find(|(l, _)| l == &label) {
+            match node.op_reth.sync_status().await {
+                Ok(status) => {
+                    let advanced = status.block_number > *initial_block;
+                    println!(
+                        "{}: block {} -> {} ({})",
+                        label,
+                        initial_block,
+                        status.block_number,
+                        if advanced { "ADVANCING" } else { "STALLED" }
+                    );
+
+                    if !advanced {
+                        errors.push(format!("{}: block number not advancing", label));
+                        all_advancing = false;
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!("{}: failed to get current status: {}", label, e));
                     all_advancing = false;
                 }
-            }
-            Err(e) => {
-                errors.push(format!("{}: failed to get current status: {}", label, e));
-                all_advancing = false;
             }
         }
     }
@@ -994,14 +740,8 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
 
 /// Wait for op-conductor to be ready by polling its RPC endpoint.
 async fn wait_for_conductor_ready(rpc_url: &str, timeout_secs: u64) -> Result<()> {
-    let start = std::time::Instant::now();
-    let max_duration = Duration::from_secs(timeout_secs);
-    let client = rpc_client()?;
-
-    loop {
-        if start.elapsed() > max_duration {
-            anyhow::bail!("Timeout waiting for conductor at {} to be ready", rpc_url);
-        }
+    rpc::wait_until_ready("conductor", timeout_secs, || async {
+        let client = rpc::create_client()?;
 
         // Try conductor_active as a health check
         let response = client
@@ -1013,21 +753,22 @@ async fn wait_for_conductor_ready(rpc_url: &str, timeout_secs: u64) -> Result<()
                 "id": 1
             }))
             .send()
-            .await;
+            .await
+            .context("Failed to connect to conductor")?;
 
-        match response {
-            Ok(resp) => {
-                let body: Value = resp.json().await.unwrap_or(Value::Null);
-                // If we get any response (even error), conductor is running
-                if body.get("result").is_some() || body.get("error").is_some() {
-                    return Ok(());
-                }
-            }
-            Err(_) => {}
+        let body: Value = response
+            .json()
+            .await
+            .context("Failed to parse conductor response")?;
+
+        // If we get any response (even error), conductor is running
+        if body.get("result").is_some() || body.get("error").is_some() {
+            Ok(())
+        } else {
+            anyhow::bail!("Invalid conductor response")
         }
-
-        sleep(Duration::from_secs(2)).await;
-    }
+    })
+    .await
 }
 
 /// Test that op-batcher is properly deployed and healthy.
@@ -1385,37 +1126,8 @@ async fn test_publish_all_ports() -> Result<()> {
 
 /// Test an RPC endpoint by calling a simple method.
 async fn test_rpc_endpoint(rpc_url: &str, method: &str) -> Result<()> {
-    let client = rpc_client()?;
-
-    let response = client
-        .post(rpc_url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": [],
-            "id": 1
-        }))
-        .send()
-        .await
-        .context("Failed to send RPC request")?;
-
-    if !response.status().is_success() {
-        anyhow::bail!("RPC returned non-success status: {}", response.status());
-    }
-
-    let body: Value = response
-        .json()
-        .await
-        .context("Failed to parse RPC response")?;
-
-    if body.get("error").is_some() {
-        anyhow::bail!("RPC returned error: {:?}", body["error"]);
-    }
-
-    if body.get("result").is_none() {
-        anyhow::bail!("RPC response missing result field");
-    }
-
+    let client = rpc::create_client()?;
+    let _: Value = rpc::json_rpc_call(&client, rpc_url, method, vec![]).await?;
     Ok(())
 }
 
@@ -1675,7 +1387,7 @@ async fn test_deployment_skipping() -> Result<()> {
     let config_path = deployer.save_config()?;
     println!("Configuration saved to: {}", config_path.display());
 
-    ctx.deploy(deployer).await?;
+    let _deployment = ctx.deploy(deployer).await?;
     println!("=== First deployment completed successfully ===");
 
     // Verify deployment version file and get hash
@@ -1693,7 +1405,7 @@ async fn test_deployment_skipping() -> Result<()> {
     println!("Configuration loaded from: {}", config_path.display());
 
     let start_time = std::time::Instant::now();
-    ctx.deploy(loaded_deployer).await?;
+    let deployment = ctx.deploy(loaded_deployer).await?;
     println!("=== Second deployment completed in {:?} ===", start_time.elapsed());
 
     // Verify hash matches (contracts were skipped)
@@ -1706,10 +1418,9 @@ async fn test_deployment_skipping() -> Result<()> {
 
     // Verify network health
     println!("=== Verifying network health after redeployment... ===");
-    let nodes = ctx.get_node_urls(false)?;
-    wait_for_nodes(&nodes).await;
+    wait_for_all_nodes(&deployment).await;
 
-    let statuses = collect_sync_status(&nodes).await;
+    let statuses = collect_all_sync_status(&deployment).await;
     if statuses.is_empty() {
         ctx.cleanup().await?;
         anyhow::bail!("Failed to get sync status from redeployed network");
@@ -1749,13 +1460,12 @@ async fn test_stop_and_restart_from_config() -> Result<()> {
     let config_path = deployer.save_config()?;
     println!("Configuration saved to: {}", config_path.display());
 
-    ctx.deploy(deployer).await?;
+    let deployment = ctx.deploy(deployer).await?;
     println!("=== Initial deployment completed successfully ===");
 
     // Wait for nodes and collect initial status
     println!("=== Waiting for nodes to be ready and collecting initial state... ===");
-    let nodes = ctx.get_node_urls(true)?;
-    wait_for_nodes(&nodes).await;
+    wait_for_all_nodes(&deployment).await;
 
     // Let network produce blocks
     println!("=== Letting network run for 30 seconds to produce blocks... ===");
@@ -1763,7 +1473,7 @@ async fn test_stop_and_restart_from_config() -> Result<()> {
 
     // Collect status before stopping
     println!("=== Getting sync status before stopping... ===");
-    let status_before = collect_sync_status(&nodes).await;
+    let status_before = collect_all_sync_status(&deployment).await;
     if status_before.is_empty() {
         ctx.cleanup().await?;
         anyhow::bail!("Could not get sync status from any node before stopping");
@@ -1787,19 +1497,16 @@ async fn test_stop_and_restart_from_config() -> Result<()> {
     let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
         .context("Failed to load deployer from config file")?;
 
-    ctx.deploy(loaded_deployer).await?;
+    let deployment = ctx.deploy(loaded_deployer).await?;
     println!("=== Network restarted successfully ===");
-
-    // Get new node URLs (ports might have changed)
-    let nodes = ctx.get_node_urls(true)?;
 
     // Wait for nodes after restart
     println!("=== Waiting for nodes to be ready after restart... ===");
-    wait_for_nodes(&nodes).await;
+    wait_for_all_nodes(&deployment).await;
 
     // Collect status after restart
     println!("=== Getting sync status after restart... ===");
-    let status_after = collect_sync_status(&nodes).await;
+    let status_after = collect_all_sync_status(&deployment).await;
     if status_after.is_empty() {
         ctx.cleanup().await?;
         anyhow::bail!("Could not get sync status from any node after restart");

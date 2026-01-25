@@ -16,6 +16,7 @@ pub use deployment_hash::{DeploymentConfigHash, DeploymentVersion};
 
 mod docker;
 mod fs;
+pub mod rpc;
 pub mod services;
 
 pub use docker::{

@@ -28,8 +28,11 @@ pub use grafana::{
     MonitoringConfig, MonitoringHandler, PrometheusConfig,
 };
 pub use kona_node::{
-    DEFAULT_DOCKER_IMAGE as KONA_NODE_DEFAULT_IMAGE, DEFAULT_DOCKER_TAG as KONA_NODE_DEFAULT_TAG,
-    KonaNodeBuilder, KonaNodeHandler,
+    rpc::{BlockRef, SyncStatus},
+    DEFAULT_DOCKER_IMAGE as KONA_NODE_DEFAULT_IMAGE,
+    DEFAULT_DOCKER_TAG as KONA_NODE_DEFAULT_TAG,
+    KonaNodeBuilder,
+    KonaNodeHandler,
 };
 pub use l2_node::{ConductorContext, L2NodeBuilder, L2NodeHandler, L2NodeRole};
 pub use op_batcher::{
@@ -53,6 +56,9 @@ pub use op_proposer::{
     DEFAULT_DOCKER_TAG as OP_PROPOSER_DEFAULT_TAG, OpProposerBuilder, OpProposerHandler,
 };
 pub use op_reth::{
-    DEFAULT_DOCKER_IMAGE as OP_RETH_DEFAULT_IMAGE, DEFAULT_DOCKER_TAG as OP_RETH_DEFAULT_TAG,
-    OpRethBuilder, OpRethHandler,
+    rpc::{EthSyncProgress, OpRethStatus},
+    DEFAULT_DOCKER_IMAGE as OP_RETH_DEFAULT_IMAGE,
+    DEFAULT_DOCKER_TAG as OP_RETH_DEFAULT_TAG,
+    OpRethBuilder,
+    OpRethHandler,
 };
