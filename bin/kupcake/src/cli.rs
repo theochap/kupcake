@@ -170,8 +170,8 @@ pub struct DeployArgs {
 
     /// The block time in seconds for the L1 chain (Anvil) and L2 derivation.
     ///
-    /// Defaults to 12 seconds (Ethereum mainnet block time).
-    #[arg(long, env = "KUP_BLOCK_TIME", default_value_t = 12)]
+    /// Defaults to 4 seconds to make the initial deployment faster.
+    #[arg(long, env = "KUP_BLOCK_TIME", default_value_t = 4)]
     pub block_time: u64,
 
     /// Manually specify the L2 genesis timestamp (Unix timestamp in seconds).
@@ -433,7 +433,10 @@ mod tests {
 
         // Any unknown string becomes a custom URL
         let source: L1Source = "http://localhost:8545".parse().unwrap();
-        assert_eq!(source, L1Source::Custom("http://localhost:8545".to_string()));
+        assert_eq!(
+            source,
+            L1Source::Custom("http://localhost:8545".to_string())
+        );
     }
 
     #[test]
@@ -448,6 +451,9 @@ mod tests {
         );
 
         let custom_url = "https://my-rpc.example.com";
-        assert_eq!(L1Source::Custom(custom_url.to_string()).rpc_url(), custom_url);
+        assert_eq!(
+            L1Source::Custom(custom_url.to_string()).rpc_url(),
+            custom_url
+        );
     }
 }

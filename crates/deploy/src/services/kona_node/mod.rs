@@ -387,8 +387,12 @@ impl KonaNodeBuilder {
             )
             .await
             .context("Failed to generate L1 config from RPC for local chain")?;
-            cmd_builder = cmd_builder
-                .l1_config_file(container_config_path.join("l1-config.json").display().to_string());
+            cmd_builder = cmd_builder.l1_config_file(
+                container_config_path
+                    .join("l1-config.json")
+                    .display()
+                    .to_string(),
+            );
         }
 
         // Configure conductor control if a conductor RPC URL is provided

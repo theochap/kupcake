@@ -10,7 +10,10 @@ use crate::{
     fs::FsHandler,
 };
 
-use super::{anvil::{AnvilAccounts, AnvilHandler}, kona_node::is_known_l1_chain};
+use super::{
+    anvil::{AnvilAccounts, AnvilHandler},
+    kona_node::is_known_l1_chain,
+};
 
 /// Default Docker image for op-deployer.
 pub const DEFAULT_DOCKER_IMAGE: &str =
@@ -217,7 +220,7 @@ impl OpDeployerConfig {
             "sh".to_string(),
             "-c".to_string(),
             format!(
-                "cat {container_config_path_str}/intent.toml && op-deployer --log.level TRACE --cache-dir {container_config_path_str}/.cache apply --workdir {container_config_path_str} --l1-rpc-url {l1_rpc_url} --private-key {private_key}",
+                "cat {container_config_path_str}/intent.toml && op-deployer --cache-dir {container_config_path_str}/.cache apply --workdir {container_config_path_str} --l1-rpc-url {l1_rpc_url} --private-key {private_key}",
                 container_config_path_str = container_config_path.display().to_string(),
                 l1_rpc_url = anvil_handler.l1_rpc_url.to_string(),
                 private_key = anvil_handler.accounts.deployer.private_key.to_string(),

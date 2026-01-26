@@ -101,6 +101,8 @@ impl AnvilCmdBuilder {
             self.block_time.to_string(),
             "--accounts".to_string(),
             "30".to_string(),
+            "-j".to_string(),
+            "0".to_string(),
         ];
 
         if let Some(timestamp) = self.timestamp {

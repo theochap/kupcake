@@ -76,9 +76,9 @@ pub struct OpRethBuilder {
 }
 
 /// Default Docker image for op-reth.
-pub const DEFAULT_DOCKER_IMAGE: &str = "op-reth";
+pub const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/paradigmxyz/op-reth";
 /// Default Docker tag for op-reth.
-pub const DEFAULT_DOCKER_TAG: &str = "local";
+pub const DEFAULT_DOCKER_TAG: &str = "v1.10.2";
 
 impl Default for OpRethBuilder {
     fn default() -> Self {
