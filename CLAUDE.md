@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **For detailed documentation, see the `docs/` directory:**
 - [Getting Started Guide](docs/getting-started/quickstart.md) - Quickstart for new users
 - [User Guide](docs/user-guide/cli-reference.md) - Complete CLI reference
+- [Network Interaction & Health Checks](docs/user-guide/network-interaction.md) - Querying nodes, sending transactions, verifying network health
 - [Architecture Documentation](docs/architecture/overview.md) - System design and patterns
 - [Service Documentation](docs/services/README.md) - Individual service details
 - [Developer Guide](docs/developer-guide/README.md) - Contributing and development

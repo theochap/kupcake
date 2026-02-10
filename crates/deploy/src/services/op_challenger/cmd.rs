@@ -4,10 +4,14 @@
 #[derive(Debug, Clone)]
 pub struct OpChallengerCmdBuilder {
     l1_eth_rpc: String,
+    l1_beacon: String,
     l2_eth_rpc: String,
     rollup_rpc: String,
     private_key: String,
     game_factory_address: String,
+    datadir: String,
+    rollup_config: String,
+    l2_genesis: String,
     trace_type: String,
     game_allowlist: Vec<u8>,
     metrics_enabled: bool,
@@ -24,13 +28,19 @@ impl OpChallengerCmdBuilder {
         rollup_rpc: impl Into<String>,
         private_key: impl Into<String>,
         game_factory_address: impl Into<String>,
+        datadir: impl Into<String>,
     ) -> Self {
+        let l1_rpc = l1_eth_rpc.into();
         Self {
-            l1_eth_rpc: l1_eth_rpc.into(),
+            l1_beacon: l1_rpc.clone(),
+            l1_eth_rpc: l1_rpc,
             l2_eth_rpc: l2_eth_rpc.into(),
             rollup_rpc: rollup_rpc.into(),
             private_key: private_key.into(),
             game_factory_address: game_factory_address.into(),
+            datadir: datadir.into(),
+            rollup_config: String::new(),
+            l2_genesis: String::new(),
             trace_type: "permissioned".to_string(),
             game_allowlist: vec![254], // Permissioned game type
             metrics_enabled: true,
@@ -38,6 +48,17 @@ impl OpChallengerCmdBuilder {
             metrics_port: 7303,
             extra_args: Vec::new(),
         }
+    }
+
+    /// Set the rollup config and L2 genesis paths.
+    pub fn rollup_config(
+        mut self,
+        rollup_config: impl Into<String>,
+        l2_genesis: impl Into<String>,
+    ) -> Self {
+        self.rollup_config = rollup_config.into();
+        self.l2_genesis = l2_genesis.into();
+        self
     }
 
     /// Set the trace type.
@@ -72,6 +93,8 @@ impl OpChallengerCmdBuilder {
             "op-challenger".to_string(),
             "--l1-eth-rpc".to_string(),
             self.l1_eth_rpc,
+            "--l1-beacon".to_string(),
+            self.l1_beacon,
             "--l2-eth-rpc".to_string(),
             self.l2_eth_rpc,
             "--rollup-rpc".to_string(),
@@ -80,9 +103,21 @@ impl OpChallengerCmdBuilder {
             self.private_key,
             "--game-factory-address".to_string(),
             self.game_factory_address,
+            "--datadir".to_string(),
+            self.datadir,
             "--trace-type".to_string(),
             self.trace_type,
         ];
+
+        // Rollup config and L2 genesis
+        if !self.rollup_config.is_empty() {
+            cmd.push("--rollup-config".to_string());
+            cmd.push(self.rollup_config);
+        }
+        if !self.l2_genesis.is_empty() {
+            cmd.push("--l2-genesis".to_string());
+            cmd.push(self.l2_genesis);
+        }
 
         // Game allowlist
         for game in self.game_allowlist {
@@ -117,12 +152,15 @@ mod tests {
             "http://localhost:7545",
             "0xdeadbeef",
             "0x1234567890abcdef",
+            "/data",
         )
         .build();
 
         assert!(cmd.contains(&"op-challenger".to_string()));
         assert!(cmd.contains(&"--l1-eth-rpc".to_string()));
         assert!(cmd.contains(&"--game-factory-address".to_string()));
+        assert!(cmd.contains(&"--datadir".to_string()));
+        assert!(cmd.contains(&"/data".to_string()));
     }
 }
 

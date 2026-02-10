@@ -22,6 +22,36 @@ kupcake deploy [OPTIONS]
 kupcake [OPTIONS]  # deploy is implicit
 ```
 
+### `health`
+
+Check the health of a deployed network.
+
+```bash
+kupcake health <CONFIG>
+```
+
+**Arguments**:
+- `<CONFIG>` - Network name or path to `Kupcake.toml` / outdata directory
+
+**Behavior**:
+- Loads the `Kupcake.toml` configuration
+- Verifies all expected containers are running via Docker
+- Queries L1 and L2 RPC endpoints to check chain IDs match the config
+- Queries kona-node `optimism_syncStatus` for each consensus client
+- Exits with code `0` if healthy, `1` if unhealthy
+
+**Examples**:
+```bash
+# By network name (loads ./data-kup-nutty-songs/Kupcake.toml)
+kupcake health kup-nutty-songs
+
+# By directory path
+kupcake health ./data-kup-nutty-songs/
+
+# By config file path
+kupcake health ./data-kup-nutty-songs/Kupcake.toml
+```
+
 ### `cleanup`
 
 Clean up containers and network by prefix.

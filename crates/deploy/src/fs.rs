@@ -100,6 +100,10 @@ impl FsHandler {
         .await
         .context(format!("Timeout waiting for file: {}", path.display()))??;
 
+        // Small delay to allow the file content to be fully flushed.
+        // File watcher may trigger on file creation before the writer has finished.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
         Ok(())
     }
 }

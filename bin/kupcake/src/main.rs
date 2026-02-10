@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, CleanupArgs, Commands, DeployArgs, L1Source, OutData};
+use cli::{Cli, CleanupArgs, Commands, DeployArgs, HealthArgs, L1Source, OutData};
 use kupcake_deploy::{Deployer, DeployerBuilder, OutDataPath, cleanup_by_prefix};
 
 #[tokio::main]
@@ -22,6 +22,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Cleanup(args)) => run_cleanup(args).await,
         Some(Commands::Deploy(args)) => run_deploy(args).await,
+        Some(Commands::Health(args)) => run_health(args).await,
         // Default to deploy with default args when no subcommand is provided
         None => run_deploy(DeployArgs::default()).await,
     }
@@ -48,6 +49,35 @@ async fn run_cleanup(args: CleanupArgs) -> Result<()> {
             tracing::info!("Removed network: {}", network);
         }
         tracing::info!("Cleanup completed successfully");
+    }
+
+    Ok(())
+}
+
+async fn run_health(args: HealthArgs) -> Result<()> {
+    // Resolve the config path: if it looks like a path (contains / or . or ends with .toml),
+    // use it directly. Otherwise treat it as a network name -> ./data-{name}/Kupcake.toml
+    let config_path = if args.config.contains('/') || args.config.contains('.') {
+        PathBuf::from(&args.config)
+    } else {
+        PathBuf::from(format!("data-{}", args.config))
+    };
+
+    let deployer = Deployer::load_from_file(&config_path)?;
+
+    tracing::info!(
+        config = %config_path.display(),
+        l1_chain_id = deployer.l1_chain_id,
+        l2_chain_id = deployer.l2_chain_id,
+        "Running health check..."
+    );
+
+    let report = kupcake_deploy::health::health_check(&deployer).await?;
+
+    println!("{}", report);
+
+    if !report.healthy {
+        std::process::exit(1);
     }
 
     Ok(())

@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use kupcake_deploy::{
-    DeployerBuilder, DeploymentResult, OutDataPath, cleanup_by_prefix, rpc, services::SyncStatus,
+    DeployerBuilder, DeploymentResult, OutDataPath, cleanup_by_prefix,
+    health,
+    rpc, services::SyncStatus,
 };
 use rand::Rng;
 use serde_json::Value;
@@ -1587,5 +1589,219 @@ fn verify_sequencer_state_persisted(
         anyhow::bail!("Network state verification failed:\n{}", errors.join("\n"));
     }
 
+    Ok(())
+}
+
+/// Test that the health check command reports a healthy network after deployment.
+///
+/// This test:
+/// - Deploys a network in detached mode
+/// - Waits for nodes to be ready and blocks to advance
+/// - Runs health_check() and verifies the report is healthy
+/// - Verifies chain IDs, block numbers, and container states in the report
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_health_check_reports_healthy() -> Result<()> {
+    init_test_tracing();
+
+    let ctx = TestContext::new("health-ok");
+    println!(
+        "=== Starting health check (healthy) test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name, ctx.l1_chain_id
+    );
+
+    let deployer = ctx.build_deployer().await?;
+    deployer.save_config()?;
+
+    println!("=== Deploying network... ===");
+    let deployment = ctx.deploy(deployer).await?;
+    println!("=== Deployment completed successfully ===");
+
+    // Wait for nodes to be ready
+    println!("=== Waiting for nodes to be ready... ===");
+    wait_for_all_nodes(&deployment).await;
+
+    // Wait for blocks to advance on all nodes (validators need extra time to sync)
+    println!("=== Waiting 60 seconds for blocks to be produced... ===");
+    sleep(Duration::from_secs(60)).await;
+
+    // Load config and run health check
+    println!("=== Running health check... ===");
+    let config_path = ctx.outdata_path.join("Kupcake.toml");
+    let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
+        .context("Failed to load deployer from config file")?;
+
+    let report = health::health_check(&loaded_deployer).await?;
+    println!("{}", report);
+
+    // Verify the report
+    assert!(report.healthy, "Expected healthy report but got unhealthy");
+
+    // L1 checks
+    assert!(report.l1.running, "L1 (Anvil) should be running");
+    assert!(report.l1.chain_id_match(), "L1 chain ID should match config");
+    assert_eq!(
+        report.l1.chain_id,
+        Some(ctx.l1_chain_id),
+        "L1 chain ID should match test chain ID"
+    );
+    assert!(
+        report.l1.block_number.unwrap_or(0) > 0,
+        "L1 should have produced blocks"
+    );
+
+    // L2 node checks
+    assert!(
+        !report.nodes.is_empty(),
+        "Should have at least one L2 node"
+    );
+
+    for node in &report.nodes {
+        assert!(
+            node.execution.running,
+            "{} op-reth should be running",
+            node.label
+        );
+        assert!(
+            node.execution.chain_id_match(),
+            "{} L2 chain ID should match config",
+            node.label
+        );
+        assert!(
+            node.consensus.running,
+            "{} kona-node should be running",
+            node.label
+        );
+    }
+
+    // Sequencer should have produced blocks
+    let sequencer = &report.nodes[0];
+    assert!(
+        sequencer.execution.block_number.unwrap_or(0) > 0,
+        "Sequencer should have produced L2 blocks"
+    );
+
+    // Service checks — op-batcher and op-proposer must be running
+    assert_eq!(report.services.len(), 3, "Should have 3 services");
+    for service in &report.services {
+        if service.name != "op-challenger" {
+            assert!(service.running, "{} should be running", service.name);
+        }
+    }
+
+    // Cleanup
+    println!("=== Cleaning up network... ===");
+    ctx.cleanup().await?;
+
+    println!("=== Test passed! Health check correctly reports healthy network. ===");
+    Ok(())
+}
+
+/// Test that the health check command reports an unhealthy network when a container is stopped.
+///
+/// This test:
+/// - Deploys a network in detached mode
+/// - Waits for the network to be healthy
+/// - Stops the op-batcher container
+/// - Runs health_check() and verifies the report is unhealthy
+/// - Verifies the stopped service is correctly identified
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_health_check_reports_unhealthy_on_stopped_container() -> Result<()> {
+    init_test_tracing();
+
+    let ctx = TestContext::new("health-fail");
+    println!(
+        "=== Starting health check (unhealthy) test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name, ctx.l1_chain_id
+    );
+
+    let deployer = ctx.build_deployer().await?;
+    deployer.save_config()?;
+
+    println!("=== Deploying network... ===");
+    let deployment = ctx.deploy(deployer).await?;
+    println!("=== Deployment completed successfully ===");
+
+    // Wait for nodes to be ready and blocks to advance
+    println!("=== Waiting for nodes to be ready... ===");
+    wait_for_all_nodes(&deployment).await;
+
+    println!("=== Waiting 60 seconds for blocks to be produced... ===");
+    sleep(Duration::from_secs(60)).await;
+
+    // Load config for health checks
+    let config_path = ctx.outdata_path.join("Kupcake.toml");
+    let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
+        .context("Failed to load deployer from config file")?;
+
+    // Verify network is healthy first
+    println!("=== Verifying network is initially healthy... ===");
+    let initial_report = health::health_check(&loaded_deployer).await?;
+    println!("{}", initial_report);
+    assert!(
+        initial_report.healthy,
+        "Network should be healthy before stopping a container"
+    );
+
+    // Stop the op-batcher container
+    let batcher_container = format!("{}-op-batcher", ctx.network_name);
+    println!("=== Stopping container: {} ===", batcher_container);
+    let output = Command::new("docker")
+        .args(["stop", &batcher_container])
+        .output()
+        .context("Failed to run docker stop")?;
+
+    if !output.status.success() {
+        ctx.cleanup().await?;
+        anyhow::bail!(
+            "Failed to stop container: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    println!("Container stopped successfully");
+
+    // Run health check again - should be unhealthy
+    println!("=== Running health check after stopping op-batcher... ===");
+    let unhealthy_report = health::health_check(&loaded_deployer).await?;
+    println!("{}", unhealthy_report);
+
+    assert!(
+        !unhealthy_report.healthy,
+        "Expected unhealthy report after stopping op-batcher"
+    );
+
+    // Verify the stopped service is correctly identified
+    let batcher_service = unhealthy_report
+        .services
+        .iter()
+        .find(|s| s.name == "op-batcher")
+        .expect("op-batcher should be in the services list");
+
+    assert!(
+        !batcher_service.running,
+        "op-batcher should be reported as not running"
+    );
+
+    // Other critical services should still be running
+    for service in &unhealthy_report.services {
+        if service.name != "op-batcher" && service.name != "op-challenger" {
+            assert!(
+                service.running,
+                "{} should still be running",
+                service.name
+            );
+        }
+    }
+
+    // L1 should still be running
+    assert!(
+        unhealthy_report.l1.running,
+        "L1 should still be running"
+    );
+
+    // Cleanup
+    println!("=== Cleaning up network... ===");
+    ctx.cleanup().await?;
+
+    println!("=== Test passed! Health check correctly reports unhealthy network. ===");
     Ok(())
 }

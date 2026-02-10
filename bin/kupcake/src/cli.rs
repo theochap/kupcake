@@ -104,6 +104,24 @@ pub enum Commands {
     /// Stops and removes all containers whose names start with the given prefix,
     /// then removes the associated Docker network (<prefix>-network).
     Cleanup(CleanupArgs),
+
+    /// Check the health of a deployed network.
+    ///
+    /// Loads the Kupcake.toml configuration, verifies containers are running,
+    /// queries RPC endpoints, and checks that chain IDs and block production match expectations.
+    Health(HealthArgs),
+}
+
+/// Arguments for the health check command.
+#[derive(Parser)]
+pub struct HealthArgs {
+    /// Network name or path to Kupcake.toml / outdata directory.
+    ///
+    /// If a network name is given (e.g. "kup-nutty-songs"), loads
+    /// the config from the default path: ./data-<name>/Kupcake.toml
+    /// Otherwise treats the argument as a file/directory path.
+    #[arg(required = true)]
+    pub config: String,
 }
 
 /// Arguments for the cleanup command.

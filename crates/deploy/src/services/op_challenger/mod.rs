@@ -111,6 +111,11 @@ impl OpChallengerBuilder {
             kona_node_handler.rpc_url.to_string(),
             challenger_private_key.to_string(),
             dgf_address,
+            container_config_path.to_string_lossy(),
+        )
+        .rollup_config(
+            container_config_path.join("rollup.json").to_string_lossy(),
+            container_config_path.join("genesis.json").to_string_lossy(),
         )
         .trace_type("permissioned")
         .game_allowlist([254]) // Permissioned game type

@@ -2,6 +2,10 @@ run-dev *args:
     cargo build
     ./target/debug/kupcake {{args}}
 
+# Run health check against a deployed network
+health config:
+    cargo run -- health {{config}}
+
 # Kill all kupcake networks and containers
 kill-all:
     @echo "Stopping all kupcake containers..."

@@ -1047,10 +1047,20 @@ ENTRYPOINT [\"/binary\"]
             .create_and_start_container(container_name, container_config, options)
             .await?;
 
-        // Get the actual bound host ports after container is started
-        let bound_ports = self
-            .get_container_bound_ports(&create_and_start_result.container_id)
-            .await?;
+        // Get the actual bound host ports after container is started.
+        // Retry a few times since Docker Desktop may not report port bindings immediately.
+        let mut bound_ports = HashMap::new();
+        for attempt in 0..5 {
+            bound_ports = self
+                .get_container_bound_ports(&create_and_start_result.container_id)
+                .await?;
+            if !bound_ports.is_empty() {
+                break;
+            }
+            if attempt < 4 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
 
         tracing::debug!(
             container_name,
