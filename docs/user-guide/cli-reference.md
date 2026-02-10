@@ -87,6 +87,64 @@ kupcake faucet kup-nutty-songs --to 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 -
 kupcake faucet ./data-kup-nutty-songs/Kupcake.toml --to 0xdead...beef --amount 0.5
 ```
 
+### `spam`
+
+Generate continuous L2 traffic using Flashbots Contender.
+
+```bash
+kupcake spam <CONFIG> [OPTIONS] [-- <EXTRA_ARGS>...]
+```
+
+**Arguments**:
+- `<CONFIG>` - Network name or path to `Kupcake.toml` / outdata directory
+
+**Options**:
+- `--scenario <NAME|PATH>` - Scenario to run (default: `transfers`)
+- `--tps <N>` - Transactions per second (default: `10`)
+- `--duration <SECS>` - Duration in seconds (default: `30`, ignored with `--forever`)
+- `--forever` - Run indefinitely until Ctrl+C
+- `-a, --accounts <N>` - Number of spammer accounts (default: `10`)
+- `--min-balance <ETH>` - Minimum balance for spammer accounts (default: `0.1`)
+- `--fund-amount <ETH>` - ETH to fund the funder account on L2 (default: `100.0`)
+- `--funder-account-index <N>` - Anvil account index for funding (default: `10`)
+- `--report` - Generate a report after completion
+- `--contender-image <IMAGE>` - Docker image for Contender (default: `flashbots/contender`, env: `KUP_CONTENDER_IMAGE`)
+- `--contender-tag <TAG>` - Docker tag for Contender (default: `latest`, env: `KUP_CONTENDER_TAG`)
+- `--target-node <N>` - Target sequencer index (default: `0`)
+
+**Built-in Scenarios**:
+- `transfers` - Simple ETH transfers between accounts
+- `erc20` - ERC-20 token transfers
+- `uni_v2` - Uniswap V2 swaps
+
+**Behavior**:
+- Loads the `Kupcake.toml` configuration
+- Funds the funder account on L2 via the OptimismPortal deposit (faucet)
+- Starts a Contender Docker container on the kupcake Docker network
+- Streams Contender logs to stdout in real-time
+- Cleans up the container on completion or Ctrl+C
+
+**Examples**:
+```bash
+# Run basic ETH transfers at 10 TPS for 30 seconds (defaults)
+kupcake spam kup-nutty-songs
+
+# Run ERC-20 transfers at 100 TPS for 60 seconds
+kupcake spam kup-nutty-songs --scenario erc20 --tps 100 --duration 60
+
+# Run indefinitely until Ctrl+C
+kupcake spam kup-nutty-songs --scenario transfers --tps 50 --forever
+
+# Use a custom scenario file
+kupcake spam kup-nutty-songs --scenario ./my-scenario.toml
+
+# Target a specific sequencer and generate a report
+kupcake spam kup-nutty-songs --target-node 1 --report
+
+# Pass extra arguments to contender
+kupcake spam kup-nutty-songs -- --verbose --seed 42
+```
+
 ### `cleanup`
 
 Clean up containers and network by prefix.

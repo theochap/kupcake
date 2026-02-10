@@ -116,6 +116,13 @@ pub enum Commands {
     /// Bridges ETH from the L1 (Anvil) deployer account to a specified L2 address
     /// by calling depositTransaction on the OptimismPortalProxy contract.
     Faucet(FaucetArgs),
+
+    /// Generate continuous L2 traffic using Flashbots Contender.
+    ///
+    /// Runs a Contender Docker container against a deployed L2 network,
+    /// automatically funding the spammer account via the L1→L2 faucet deposit.
+    /// Supports built-in scenarios (transfers, erc20, uni_v2) and custom TOML files.
+    Spam(SpamArgs),
 }
 
 /// Arguments for the health check command.
@@ -152,6 +159,90 @@ pub struct FaucetArgs {
     /// Wait for the deposit to appear on L2 before returning.
     #[arg(long)]
     pub wait: bool,
+}
+
+/// Arguments for the spam command.
+#[derive(Parser)]
+pub struct SpamArgs {
+    /// Network name or path to Kupcake.toml / outdata directory.
+    ///
+    /// If a network name is given (e.g. "kup-nutty-songs"), loads
+    /// the config from the default path: ./data-<name>/Kupcake.toml
+    /// Otherwise treats the argument as a file/directory path.
+    #[arg(required = true)]
+    pub config: String,
+
+    /// Scenario to run: built-in name (transfers, erc20, uni_v2) or path to a custom TOML file.
+    #[arg(long, default_value = "transfers")]
+    pub scenario: String,
+
+    /// Transactions per second.
+    #[arg(long, default_value_t = 10)]
+    pub tps: u64,
+
+    /// Duration in seconds (ignored if --forever is set).
+    #[arg(long, default_value_t = 30)]
+    pub duration: u64,
+
+    /// Run indefinitely until Ctrl+C.
+    #[arg(long)]
+    pub forever: bool,
+
+    /// Number of spammer accounts to use.
+    #[arg(short, long, default_value_t = 10)]
+    pub accounts: u64,
+
+    /// Minimum balance (ETH) for spammer accounts.
+    #[arg(long, default_value = "0.1")]
+    pub min_balance: String,
+
+    /// Amount of ETH to fund the funder account on L2.
+    #[arg(long, default_value_t = 100.0)]
+    pub fund_amount: f64,
+
+    /// Index of the funder account in anvil.json (accounts 0-9 are reserved for OP Stack roles).
+    #[arg(long, default_value_t = 10)]
+    pub funder_account_index: usize,
+
+    /// Generate a report after completion.
+    #[arg(long)]
+    pub report: bool,
+
+    /// Docker image for Contender.
+    #[arg(long, env = "KUP_CONTENDER_IMAGE", default_value = kupcake_deploy::spam::CONTENDER_DEFAULT_IMAGE)]
+    pub contender_image: String,
+
+    /// Docker tag for Contender.
+    #[arg(long, env = "KUP_CONTENDER_TAG", default_value = kupcake_deploy::spam::CONTENDER_DEFAULT_TAG)]
+    pub contender_tag: String,
+
+    /// Target sequencer index (0-based).
+    #[arg(long, default_value_t = 0)]
+    pub target_node: usize,
+
+    /// Extra arguments to pass directly to contender (after --).
+    #[arg(last = true)]
+    pub extra_args: Vec<String>,
+}
+
+impl From<SpamArgs> for kupcake_deploy::spam::SpamConfig {
+    fn from(args: SpamArgs) -> Self {
+        Self {
+            scenario: args.scenario,
+            tps: args.tps,
+            duration: args.duration,
+            forever: args.forever,
+            accounts: args.accounts,
+            min_balance: args.min_balance,
+            fund_amount: args.fund_amount,
+            funder_account_index: args.funder_account_index,
+            report: args.report,
+            contender_image: args.contender_image,
+            contender_tag: args.contender_tag,
+            target_node: args.target_node,
+            extra_args: args.extra_args,
+        }
+    }
 }
 
 /// Arguments for the cleanup command.

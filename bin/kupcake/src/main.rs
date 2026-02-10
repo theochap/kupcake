@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, CleanupArgs, Commands, DeployArgs, FaucetArgs, HealthArgs, L1Source, OutData};
+use cli::{Cli, CleanupArgs, Commands, DeployArgs, FaucetArgs, HealthArgs, L1Source, OutData, SpamArgs};
 use kupcake_deploy::{Deployer, DeployerBuilder, OutDataPath, cleanup_by_prefix};
 
 #[tokio::main]
@@ -24,6 +24,7 @@ async fn main() -> Result<()> {
         Some(Commands::Deploy(args)) => run_deploy(args).await,
         Some(Commands::Faucet(args)) => run_faucet(args).await,
         Some(Commands::Health(args)) => run_health(args).await,
+        Some(Commands::Spam(args)) => run_spam_cmd(args).await,
         // Default to deploy with default args when no subcommand is provided
         None => run_deploy(DeployArgs::default()).await,
     }
@@ -113,6 +114,22 @@ async fn run_faucet(args: FaucetArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn run_spam_cmd(args: SpamArgs) -> Result<()> {
+    let config_path = resolve_config_path(&args.config);
+    let deployer = Deployer::load_from_file(&config_path)?;
+
+    let spam_config: kupcake_deploy::spam::SpamConfig = args.into();
+
+    tracing::info!(
+        config = %config_path.display(),
+        scenario = %spam_config.scenario,
+        tps = spam_config.tps,
+        "Running spam..."
+    );
+
+    kupcake_deploy::spam::run_spam(&deployer, &spam_config).await
 }
 
 async fn run_deploy(args: DeployArgs) -> Result<()> {
