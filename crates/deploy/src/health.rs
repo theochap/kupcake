@@ -283,7 +283,7 @@ async fn is_running(docker: &Docker, container_name: &str) -> bool {
 ///
 /// Returns the `http://localhost:<host_port>/` URL if the container has
 /// the given port published to the host.
-async fn build_host_rpc_url(
+pub(crate) async fn build_host_rpc_url(
     docker: &Docker,
     container_name: &str,
     container_port: u16,

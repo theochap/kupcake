@@ -52,6 +52,41 @@ kupcake health ./data-kup-nutty-songs/
 kupcake health ./data-kup-nutty-songs/Kupcake.toml
 ```
 
+### `faucet`
+
+Send ETH to an L2 address via the OptimismPortal deposit mechanism.
+
+```bash
+kupcake faucet <CONFIG> --to <ADDRESS> [--amount <ETH>] [--wait]
+```
+
+**Arguments**:
+- `<CONFIG>` - Network name or path to `Kupcake.toml` / outdata directory
+
+**Options**:
+- `--to <ADDRESS>` - L2 recipient address (0x-prefixed, 40 hex chars) **(required)**
+- `--amount <ETH>` - Amount of ETH to send (default: `1.0`)
+- `--wait` - Wait for the deposit to appear on L2 before returning
+
+**Behavior**:
+- Loads the `Kupcake.toml` configuration
+- Reads the deployer account (index 0) from `anvil.json`
+- Reads the `OptimismPortalProxy` address from `state.json`
+- Calls `depositTransaction` on the portal via `eth_sendTransaction` (Anvil auto-signs)
+- Optionally polls the L2 sequencer's `eth_getBalance` until the balance increases
+
+**Examples**:
+```bash
+# Send 1 ETH (default) to an address
+kupcake faucet kup-nutty-songs --to 0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+
+# Send 10 ETH and wait for it to appear on L2
+kupcake faucet kup-nutty-songs --to 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 --amount 10 --wait
+
+# Using a config file path
+kupcake faucet ./data-kup-nutty-songs/Kupcake.toml --to 0xdead...beef --amount 0.5
+```
+
 ### `cleanup`
 
 Clean up containers and network by prefix.

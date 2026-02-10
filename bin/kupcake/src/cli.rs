@@ -110,6 +110,12 @@ pub enum Commands {
     /// Loads the Kupcake.toml configuration, verifies containers are running,
     /// queries RPC endpoints, and checks that chain IDs and block production match expectations.
     Health(HealthArgs),
+
+    /// Send ETH to an L2 address via the OptimismPortal deposit mechanism.
+    ///
+    /// Bridges ETH from the L1 (Anvil) deployer account to a specified L2 address
+    /// by calling depositTransaction on the OptimismPortalProxy contract.
+    Faucet(FaucetArgs),
 }
 
 /// Arguments for the health check command.
@@ -122,6 +128,30 @@ pub struct HealthArgs {
     /// Otherwise treats the argument as a file/directory path.
     #[arg(required = true)]
     pub config: String,
+}
+
+/// Arguments for the faucet command.
+#[derive(Parser)]
+pub struct FaucetArgs {
+    /// Network name or path to Kupcake.toml / outdata directory.
+    ///
+    /// If a network name is given (e.g. "kup-nutty-songs"), loads
+    /// the config from the default path: ./data-<name>/Kupcake.toml
+    /// Otherwise treats the argument as a file/directory path.
+    #[arg(required = true)]
+    pub config: String,
+
+    /// L2 address to receive the ETH (0x-prefixed, 40 hex chars).
+    #[arg(long)]
+    pub to: String,
+
+    /// Amount of ETH to send.
+    #[arg(long, default_value_t = 1.0)]
+    pub amount: f64,
+
+    /// Wait for the deposit to appear on L2 before returning.
+    #[arg(long)]
+    pub wait: bool,
 }
 
 /// Arguments for the cleanup command.

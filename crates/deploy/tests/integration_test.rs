@@ -12,6 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use kupcake_deploy::{
     DeployerBuilder, DeploymentResult, OutDataPath, cleanup_by_prefix,
+    faucet,
     health,
     rpc, services::SyncStatus,
 };
@@ -1803,5 +1804,338 @@ async fn test_health_check_reports_unhealthy_on_stopped_container() -> Result<()
     ctx.cleanup().await?;
 
     println!("=== Test passed! Health check correctly reports unhealthy network. ===");
+    Ok(())
+}
+
+/// Query eth_getBalance on an L2 node and return the balance as a u128 (wei).
+async fn get_l2_balance(rpc_url: &str, address: &str) -> Result<u128> {
+    let client = rpc::create_client()?;
+    let balance_hex: String = rpc::json_rpc_call(
+        &client,
+        rpc_url,
+        "eth_getBalance",
+        vec![serde_json::json!(address), serde_json::json!("latest")],
+    )
+    .await
+    .context("Failed to get L2 balance")?;
+
+    u128::from_str_radix(balance_hex.trim_start_matches("0x"), 16)
+        .context("Failed to parse balance hex")
+}
+
+/// Test that faucet_deposit sends ETH from L1 to L2 and the deposit arrives.
+///
+/// This test:
+/// - Deploys a network in detached mode
+/// - Waits for the sequencer to be ready
+/// - Calls faucet_deposit with wait=true to send 1 ETH to a test address
+/// - Verifies the L1 tx hash is returned
+/// - Verifies the L2 balance increased
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_faucet_deposit_with_wait() -> Result<()> {
+    init_test_tracing();
+
+    let ctx = TestContext::new("faucet-wait");
+    println!(
+        "=== Starting faucet deposit (with wait) test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name, ctx.l1_chain_id
+    );
+
+    let deployer = ctx.build_deployer().await?;
+    deployer.save_config()?;
+
+    println!("=== Deploying network... ===");
+    let deployment = ctx.deploy(deployer).await?;
+    println!("=== Deployment completed successfully ===");
+
+    // Wait for nodes to be ready
+    println!("=== Waiting for nodes to be ready... ===");
+    wait_for_all_nodes(&deployment).await;
+
+    // Let the network stabilize for a few blocks
+    println!("=== Waiting 15 seconds for network to stabilize... ===");
+    sleep(Duration::from_secs(15)).await;
+
+    // Load the deployer from config for faucet_deposit
+    let config_path = ctx.outdata_path.join("Kupcake.toml");
+    let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
+        .context("Failed to load deployer from config file")?;
+
+    // Use an arbitrary test address (not a deployer account)
+    let test_address = "0x000000000000000000000000000000000000dEaD";
+
+    // Get the sequencer host RPC URL for balance checks
+    let seq_reth_port = get_container_host_port(
+        &format!("{}-op-reth", ctx.network_name),
+        loaded_deployer.l2_stack.sequencers[0].op_reth.http_port,
+    )
+    .context("Failed to get sequencer op-reth port")?;
+    let l2_rpc_url = format!("http://localhost:{}", seq_reth_port);
+
+    // Verify initial balance is zero
+    let initial_balance = get_l2_balance(&l2_rpc_url, test_address).await?;
+    println!("Initial L2 balance: {} wei", initial_balance);
+    assert_eq!(initial_balance, 0, "Test address should start with zero balance");
+
+    // Send 1 ETH via faucet with wait=true
+    println!("=== Sending 1 ETH via faucet (wait=true)... ===");
+    let result = faucet::faucet_deposit(&loaded_deployer, test_address, 1.0, true).await?;
+
+    // Verify tx hash is returned
+    assert!(
+        result.l1_tx_hash.starts_with("0x"),
+        "L1 tx hash should be a hex string, got: {}",
+        result.l1_tx_hash
+    );
+    println!("L1 tx hash: {}", result.l1_tx_hash);
+
+    // Verify L2 balance was returned (wait=true)
+    assert!(
+        result.l2_balance.is_some(),
+        "L2 balance should be returned when wait=true"
+    );
+    let l2_balance_hex = result.l2_balance.as_ref().unwrap();
+    println!("L2 balance after deposit: {}", l2_balance_hex);
+
+    // Verify balance is now ~1 ETH (1e18 wei)
+    let final_balance = get_l2_balance(&l2_rpc_url, test_address).await?;
+    println!("Final L2 balance: {} wei", final_balance);
+
+    let one_eth_wei: u128 = 1_000_000_000_000_000_000;
+    assert_eq!(
+        final_balance, one_eth_wei,
+        "L2 balance should be exactly 1 ETH (1e18 wei)"
+    );
+
+    // Cleanup
+    println!("=== Cleaning up network... ===");
+    ctx.cleanup().await?;
+
+    println!("=== Test passed! Faucet deposit with wait works correctly. ===");
+    Ok(())
+}
+
+/// Test that faucet_deposit without wait returns immediately with just the L1 tx hash.
+///
+/// This test:
+/// - Deploys a network in detached mode
+/// - Calls faucet_deposit with wait=false
+/// - Verifies the L1 tx hash is returned
+/// - Verifies L2 balance is None (no waiting)
+/// - Then manually polls to confirm the deposit eventually arrives
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_faucet_deposit_no_wait() -> Result<()> {
+    init_test_tracing();
+
+    let ctx = TestContext::new("faucet-nowait");
+    println!(
+        "=== Starting faucet deposit (no wait) test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name, ctx.l1_chain_id
+    );
+
+    let deployer = ctx.build_deployer().await?;
+    deployer.save_config()?;
+
+    println!("=== Deploying network... ===");
+    let deployment = ctx.deploy(deployer).await?;
+    println!("=== Deployment completed successfully ===");
+
+    println!("=== Waiting for nodes to be ready... ===");
+    wait_for_all_nodes(&deployment).await;
+
+    println!("=== Waiting 15 seconds for network to stabilize... ===");
+    sleep(Duration::from_secs(15)).await;
+
+    let config_path = ctx.outdata_path.join("Kupcake.toml");
+    let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
+        .context("Failed to load deployer from config file")?;
+
+    let test_address = "0x0000000000000000000000000000000000001234";
+
+    // Send 2 ETH via faucet with wait=false
+    println!("=== Sending 2 ETH via faucet (wait=false)... ===");
+    let result = faucet::faucet_deposit(&loaded_deployer, test_address, 2.0, false).await?;
+
+    // Verify tx hash is returned
+    assert!(
+        result.l1_tx_hash.starts_with("0x"),
+        "L1 tx hash should be a hex string, got: {}",
+        result.l1_tx_hash
+    );
+    println!("L1 tx hash: {}", result.l1_tx_hash);
+
+    // Verify L2 balance is None (wait=false)
+    assert!(
+        result.l2_balance.is_none(),
+        "L2 balance should be None when wait=false"
+    );
+
+    // Manually poll to confirm the deposit eventually arrives
+    let seq_reth_port = get_container_host_port(
+        &format!("{}-op-reth", ctx.network_name),
+        loaded_deployer.l2_stack.sequencers[0].op_reth.http_port,
+    )
+    .context("Failed to get sequencer op-reth port")?;
+    let l2_rpc_url = format!("http://localhost:{}", seq_reth_port);
+
+    println!("=== Polling for L2 deposit to arrive (up to 120s)... ===");
+    let two_eth_wei: u128 = 2_000_000_000_000_000_000;
+
+    rpc::wait_until_ready("L2 faucet deposit", 120, || {
+        let url = l2_rpc_url.clone();
+        let addr = test_address.to_string();
+        async move {
+            let balance = get_l2_balance(&url, &addr).await?;
+            if balance >= two_eth_wei {
+                Ok(())
+            } else {
+                anyhow::bail!("Balance {} < expected {}", balance, two_eth_wei)
+            }
+        }
+    })
+    .await
+    .context("Deposit did not arrive on L2 within timeout")?;
+
+    let final_balance = get_l2_balance(&l2_rpc_url, test_address).await?;
+    println!("Final L2 balance: {} wei", final_balance);
+    assert_eq!(final_balance, two_eth_wei, "L2 balance should be exactly 2 ETH");
+
+    // Cleanup
+    println!("=== Cleaning up network... ===");
+    ctx.cleanup().await?;
+
+    println!("=== Test passed! Faucet deposit without wait works correctly. ===");
+    Ok(())
+}
+
+/// Test that multiple faucet deposits accumulate on L2.
+///
+/// This test:
+/// - Deploys a network
+/// - Sends 1 ETH, waits, verifies 1 ETH balance
+/// - Sends 0.5 ETH more, waits, verifies 1.5 ETH total
+/// - Confirms deposits are additive
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_faucet_multiple_deposits() -> Result<()> {
+    init_test_tracing();
+
+    let ctx = TestContext::new("faucet-multi");
+    println!(
+        "=== Starting faucet multiple deposits test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name, ctx.l1_chain_id
+    );
+
+    let deployer = ctx.build_deployer().await?;
+    deployer.save_config()?;
+
+    println!("=== Deploying network... ===");
+    let deployment = ctx.deploy(deployer).await?;
+    println!("=== Deployment completed successfully ===");
+
+    println!("=== Waiting for nodes to be ready... ===");
+    wait_for_all_nodes(&deployment).await;
+
+    println!("=== Waiting 15 seconds for network to stabilize... ===");
+    sleep(Duration::from_secs(15)).await;
+
+    let config_path = ctx.outdata_path.join("Kupcake.toml");
+    let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
+        .context("Failed to load deployer from config file")?;
+
+    let test_address = "0x0000000000000000000000000000000000005678";
+
+    let seq_reth_port = get_container_host_port(
+        &format!("{}-op-reth", ctx.network_name),
+        loaded_deployer.l2_stack.sequencers[0].op_reth.http_port,
+    )
+    .context("Failed to get sequencer op-reth port")?;
+    let l2_rpc_url = format!("http://localhost:{}", seq_reth_port);
+
+    // First deposit: 1 ETH
+    println!("=== Sending first deposit: 1 ETH... ===");
+    let result1 = faucet::faucet_deposit(&loaded_deployer, test_address, 1.0, true).await?;
+    println!("First deposit L1 tx: {}", result1.l1_tx_hash);
+
+    let balance_after_first = get_l2_balance(&l2_rpc_url, test_address).await?;
+    let one_eth: u128 = 1_000_000_000_000_000_000;
+    println!("Balance after first deposit: {} wei", balance_after_first);
+    assert_eq!(balance_after_first, one_eth, "Balance should be 1 ETH after first deposit");
+
+    // Second deposit: 0.5 ETH
+    println!("=== Sending second deposit: 0.5 ETH... ===");
+    let result2 = faucet::faucet_deposit(&loaded_deployer, test_address, 0.5, true).await?;
+    println!("Second deposit L1 tx: {}", result2.l1_tx_hash);
+
+    // Verify tx hashes are different
+    assert_ne!(
+        result1.l1_tx_hash, result2.l1_tx_hash,
+        "Each deposit should have a unique tx hash"
+    );
+
+    let balance_after_second = get_l2_balance(&l2_rpc_url, test_address).await?;
+    let one_and_half_eth: u128 = 1_500_000_000_000_000_000;
+    println!("Balance after second deposit: {} wei", balance_after_second);
+    assert_eq!(
+        balance_after_second, one_and_half_eth,
+        "Balance should be 1.5 ETH after both deposits"
+    );
+
+    // Cleanup
+    println!("=== Cleaning up network... ===");
+    ctx.cleanup().await?;
+
+    println!("=== Test passed! Multiple faucet deposits accumulate correctly. ===");
+    Ok(())
+}
+
+/// Test that faucet_deposit rejects invalid addresses.
+///
+/// This test verifies the address validation without deploying a network,
+/// since validation happens before any RPC calls.
+#[tokio::test]
+async fn test_faucet_rejects_invalid_address() -> Result<()> {
+    init_test_tracing();
+
+    let ctx = TestContext::new("faucet-invalid");
+    let deployer = ctx.build_deployer().await?;
+    deployer.save_config()?;
+
+    // Deploy so we have a valid config (the deployer config is needed to get past
+    // load_from_file, but validation happens before any RPC calls)
+    let config_path = ctx.outdata_path.join("Kupcake.toml");
+    let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
+        .context("Failed to load deployer from config file")?;
+
+    // Test with too-short address
+    let result = faucet::faucet_deposit(&loaded_deployer, "0x1234", 1.0, false).await;
+    assert!(result.is_err(), "Should reject short address");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("Invalid address"),
+        "Error should mention invalid address, got: {}",
+        err_msg
+    );
+
+    // Test with no 0x prefix
+    let result = faucet::faucet_deposit(
+        &loaded_deployer,
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef00",
+        1.0,
+        false,
+    )
+    .await;
+    assert!(result.is_err(), "Should reject address without 0x prefix");
+
+    // Test with non-hex characters
+    let result = faucet::faucet_deposit(
+        &loaded_deployer,
+        "0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+        1.0,
+        false,
+    )
+    .await;
+    assert!(result.is_err(), "Should reject non-hex address");
+
+    println!("=== Test passed! Faucet correctly rejects invalid addresses. ===");
     Ok(())
 }

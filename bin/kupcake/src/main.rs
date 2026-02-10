@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, CleanupArgs, Commands, DeployArgs, HealthArgs, L1Source, OutData};
+use cli::{Cli, CleanupArgs, Commands, DeployArgs, FaucetArgs, HealthArgs, L1Source, OutData};
 use kupcake_deploy::{Deployer, DeployerBuilder, OutDataPath, cleanup_by_prefix};
 
 #[tokio::main]
@@ -22,6 +22,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Cleanup(args)) => run_cleanup(args).await,
         Some(Commands::Deploy(args)) => run_deploy(args).await,
+        Some(Commands::Faucet(args)) => run_faucet(args).await,
         Some(Commands::Health(args)) => run_health(args).await,
         // Default to deploy with default args when no subcommand is provided
         None => run_deploy(DeployArgs::default()).await,
@@ -54,14 +55,20 @@ async fn run_cleanup(args: CleanupArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_health(args: HealthArgs) -> Result<()> {
-    // Resolve the config path: if it looks like a path (contains / or . or ends with .toml),
-    // use it directly. Otherwise treat it as a network name -> ./data-{name}/Kupcake.toml
-    let config_path = if args.config.contains('/') || args.config.contains('.') {
-        PathBuf::from(&args.config)
+/// Resolve a config argument to a path.
+///
+/// If it looks like a path (contains `/` or `.`), use it directly.
+/// Otherwise treat it as a network name and resolve to `./data-{name}/Kupcake.toml`.
+fn resolve_config_path(config: &str) -> PathBuf {
+    if config.contains('/') || config.contains('.') {
+        PathBuf::from(config)
     } else {
-        PathBuf::from(format!("data-{}", args.config))
-    };
+        PathBuf::from(format!("data-{}", config))
+    }
+}
+
+async fn run_health(args: HealthArgs) -> Result<()> {
+    let config_path = resolve_config_path(&args.config);
 
     let deployer = Deployer::load_from_file(&config_path)?;
 
@@ -78,6 +85,31 @@ async fn run_health(args: HealthArgs) -> Result<()> {
 
     if !report.healthy {
         std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+async fn run_faucet(args: FaucetArgs) -> Result<()> {
+    let config_path = resolve_config_path(&args.config);
+
+    let deployer = Deployer::load_from_file(&config_path)?;
+
+    tracing::info!(
+        config = %config_path.display(),
+        to = %args.to,
+        amount = args.amount,
+        wait = args.wait,
+        "Running faucet deposit..."
+    );
+
+    let result =
+        kupcake_deploy::faucet::faucet_deposit(&deployer, &args.to, args.amount, args.wait)
+            .await?;
+
+    tracing::info!(tx_hash = %result.l1_tx_hash, "Deposit sent on L1");
+    if let Some(balance) = result.l2_balance {
+        tracing::info!(l2_balance = %balance, "Deposit confirmed on L2");
     }
 
     Ok(())
