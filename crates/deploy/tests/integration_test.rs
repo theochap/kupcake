@@ -68,11 +68,12 @@ impl TestContext {
             .context("Failed to build deployer")
     }
 
+
     /// Execute a deployment with timeout and error handling.
     ///
     /// Returns the DeploymentResult on success.
     async fn deploy(&self, deployer: kupcake_deploy::Deployer) -> Result<DeploymentResult> {
-        let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
+        let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false, false)).await;
 
         match deploy_result {
             Ok(Ok(deployment)) => Ok(deployment),
@@ -326,7 +327,7 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
     println!("=== Deploying network... ===");
 
     // Deploy with a timeout
-    let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
+    let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false, false)).await;
 
     let deployment = match deploy_result {
         Ok(Ok(deployment)) => {
@@ -438,7 +439,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
 
     println!("=== Deploying network... ===");
 
-    let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
+    let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false, false)).await;
 
     let deployment = match deploy_result {
         Ok(Ok(deployment)) => {
@@ -606,7 +607,7 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
 
     println!("=== Deploying network with 2 sequencers + conductor... ===");
 
-    let deploy_result = timeout(Duration::from_secs(CONDUCTOR_DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
+    let deploy_result = timeout(Duration::from_secs(CONDUCTOR_DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false, false)).await;
 
     match deploy_result {
         Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
@@ -808,7 +809,7 @@ async fn test_op_batcher_health() -> Result<()> {
 
     println!("=== Deploying network... ===");
 
-    let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
+    let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false, false)).await;
 
     match deploy_result {
         Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
@@ -945,7 +946,7 @@ async fn test_publish_all_ports() -> Result<()> {
 
     println!("=== Deploying network with publish_all_ports enabled... ===");
 
-    let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false)).await;
+    let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false, false)).await;
 
     match deploy_result {
         Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
@@ -1200,7 +1201,7 @@ async fn test_local_kona_binary() -> Result<()> {
 
     println!("=== Deploying network with local kona-node binary... ===");
     let deployment = deployer
-        .deploy(false)
+        .deploy(false, false)
         .await
         .context("Failed to deploy network")?;
 
@@ -2794,5 +2795,344 @@ async fn test_spam_container_on_correct_network() -> Result<()> {
     ctx.cleanup().await?;
 
     println!("=== Test passed! Contender container runs on correct Docker network. ===");
+    Ok(())
+}
+
+// ==================== Spam Preset Tests ====================
+
+/// Helper: deploy a network, run spam with a given preset, and verify that
+/// the preset generated strictly more transactions than the number of blocks
+/// produced (proving actual spam traffic beyond the 1 L1-attributes-deposit
+/// tx that every L2 block contains).
+///
+/// Returns (total_txs, blocks_advanced) on success.
+async fn run_preset_and_verify_traffic(
+    preset: kupcake_deploy::spam::SpamPreset,
+    test_prefix: &str,
+    spam_duration_secs: u64,
+) -> Result<(usize, u64)> {
+    let ctx = TestContext::new(test_prefix);
+    println!(
+        "=== [{}] Starting preset test with network: {} (L1 chain ID: {}) ===",
+        preset, ctx.network_name, ctx.l1_chain_id
+    );
+
+    let mut deployer = ctx.build_deployer().await?;
+
+    // Increase op-reth RPC connection limit so heavy spam presets don't get 429s.
+    // op-reth's own test config uses 429496729 (essentially unlimited).
+    for seq in &mut deployer.l2_stack.sequencers {
+        seq.op_reth.rpc_max_connections = Some(429496729);
+    }
+    for val in &mut deployer.l2_stack.validators {
+        val.op_reth.rpc_max_connections = Some(429496729);
+    }
+
+    deployer.save_config()?;
+
+    println!("=== [{}] Deploying network... ===", preset);
+    let deployment = ctx.deploy(deployer).await?;
+
+    println!("=== [{}] Waiting for nodes to be ready... ===", preset);
+    wait_for_all_nodes(&deployment).await;
+    sleep(Duration::from_secs(10)).await;
+
+    let config_path = ctx.outdata_path.join("Kupcake.toml");
+    let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)?;
+
+    // Get L2 RPC URL
+    let seq_reth_port = get_container_host_port(
+        &format!("{}-op-reth", ctx.network_name),
+        loaded_deployer.l2_stack.sequencers[0].op_reth.http_port,
+    )?;
+    let l2_rpc_url = format!("http://localhost:{}", seq_reth_port);
+
+    // Record initial block number
+    let initial_block = get_block_number(&l2_rpc_url).await?;
+    println!("=== [{}] Initial block number: {} ===", preset, initial_block);
+
+    // Generate config from the preset, override forever → bounded duration
+    let mut spam_config = preset.to_config();
+    spam_config.forever = false;
+    spam_config.duration = spam_duration_secs;
+
+    println!(
+        "=== [{}] Running spam (scenario={}, tps={}, accounts={}, duration={}s)... ===",
+        preset, spam_config.scenario, spam_config.tps, spam_config.accounts, spam_config.duration
+    );
+
+    let spam_result = timeout(
+        Duration::from_secs(300),
+        kupcake_deploy::spam::run_spam(&loaded_deployer, &spam_config),
+    )
+    .await;
+
+    match &spam_result {
+        Ok(Ok(())) => println!("[{}] Spam completed successfully", preset),
+        Ok(Err(e)) => println!("[{}] Spam completed with error (may be expected): {}", preset, e),
+        Err(_) => {
+            ctx.cleanup().await?;
+            anyhow::bail!("[{}] Spam timed out after 300 seconds", preset);
+        }
+    }
+
+    // Wait for remaining blocks to land
+    sleep(Duration::from_secs(5)).await;
+
+    let final_block = get_block_number(&l2_rpc_url).await?;
+    let blocks_advanced = final_block - initial_block;
+    println!(
+        "[{}] Final block: {} (advanced {} blocks)",
+        preset, final_block, blocks_advanced
+    );
+
+    assert!(
+        blocks_advanced > 0,
+        "[{}] Block number should advance during spam ({} -> {})",
+        preset, initial_block, final_block
+    );
+
+    // Count total transactions across all new blocks
+    let mut total_txs: usize = 0;
+    let blocks_to_check = std::cmp::min(blocks_advanced, 20);
+    for i in 0..blocks_to_check {
+        let block_num = initial_block + 1 + i;
+        if let Ok(tx_count) = get_block_tx_count(&l2_rpc_url, block_num).await {
+            if tx_count > 0 {
+                println!("  [{}] Block {}: {} tx(s)", preset, block_num, tx_count);
+            }
+            total_txs += tx_count;
+        }
+    }
+
+    println!(
+        "[{}] Total txs: {}, blocks checked: {}, blocks advanced: {}",
+        preset, total_txs, blocks_to_check, blocks_advanced
+    );
+
+    // Each block contains at least 1 system tx (L1-attributes deposit).
+    // Spam must produce strictly more txs than blocks, proving real user traffic.
+    assert!(
+        total_txs as u64 > blocks_to_check,
+        "[{}] Expected more transactions ({}) than blocks ({}) — \
+         spam should generate traffic beyond the 1 system tx per block",
+        preset, total_txs, blocks_to_check
+    );
+
+    // Verify contender data directory was created
+    let contender_dir = ctx.outdata_path.join("contender");
+    assert!(
+        contender_dir.exists(),
+        "[{}] Contender data directory should exist after spam",
+        preset
+    );
+
+    ctx.cleanup().await?;
+    println!(
+        "=== [{}] PASSED — {} txs across {} blocks (ratio: {:.1}x) ===",
+        preset,
+        total_txs,
+        blocks_to_check,
+        total_txs as f64 / blocks_to_check as f64
+    );
+    Ok((total_txs, blocks_advanced))
+}
+
+/// Test that SpamPreset::Light generates real L2 traffic.
+///
+/// Verifies total transactions > blocks produced (proving spam beyond system txs).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_spam_preset_light_generates_traffic() -> Result<()> {
+    init_test_tracing();
+    let (total_txs, _) = run_preset_and_verify_traffic(
+        kupcake_deploy::spam::SpamPreset::Light,
+        "spam-preset-light",
+        15,
+    )
+    .await?;
+    assert!(total_txs > 1, "Light preset should produce multiple transactions");
+    Ok(())
+}
+
+/// Test that SpamPreset::Erc20 generates real L2 traffic with the ERC-20 scenario.
+///
+/// Verifies total transactions > blocks produced (proving spam beyond system txs).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_spam_preset_erc20_generates_traffic() -> Result<()> {
+    init_test_tracing();
+    let (total_txs, _) = run_preset_and_verify_traffic(
+        kupcake_deploy::spam::SpamPreset::Erc20,
+        "spam-preset-erc20",
+        15,
+    )
+    .await?;
+    assert!(total_txs > 1, "Erc20 preset should produce multiple transactions");
+    Ok(())
+}
+
+/// Test that SpamPreset::Heavy generates more traffic than SpamPreset::Light.
+///
+/// Heavy has 200 TPS / 50 accounts vs Light's 10 TPS / 5 accounts,
+/// so it should produce noticeably more transactions in the same duration.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_spam_preset_heavy_more_traffic_than_light() -> Result<()> {
+    init_test_tracing();
+
+    let (light_txs, _) = run_preset_and_verify_traffic(
+        kupcake_deploy::spam::SpamPreset::Light,
+        "spam-cmp-light",
+        10,
+    )
+    .await?;
+
+    let (heavy_txs, _) = run_preset_and_verify_traffic(
+        kupcake_deploy::spam::SpamPreset::Heavy,
+        "spam-cmp-heavy",
+        10,
+    )
+    .await?;
+
+    println!(
+        "Light txs: {}, Heavy txs: {} (ratio: {:.1}x)",
+        light_txs,
+        heavy_txs,
+        heavy_txs as f64 / light_txs.max(1) as f64
+    );
+
+    assert!(
+        heavy_txs > light_txs,
+        "Heavy preset ({} txs) should produce more traffic than Light ({} txs)",
+        heavy_txs, light_txs
+    );
+
+    Ok(())
+}
+
+/// Test the full `kupcake --spam` flow: deploy(no-wait) → reload config → spam → cleanup.
+///
+/// This simulates the exact code path that `kupcake --spam` uses:
+/// 1. Build and save deployer config
+/// 2. Deploy with wait_for_exit=false (returns immediately after services start)
+/// 3. Reload deployer from saved Kupcake.toml
+/// 4. Run spam using SpamPreset::Light
+/// 5. Cleanup via prefix (simulating the post-spam cleanup)
+///
+/// Verifies the spam generated more txs than blocks (real traffic).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_spam_deploy_no_wait_then_reload_and_spam() -> Result<()> {
+    init_test_tracing();
+
+    let ctx = TestContext::new("spam-nowait");
+    println!(
+        "=== Starting spam no-wait deploy test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name, ctx.l1_chain_id
+    );
+
+    let deployer = ctx.build_deployer().await?;
+    let config_path = deployer.save_config()?;
+
+    println!("=== Deploying with wait_for_exit=false... ===");
+
+    // Deploy with wait_for_exit=false — exactly what --spam does
+    let deployment_result = timeout(
+        Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS),
+        deployer.deploy(false, false),
+    )
+    .await;
+
+    let deployment = match deployment_result {
+        Ok(Ok(d)) => d,
+        Ok(Err(e)) => {
+            let _ = cleanup_by_prefix(&ctx.network_name).await;
+            return Err(e).context("Deployment failed");
+        }
+        Err(_) => {
+            let _ = cleanup_by_prefix(&ctx.network_name).await;
+            anyhow::bail!("Deployment timed out");
+        }
+    };
+
+    println!("=== Deploy returned immediately (no wait). Waiting for nodes... ===");
+    wait_for_all_nodes(&deployment).await;
+    sleep(Duration::from_secs(10)).await;
+
+    // Reload deployer from saved config — exactly what run_spam_after_deploy does
+    let reloaded = kupcake_deploy::Deployer::load_from_file(&config_path)?;
+    assert_eq!(reloaded.l1_chain_id, ctx.l1_chain_id);
+    assert_eq!(
+        reloaded.docker.net_name,
+        format!("{}-network", ctx.network_name)
+    );
+
+    // Get L2 RPC URL for traffic verification
+    let seq_reth_port = get_container_host_port(
+        &format!("{}-op-reth", ctx.network_name),
+        reloaded.l2_stack.sequencers[0].op_reth.http_port,
+    )?;
+    let l2_rpc_url = format!("http://localhost:{}", seq_reth_port);
+    let initial_block = get_block_number(&l2_rpc_url).await?;
+
+    // Use SpamPreset::Light with short duration
+    let mut spam_config = kupcake_deploy::spam::SpamPreset::Light.to_config();
+    spam_config.forever = false;
+    spam_config.duration = 10;
+
+    println!("=== Running spam from reloaded deployer... ===");
+    let spam_result = timeout(
+        Duration::from_secs(300),
+        kupcake_deploy::spam::run_spam(&reloaded, &spam_config),
+    )
+    .await;
+
+    match &spam_result {
+        Ok(Ok(())) => println!("Spam completed successfully from reloaded deployer"),
+        Ok(Err(e)) => println!("Spam completed with error (may be expected): {}", e),
+        Err(_) => {
+            let _ = cleanup_by_prefix(&ctx.network_name).await;
+            anyhow::bail!("Spam timed out after 300 seconds");
+        }
+    }
+
+    // Verify traffic was generated
+    sleep(Duration::from_secs(5)).await;
+    let final_block = get_block_number(&l2_rpc_url).await?;
+    let blocks_advanced = final_block - initial_block;
+
+    let mut total_txs: usize = 0;
+    let blocks_to_check = std::cmp::min(blocks_advanced, 20);
+    for i in 0..blocks_to_check {
+        let block_num = initial_block + 1 + i;
+        if let Ok(tx_count) = get_block_tx_count(&l2_rpc_url, block_num).await {
+            total_txs += tx_count;
+        }
+    }
+
+    println!(
+        "No-wait flow: {} txs across {} blocks (ratio: {:.1}x)",
+        total_txs,
+        blocks_to_check,
+        total_txs as f64 / blocks_to_check.max(1) as f64
+    );
+
+    assert!(
+        total_txs as u64 > blocks_to_check,
+        "Expected more transactions ({}) than blocks ({}) — \
+         spam should generate traffic beyond the 1 system tx per block",
+        total_txs, blocks_to_check
+    );
+
+    // Cleanup (simulates what --spam does when user didn't set --no-cleanup)
+    println!("=== Cleaning up via prefix (simulating --spam cleanup)... ===");
+    let cleanup_result = cleanup_by_prefix(&ctx.network_name).await?;
+    assert!(
+        !cleanup_result.containers_removed.is_empty(),
+        "Should have cleaned up deployment containers"
+    );
+    println!(
+        "Cleaned up {} containers",
+        cleanup_result.containers_removed.len()
+    );
+
+    println!("=== Test passed! Full --spam flow: deploy(no-wait) → reload → spam → cleanup ===");
     Ok(())
 }

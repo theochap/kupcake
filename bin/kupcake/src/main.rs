@@ -8,7 +8,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use cli::{Cli, CleanupArgs, Commands, DeployArgs, FaucetArgs, HealthArgs, L1Source, OutData, SpamArgs};
-use kupcake_deploy::{Deployer, DeployerBuilder, OutDataPath, cleanup_by_prefix};
+use kupcake_deploy::{Deployer, DeployerBuilder, OutDataPath, SpamPreset, cleanup_by_prefix};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -133,10 +133,24 @@ async fn run_spam_cmd(args: SpamArgs) -> Result<()> {
 }
 
 async fn run_deploy(args: DeployArgs) -> Result<()> {
+    // Parse spam preset early so we fail fast on invalid names
+    let spam_preset = args
+        .spam
+        .as_deref()
+        .map(|s| {
+            s.parse::<SpamPreset>()
+                .map_err(|_| anyhow::anyhow!(
+                    "Unknown spam preset '{}'. Available presets: {}",
+                    s,
+                    SpamPreset::all().iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
+                ))
+        })
+        .transpose()?;
+
     // If a config file is provided, load it and deploy
     if let Some(config_path) = &args.config {
         let config_path = PathBuf::from(config_path);
-        let deployer = Deployer::load_from_file(&config_path)?;
+        let mut deployer = Deployer::load_from_file(&config_path)?;
 
         tracing::info!(
             config_path = %config_path.display(),
@@ -146,8 +160,15 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
             "Loading deployment from config file..."
         );
 
-        let _result = deployer.deploy(args.redeploy).await?;
+        if let Some(preset) = spam_preset {
+            let user_no_cleanup = deployer.docker.no_cleanup;
+            deployer.docker.no_cleanup = true;
+            let _result = deployer.deploy(args.redeploy, false).await?;
 
+            return run_spam_after_deploy(&config_path, preset, user_no_cleanup).await;
+        }
+
+        let _result = deployer.deploy(args.redeploy, true).await?;
         return Ok(());
     }
 
@@ -156,6 +177,9 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
     // - Known chain (sepolia/mainnet): use known chain ID and public RPC
     // - Custom RPC URL: detect chain ID via eth_chainId
     let (l1_chain_id, l1_rpc_url) = resolve_l1_config(args.l1).await?;
+
+    // When spam is requested, force no_cleanup so containers stay alive during spam
+    let no_cleanup = spam_preset.is_some() || args.no_cleanup;
 
     // Create a new deployment from CLI arguments
     let mut deployer_builder = DeployerBuilder::new(l1_chain_id)
@@ -166,7 +190,7 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
             OutData::Path(path) => OutDataPath::Path(PathBuf::from(path)),
         }))
         .maybe_l1_rpc_url(l1_rpc_url)
-        .no_cleanup(args.no_cleanup)
+        .no_cleanup(no_cleanup)
         .detach(args.detach)
         .publish_all_ports(args.publish_all_ports)
         .block_time(args.block_time)
@@ -221,11 +245,56 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         .await?;
 
     // Save the configuration to kupconf.toml before deploying
-    deployer.save_config()?;
+    let config_path = deployer.save_config()?;
 
-    let _result = deployer.deploy(args.redeploy).await?;
+    if let Some(preset) = spam_preset {
+        // Deploy without waiting, then run spam
+        let _result = deployer.deploy(args.redeploy, false).await?;
+        return run_spam_after_deploy(&config_path, preset, args.no_cleanup).await;
+    }
+
+    let _result = deployer.deploy(args.redeploy, true).await?;
 
     Ok(())
+}
+
+/// Run spam after a successful deployment, then clean up if needed.
+///
+/// Reloads the deployer from the saved config, creates a SpamConfig from the preset,
+/// runs spam until Ctrl+C, then optionally cleans up containers.
+async fn run_spam_after_deploy(
+    config_path: &std::path::Path,
+    preset: SpamPreset,
+    user_no_cleanup: bool,
+) -> Result<()> {
+    // Reload from disk since deploy() consumes the Deployer.
+    // This also picks up any state written during deployment.
+    let deployer = Deployer::load_from_file(&config_path.to_path_buf())?;
+
+    let spam_config = preset.to_config();
+
+    tracing::info!(
+        preset = %preset,
+        scenario = %spam_config.scenario,
+        tps = spam_config.tps,
+        "Starting spam after deployment..."
+    );
+
+    let spam_result = kupcake_deploy::spam::run_spam(&deployer, &spam_config).await;
+
+    // Clean up deployment containers if the user didn't explicitly set --no-cleanup
+    if !user_no_cleanup {
+        let prefix = deployer
+            .docker
+            .net_name
+            .strip_suffix("-network")
+            .unwrap_or(&deployer.docker.net_name);
+
+        tracing::info!(prefix = %prefix, "Cleaning up deployment containers...");
+        let _ = cleanup_by_prefix(prefix).await;
+    }
+
+    spam_result
 }
 
 /// Resolve L1 chain ID and RPC URL from CLI arguments.

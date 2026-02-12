@@ -26,6 +26,8 @@ pub struct OpRethCmdBuilder {
     net_if: Option<String>,
     /// P2P secret key (32 bytes hex-encoded) for deterministic node identity.
     p2p_secret_key: Option<String>,
+    /// Maximum number of concurrent RPC connections (HTTP + WS combined).
+    rpc_max_connections: Option<u32>,
     log_format: String,
     extra_args: Vec<String>,
 }
@@ -54,6 +56,7 @@ impl OpRethCmdBuilder {
             nat_dns: None,
             net_if: None,
             p2p_secret_key: None,
+            rpc_max_connections: None,
             log_format: "terminal".to_string(),
             extra_args: Vec::new(),
         }
@@ -168,6 +171,12 @@ impl OpRethCmdBuilder {
         self
     }
 
+    /// Set the maximum number of concurrent RPC connections.
+    pub fn rpc_max_connections(mut self, max: u32) -> Self {
+        self.rpc_max_connections = Some(max);
+        self
+    }
+
     /// Set the log format.
     pub fn log_format(mut self, format: impl Into<String>) -> Self {
         self.log_format = format.into();
@@ -255,6 +264,11 @@ impl OpRethCmdBuilder {
             cmd.push(p2p_secret_key);
         }
 
+        if let Some(max) = self.rpc_max_connections {
+            cmd.push("--rpc.max-connections".to_string());
+            cmd.push(max.to_string());
+        }
+
         cmd.push("--log.stdout.format".to_string());
         cmd.push(self.log_format);
 
@@ -284,5 +298,25 @@ mod tests {
         assert!(cmd.contains(&"/data/genesis.json".to_string()));
         assert!(cmd.contains(&"--http.port".to_string()));
         assert!(cmd.contains(&"9545".to_string()));
+    }
+
+    #[test]
+    fn test_rpc_max_connections_flag() {
+        let cmd = OpRethCmdBuilder::new("/data/genesis.json", "/data/reth-data")
+            .rpc_max_connections(1000)
+            .build();
+
+        let pos = cmd.iter().position(|s| s == "--rpc.max-connections");
+        assert!(pos.is_some(), "Should contain --rpc.max-connections flag");
+        assert_eq!(cmd[pos.unwrap() + 1], "1000");
+    }
+
+    #[test]
+    fn test_rpc_max_connections_absent_by_default() {
+        let cmd = OpRethCmdBuilder::new("/data/genesis.json", "/data/reth-data").build();
+        assert!(
+            !cmd.contains(&"--rpc.max-connections".to_string()),
+            "Should not contain --rpc.max-connections when not set"
+        );
     }
 }

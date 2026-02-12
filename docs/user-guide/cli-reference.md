@@ -358,6 +358,49 @@ docker ps  # Verify containers running
 
 Use `kupcake cleanup <network-name>` to stop later.
 
+#### `--spam [PRESET]`
+
+Deploy and immediately start spamming with a named preset.
+
+**Default**: Not enabled. When flag is present without a value, defaults to `light`.
+**Environment Variable**: `KUP_SPAM`
+
+**Cannot be combined with**: `--detach`
+
+**Available Presets**:
+
+| Preset    | Scenario    | TPS  | Accounts | Description                    |
+|-----------|-------------|------|----------|--------------------------------|
+| `light`   | transfers   | 10   | 5        | Light ETH transfer traffic     |
+| `medium`  | transfers   | 50   | 20       | Moderate ETH transfer traffic  |
+| `heavy`   | transfers   | 200  | 50       | Heavy ETH transfer traffic     |
+| `erc20`   | erc20       | 50   | 20       | ERC-20 token transfers         |
+| `uniswap` | uni_v2      | 20   | 10       | Uniswap V2 swap traffic        |
+| `stress`  | transfers   | 500  | 100      | Stress test with high TPS      |
+
+All presets run indefinitely until Ctrl+C.
+
+**Behavior**:
+- Deploys the full OP Stack network
+- Funds a spammer account on L2 via the faucet
+- Starts Contender with the preset configuration
+- Ctrl+C stops both spam and the network (unless `--no-cleanup` is set)
+
+**Examples**:
+```bash
+# Deploy + light spam (default preset)
+kupcake --spam
+
+# Deploy + heavy workload
+kupcake --spam heavy
+
+# Deploy + DeFi workload
+kupcake --spam uniswap
+
+# Deploy + spam, keep containers running after Ctrl+C
+kupcake --spam heavy --no-cleanup
+```
+
 #### `--publish-all-ports`
 
 Publish all exposed container ports to random host ports.
@@ -785,6 +828,14 @@ kupcake --sequencer-count 3 --l2-nodes 7
 
 ```bash
 kupcake --block-time 1
+```
+
+### Deploy with Traffic Generation
+
+```bash
+kupcake --spam              # Light spam (default)
+kupcake --spam heavy        # Heavy workload
+kupcake --spam uniswap      # DeFi workload
 ```
 
 ### Detached Mode for CI/CD

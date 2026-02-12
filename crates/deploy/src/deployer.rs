@@ -329,7 +329,7 @@ impl Deployer {
         tracing::info!("  docker logs <container-name>");
     }
 
-    pub async fn deploy(self, force_deploy: bool) -> Result<DeploymentResult> {
+    pub async fn deploy(self, force_deploy: bool, wait_for_exit: bool) -> Result<DeploymentResult> {
         tracing::info!("Starting deployment process...");
 
         // Compute hash of current deployment configuration before any moves occur
@@ -543,13 +543,21 @@ impl Deployer {
 
         tracing::info!("");
 
-        if detach {
-            // Detached mode: print management info and exit
-            Self::print_detached_info(&outdata, &anvil, &l2_stack, &monitoring, &docker.network_id);
-        } else {
-            // Normal mode: wait for Ctrl+C
-            tracing::info!("Press Ctrl+C to stop all nodes and cleanup.");
-            tokio::signal::ctrl_c().await?;
+        if wait_for_exit {
+            if detach {
+                // Detached mode: print management info and exit
+                Self::print_detached_info(
+                    &outdata,
+                    &anvil,
+                    &l2_stack,
+                    &monitoring,
+                    &docker.network_id,
+                );
+            } else {
+                // Normal mode: wait for Ctrl+C
+                tracing::info!("Press Ctrl+C to stop all nodes and cleanup.");
+                tokio::signal::ctrl_c().await?;
+            }
         }
 
         Ok(DeploymentResult { anvil, l2_stack })

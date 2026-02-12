@@ -299,6 +299,21 @@ pub struct DeployArgs {
     #[arg(long, env = "KUP_DETACH")]
     pub detach: bool,
 
+    /// Deploy and immediately start spamming with a named preset.
+    ///
+    /// Accepts an optional preset name: light, medium, heavy, erc20, uniswap, stress.
+    /// If no preset is specified, defaults to "light".
+    /// Cannot be combined with --detach.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        default_missing_value = "light",
+        value_name = "PRESET",
+        env = "KUP_SPAM",
+        conflicts_with = "detach"
+    )]
+    pub spam: Option<String>,
+
     /// Publish all exposed container ports to random host ports.
     ///
     /// When enabled, Docker will automatically assign random available ports on the host
@@ -366,6 +381,7 @@ impl Default for DeployArgs {
             outdata: None,
             no_cleanup: false,
             detach: false,
+            spam: None,
             publish_all_ports: false,
             block_time: 12,
             genesis_timestamp: None,
@@ -540,6 +556,95 @@ impl Default for DockerImageOverrides {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    /// Helper to parse CLI args, simulating `kupcake <args>`.
+    fn parse_cli(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("kupcake").chain(args.iter().copied()))
+    }
+
+    /// Extract DeployArgs from parsed CLI (handles both explicit `deploy` and default).
+    fn deploy_args(cli: &Cli) -> &DeployArgs {
+        match &cli.command {
+            Some(Commands::Deploy(args)) => args,
+            None => panic!("Expected deploy command (default)"),
+            _ => panic!("Expected Deploy, got a different subcommand"),
+        }
+    }
+
+    // ── --spam flag CLI parsing tests ──
+
+    #[test]
+    fn test_spam_flag_absent() {
+        let cli = parse_cli(&["deploy"]).unwrap();
+        assert!(deploy_args(&cli).spam.is_none());
+    }
+
+    #[test]
+    fn test_spam_flag_absent_default_command() {
+        // No subcommand at all → default deploy (None), no spam to check
+        let cli = parse_cli(&[]).unwrap();
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_spam_flag_no_value_defaults_to_light() {
+        let cli = parse_cli(&["deploy", "--spam"]).unwrap();
+        assert_eq!(deploy_args(&cli).spam.as_deref(), Some("light"));
+    }
+
+    #[test]
+    fn test_spam_flag_with_preset_value() {
+        for preset in &["light", "medium", "heavy", "erc20", "uniswap", "stress"] {
+            let cli = parse_cli(&["deploy", "--spam", preset]).unwrap();
+            assert_eq!(
+                deploy_args(&cli).spam.as_deref(),
+                Some(*preset),
+                "Failed for preset: {}",
+                preset
+            );
+        }
+    }
+
+    #[test]
+    fn test_spam_flag_accepts_arbitrary_string() {
+        // clap accepts any string; validation happens later via SpamPreset::from_str
+        let cli = parse_cli(&["deploy", "--spam", "custom-name"]).unwrap();
+        assert_eq!(deploy_args(&cli).spam.as_deref(), Some("custom-name"));
+    }
+
+    #[test]
+    fn test_spam_conflicts_with_detach() {
+        let result = parse_cli(&["deploy", "--spam", "--detach"]);
+        assert!(result.is_err(), "--spam and --detach should conflict");
+        let err = format!("{}", result.err().unwrap());
+        assert!(
+            err.contains("--spam") || err.contains("--detach"),
+            "Error should mention the conflicting flags, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_spam_flag_with_other_deploy_flags() {
+        // --spam should work alongside other deploy flags
+        let cli = parse_cli(&[
+            "deploy",
+            "--spam",
+            "heavy",
+            "--no-cleanup",
+            "--block-time",
+            "2",
+            "--l2-nodes",
+            "3",
+        ])
+        .unwrap();
+        let args = deploy_args(&cli);
+        assert_eq!(args.spam.as_deref(), Some("heavy"));
+        assert!(args.no_cleanup);
+        assert_eq!(args.block_time, 2);
+        assert_eq!(args.l2_nodes, 3);
+    }
 
     #[test]
     fn test_l1_source_parse_sepolia() {

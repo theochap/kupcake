@@ -10,5 +10,7 @@ jwt.hex
 
 /target
 
+/kona
+
 # Automatically generated data directories
 /data-*

@@ -70,6 +70,10 @@ pub struct OpRethBuilder {
     /// If None, a random key will be generated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p2p_secret_key: Option<String>,
+    /// Maximum number of concurrent RPC connections (HTTP + WS combined).
+    /// If None, op-reth's default (500) is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rpc_max_connections: Option<u32>,
     /// Extra arguments to pass to op-reth.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -101,6 +105,7 @@ impl Default for OpRethBuilder {
             discovery_host_port: None,
             net_if: None,
             p2p_secret_key: None,
+            rpc_max_connections: None,
             extra_args: Vec::new(),
         }
     }
@@ -186,7 +191,7 @@ impl OpRethBuilder {
             .map(|url| url.to_string())
             .unwrap_or_else(|| format!("http://{}:{}", self.container_name, self.http_port));
 
-        let cmd = OpRethCmdBuilder::new(
+        let mut cmd_builder = OpRethCmdBuilder::new(
             container_config_path.join("genesis.json"),
             container_config_path.join(format!("reth-data-{}", self.container_name)),
         )
@@ -203,8 +208,13 @@ impl OpRethBuilder {
         .net_if(self.net_if.clone())
         .listen_port(self.listen_port)
         .nat_dns(self.container_name.clone())
-        .p2p_secret_key(&p2p_keypair.private_key)
-        .build();
+        .p2p_secret_key(&p2p_keypair.private_key);
+
+        if let Some(max) = self.rpc_max_connections {
+            cmd_builder = cmd_builder.rpc_max_connections(max);
+        }
+
+        let cmd = cmd_builder.build();
 
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> = [

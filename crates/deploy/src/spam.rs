@@ -23,6 +23,60 @@ pub const CONTENDER_DEFAULT_IMAGE: &str = "flashbots/contender";
 /// Default Docker tag for Contender.
 pub const CONTENDER_DEFAULT_TAG: &str = "latest";
 
+/// Named spam presets for quick workload selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::EnumString)]
+#[strum(serialize_all = "lowercase")]
+pub enum SpamPreset {
+    Light,
+    Medium,
+    Heavy,
+    Erc20,
+    Uniswap,
+    Stress,
+}
+
+impl SpamPreset {
+    /// Return a list of all available presets.
+    pub const fn all() -> &'static [SpamPreset] {
+        &[
+            SpamPreset::Light,
+            SpamPreset::Medium,
+            SpamPreset::Heavy,
+            SpamPreset::Erc20,
+            SpamPreset::Uniswap,
+            SpamPreset::Stress,
+        ]
+    }
+
+    /// Convert this preset into a fully populated `SpamConfig`.
+    pub fn to_config(self) -> SpamConfig {
+        let (scenario, tps, accounts) = match self {
+            SpamPreset::Light => ("transfers", 10, 5),
+            SpamPreset::Medium => ("transfers", 50, 20),
+            SpamPreset::Heavy => ("transfers", 200, 50),
+            SpamPreset::Erc20 => ("erc20", 50, 20),
+            SpamPreset::Uniswap => ("uni_v2", 20, 10),
+            SpamPreset::Stress => ("transfers", 500, 100),
+        };
+
+        SpamConfig {
+            scenario: scenario.to_string(),
+            tps,
+            duration: 0,
+            forever: true,
+            accounts,
+            min_balance: "0.1".to_string(),
+            fund_amount: 100.0,
+            funder_account_index: 10,
+            report: false,
+            contender_image: CONTENDER_DEFAULT_IMAGE.to_string(),
+            contender_tag: CONTENDER_DEFAULT_TAG.to_string(),
+            target_node: 0,
+            extra_args: vec![],
+        }
+    }
+}
+
 /// Configuration for a spam run.
 pub struct SpamConfig {
     /// Scenario name (built-in) or path to custom TOML file.
@@ -635,6 +689,161 @@ mod tests {
 
         let result = load_funder_account(dir.path(), 5);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_spam_preset_from_str() {
+        use std::str::FromStr;
+
+        assert_eq!(SpamPreset::from_str("light").unwrap(), SpamPreset::Light);
+        assert_eq!(SpamPreset::from_str("medium").unwrap(), SpamPreset::Medium);
+        assert_eq!(SpamPreset::from_str("heavy").unwrap(), SpamPreset::Heavy);
+        assert_eq!(SpamPreset::from_str("erc20").unwrap(), SpamPreset::Erc20);
+        assert_eq!(
+            SpamPreset::from_str("uniswap").unwrap(),
+            SpamPreset::Uniswap
+        );
+        assert_eq!(SpamPreset::from_str("stress").unwrap(), SpamPreset::Stress);
+
+        // Invalid preset
+        assert!(SpamPreset::from_str("invalid").is_err());
+        assert!(SpamPreset::from_str("LIGHT").is_err());
+    }
+
+    #[test]
+    fn test_spam_preset_to_config() {
+        let config = SpamPreset::Light.to_config();
+        assert_eq!(config.scenario, "transfers");
+        assert_eq!(config.tps, 10);
+        assert_eq!(config.accounts, 5);
+        assert!(config.forever);
+
+        let config = SpamPreset::Uniswap.to_config();
+        assert_eq!(config.scenario, "uni_v2");
+        assert_eq!(config.tps, 20);
+        assert_eq!(config.accounts, 10);
+        assert!(config.forever);
+
+        let config = SpamPreset::Stress.to_config();
+        assert_eq!(config.scenario, "transfers");
+        assert_eq!(config.tps, 500);
+        assert_eq!(config.accounts, 100);
+        assert!(config.forever);
+    }
+
+    #[test]
+    fn test_spam_preset_all() {
+        let all = SpamPreset::all();
+        assert_eq!(all.len(), 6);
+        assert_eq!(all[0], SpamPreset::Light);
+        assert_eq!(all[5], SpamPreset::Stress);
+    }
+
+    #[test]
+    fn test_all_presets_produce_valid_configs() {
+        for preset in SpamPreset::all() {
+            let config = preset.to_config();
+            assert!(!config.scenario.is_empty(), "{} has empty scenario", preset);
+            assert!(config.tps > 0, "{} has zero tps", preset);
+            assert!(config.accounts > 0, "{} has zero accounts", preset);
+            assert!(config.forever, "{} should run forever", preset);
+            assert!(config.fund_amount > 0.0, "{} has zero fund_amount", preset);
+            assert_eq!(
+                config.funder_account_index, 10,
+                "{} should use funder index 10",
+                preset
+            );
+            assert_eq!(
+                config.contender_image,
+                CONTENDER_DEFAULT_IMAGE,
+                "{} should use default image",
+                preset
+            );
+            assert_eq!(
+                config.contender_tag,
+                CONTENDER_DEFAULT_TAG,
+                "{} should use default tag",
+                preset
+            );
+            assert!(config.extra_args.is_empty(), "{} should have no extra args", preset);
+        }
+    }
+
+    #[test]
+    fn test_preset_display_matches_from_str() {
+        use std::str::FromStr;
+        for preset in SpamPreset::all() {
+            let display = preset.to_string();
+            let parsed = SpamPreset::from_str(&display).unwrap_or_else(|_| {
+                panic!("Display '{}' for {:?} should round-trip through FromStr", display, preset)
+            });
+            assert_eq!(*preset, parsed);
+        }
+    }
+
+    #[test]
+    fn test_preset_configs_use_known_scenarios() {
+        let known_scenarios = ["transfers", "erc20", "uni_v2"];
+        for preset in SpamPreset::all() {
+            let config = preset.to_config();
+            assert!(
+                known_scenarios.contains(&config.scenario.as_str()),
+                "{} uses unknown scenario '{}'",
+                preset,
+                config.scenario
+            );
+        }
+    }
+
+    #[test]
+    fn test_preset_tps_ordering() {
+        // Verify the presets have sensible TPS ordering for transfer-based ones
+        let light = SpamPreset::Light.to_config();
+        let medium = SpamPreset::Medium.to_config();
+        let heavy = SpamPreset::Heavy.to_config();
+        let stress = SpamPreset::Stress.to_config();
+
+        assert!(light.tps < medium.tps, "light < medium TPS");
+        assert!(medium.tps < heavy.tps, "medium < heavy TPS");
+        assert!(heavy.tps < stress.tps, "heavy < stress TPS");
+    }
+
+    #[test]
+    fn test_preset_to_config_generates_valid_contender_cmd() {
+        // Verify that every preset generates a valid contender command
+        for preset in SpamPreset::all() {
+            let config = preset.to_config();
+            let (scenario_arg, _) = resolve_scenario(&config.scenario).unwrap();
+            let cmd = build_contender_cmd(
+                &config,
+                &scenario_arg,
+                "http://test-reth:9545/",
+                "0xdeadbeef",
+            );
+
+            assert_eq!(cmd[0], "spam", "{}: first arg should be 'spam'", preset);
+            assert_eq!(
+                cmd.last().unwrap(),
+                &scenario_arg,
+                "{}: last arg should be scenario",
+                preset
+            );
+            assert!(
+                cmd.contains(&"--forever".to_string()),
+                "{}: should contain --forever",
+                preset
+            );
+            assert!(
+                !cmd.contains(&"--duration".to_string()),
+                "{}: should NOT contain --duration when forever",
+                preset
+            );
+            assert!(
+                cmd.contains(&config.tps.to_string()),
+                "{}: should contain tps value",
+                preset
+            );
+        }
     }
 
     #[test]

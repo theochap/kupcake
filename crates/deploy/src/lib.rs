@@ -21,6 +21,7 @@ pub mod health;
 pub mod rpc;
 pub mod services;
 pub mod spam;
+pub use spam::SpamPreset;
 
 pub use docker::{
     CleanupResult, DockerImage, ExposedPort, KupDocker, KupDockerConfig, PortMapping, PortProtocol,
