@@ -277,9 +277,13 @@ pub struct DockerImage {
     /// The image tag (e.g., "latest" or "v1.0.0").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
-    /// Path to local binary (takes precedence over image/tag).
+    /// Path to local binary or source directory (takes precedence over image/tag).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binary: Option<PathBuf>,
+    /// Cargo binary name to build when `binary` points to a source directory.
+    /// If None, the service_name passed to ensure_image_ready is used as fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bin_name: Option<String>,
 }
 
 impl DockerImage {
@@ -289,6 +293,7 @@ impl DockerImage {
             image: Some(image.into()),
             tag: Some(tag.into()),
             binary: None,
+            bin_name: None,
         }
     }
 
@@ -298,6 +303,22 @@ impl DockerImage {
             image: None,
             tag: None,
             binary: Some(path.into()),
+            bin_name: None,
+        }
+    }
+
+    /// Create a DockerImage from a local binary/source path with an explicit cargo bin name.
+    ///
+    /// When `binary` points to a directory, `bin_name` is passed to `cargo build --bin`.
+    pub fn from_binary_with_name(
+        path: impl Into<PathBuf>,
+        bin_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            image: None,
+            tag: None,
+            binary: Some(path.into()),
+            bin_name: Some(bin_name.into()),
         }
     }
 
@@ -640,6 +661,8 @@ ENTRYPOINT [\"/binary\"]
     ///
     /// For remote images: pulls the image if not available locally.
     /// For local binaries: builds the image from the binary if not already cached.
+    /// For local directories: builds the binary from source (auto cross-compiling on macOS),
+    ///   then builds the image from the resulting binary.
     ///
     /// # Arguments
     /// * `docker_image` - The DockerImage configuration
@@ -652,11 +675,203 @@ ENTRYPOINT [\"/binary\"]
         docker_image: &DockerImage,
         service_name: &str,
     ) -> Result<String> {
-        if let Some(binary_path) = docker_image.binary_path() {
-            self.build_local_image(binary_path, service_name).await
-        } else {
-            docker_image.pull(self).await
+        let Some(binary_path) = docker_image.binary_path() else {
+            return docker_image.pull(self).await;
+        };
+
+        if !binary_path.is_dir() {
+            // Pre-built binary — validate architecture
+            Self::validate_binary_is_linux(binary_path)?;
+            return self.build_local_image(binary_path, service_name).await;
         }
+
+        // Build from source — bin_name field holds the cargo binary name
+        let bin_name = docker_image
+            .bin_name
+            .as_deref()
+            .unwrap_or(service_name);
+        let built = self
+            .build_binary_from_source(binary_path, bin_name)
+            .await?;
+        self.build_local_image(&built, service_name).await
+    }
+
+    /// Detect the Linux target triple for Docker's architecture.
+    ///
+    /// Queries Docker for its platform architecture and maps it to a Rust target triple.
+    async fn detect_docker_linux_target(&self) -> Result<String> {
+        let info = self
+            .docker
+            .info()
+            .await
+            .context("Failed to query Docker info")?;
+
+        let arch = info
+            .architecture
+            .as_deref()
+            .context("Docker info did not report an architecture")?;
+
+        match arch {
+            "aarch64" | "arm64" => Ok("aarch64-unknown-linux-gnu".to_string()),
+            "x86_64" | "amd64" => Ok("x86_64-unknown-linux-gnu".to_string()),
+            other => anyhow::bail!(
+                "Unsupported Docker architecture '{}'. Expected aarch64/arm64 or x86_64/amd64.",
+                other
+            ),
+        }
+    }
+
+    /// Build a binary from a Rust source directory for use in Docker.
+    ///
+    /// On macOS, this auto-detects Docker's architecture and cross-compiles
+    /// for the appropriate Linux target. On Linux, it builds natively.
+    ///
+    /// # Arguments
+    /// * `source_dir` - Path to a Rust project root (must contain Cargo.toml)
+    /// * `bin_name` - The cargo binary name to build (passed to `--bin`)
+    ///
+    /// # Returns
+    /// Path to the built binary.
+    async fn build_binary_from_source(
+        &self,
+        source_dir: &Path,
+        bin_name: &str,
+    ) -> Result<PathBuf> {
+        let cargo_toml = source_dir.join("Cargo.toml");
+        if !cargo_toml.exists() {
+            anyhow::bail!(
+                "Directory '{}' does not contain a Cargo.toml. \
+                 Pass a Rust project root to build from source, \
+                 or pass a binary file path directly.",
+                source_dir.display()
+            );
+        }
+
+        // Determine whether cross-compilation is needed
+        let target = if cfg!(target_os = "linux") {
+            None
+        } else {
+            let target = self.detect_docker_linux_target().await?;
+            tracing::info!(
+                target = %target,
+                "Cross-compiling for Docker (host is not Linux)"
+            );
+            Some(target)
+        };
+
+        // Build the arguments
+        let mut args = vec![
+            "build".to_string(),
+            "--release".to_string(),
+            "--bin".to_string(),
+            bin_name.to_string(),
+        ];
+
+        if let Some(ref target) = target {
+            args.push("--target".to_string());
+            args.push(target.clone());
+        }
+
+        tracing::info!(
+            source_dir = %source_dir.display(),
+            bin_name = %bin_name,
+            target = ?target,
+            "Building binary from source"
+        );
+
+        let mut cmd = tokio::process::Command::new("cargo");
+        cmd.args(&args).current_dir(source_dir);
+
+        // When cross-compiling, set the linker via env var so the user doesn't
+        // need a .cargo/config.toml. The convention is
+        // CARGO_TARGET_<TRIPLE_UPPER>_LINKER=<triple>-gcc
+        if let Some(ref target) = target {
+            let env_key = format!(
+                "CARGO_TARGET_{}_LINKER",
+                target.to_uppercase().replace('-', "_")
+            );
+            let linker = format!("{}-gcc", target);
+            tracing::debug!(env_key = %env_key, linker = %linker, "Setting cross-linker");
+            cmd.env(&env_key, &linker);
+        }
+
+        let output = cmd
+            .output()
+            .await
+            .context("Failed to run cargo build")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("cargo build failed:\n{}", stderr);
+        }
+
+        // Determine the output path
+        let binary_path = if let Some(ref target) = target {
+            source_dir
+                .join("target")
+                .join(target)
+                .join("release")
+                .join(bin_name)
+        } else {
+            source_dir.join("target").join("release").join(bin_name)
+        };
+
+        if !binary_path.exists() {
+            anyhow::bail!(
+                "Expected binary not found at '{}' after cargo build",
+                binary_path.display()
+            );
+        }
+
+        tracing::info!(
+            binary = %binary_path.display(),
+            "Binary built successfully"
+        );
+
+        Ok(binary_path)
+    }
+
+    /// Validate that a binary is a Linux ELF executable.
+    ///
+    /// Checks the file's magic number to ensure it can run inside a Docker container.
+    /// Returns an error with guidance if the binary is a macOS Mach-O executable.
+    fn validate_binary_is_linux(binary_path: &Path) -> Result<()> {
+        let mut file = fs::File::open(binary_path)
+            .with_context(|| format!("Failed to open binary: {}", binary_path.display()))?;
+
+        let mut magic = [0u8; 4];
+        file.read_exact(&mut magic)
+            .with_context(|| format!("Failed to read binary header: {}", binary_path.display()))?;
+
+        // ELF magic: 0x7f 'E' 'L' 'F'
+        if magic == [0x7f, b'E', b'L', b'F'] {
+            return Ok(());
+        }
+
+        // Mach-O magic numbers (both 32-bit and 64-bit, both endiannesses)
+        let is_macho = matches!(
+            magic,
+            [0xfe, 0xed, 0xfa, 0xce]  // MH_MAGIC
+            | [0xce, 0xfa, 0xed, 0xfe]  // MH_CIGAM
+            | [0xfe, 0xed, 0xfa, 0xcf]  // MH_MAGIC_64
+            | [0xcf, 0xfa, 0xed, 0xfe]  // MH_CIGAM_64
+        );
+
+        if is_macho {
+            anyhow::bail!(
+                "Binary '{}' is a macOS Mach-O executable and cannot run in Docker containers. \
+                 Pass a directory path instead to auto-build for Linux, e.g.: \
+                 --kona-node-binary ./kona (instead of ./kona/target/release/kona-node)",
+                binary_path.display()
+            );
+        }
+
+        anyhow::bail!(
+            "Binary '{}' has unrecognized format (magic: {:02x?}). \
+             Expected a Linux ELF executable.",
+            binary_path.display(),
+            magic
+        );
     }
 
     /// Create a new Docker client.

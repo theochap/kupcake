@@ -218,6 +218,8 @@ impl P2pKeypair {
 /// Default ports for kona-node.
 pub const DEFAULT_RPC_PORT: u16 = 7545;
 pub const DEFAULT_METRICS_PORT: u16 = 7300;
+/// Default port for the flashblocks relay server.
+pub const DEFAULT_FLASHBLOCKS_RELAY_PORT: u16 = 1112;
 
 /// Configuration for the kona-node consensus client.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -244,6 +246,12 @@ pub struct KonaNodeBuilder {
     /// If None, a random key will be generated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p2p_secret_key: Option<String>,
+    /// Whether flashblocks support is enabled.
+    #[serde(default)]
+    pub flashblocks_enabled: bool,
+    /// Port for the flashblocks relay server (sequencer kona-node only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flashblocks_relay_port: Option<u16>,
     /// Extra arguments to pass to kona-node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -266,6 +274,8 @@ impl Default for KonaNodeBuilder {
             metrics_host_port: Some(0),
             l1_slot_duration: 12,
             p2p_secret_key: None,
+            flashblocks_enabled: false,
+            flashblocks_relay_port: None,
             extra_args: Vec::new(),
         }
     }
@@ -287,6 +297,8 @@ pub struct KonaNodeHandler {
     pub rpc_host_url: Option<Url>,
     /// The metrics URL accessible from host (if published). None if not published.
     pub metrics_host_url: Option<Url>,
+    /// The flashblocks relay WebSocket URL (internal Docker network). None if not a sequencer relay.
+    pub flashblocks_relay_url: Option<Url>,
 }
 
 impl KonaNodeHandler {
@@ -321,6 +333,8 @@ impl KonaNodeBuilder {
     /// * `conductor_rpc` - Optional conductor RPC URL. If provided, enables conductor control.
     /// * `is_conductor_leader` - Whether this sequencer is the initial Raft leader. Leaders start
     ///   active, while followers start in stopped state waiting for conductor to activate them.
+    /// * `flashblocks_builder_url` - Optional flashblocks builder WebSocket URL. For sequencers,
+    ///   this is the op-rbuilder WS URL. For validators, this is the sequencer's kona-node relay URL.
     pub async fn start(
         &self,
         docker: &mut KupDocker,
@@ -333,6 +347,7 @@ impl KonaNodeBuilder {
         l1_chain_id: u64,
         conductor_rpc: Option<&str>,
         is_conductor_leader: bool,
+        flashblocks_builder_url: Option<&str>,
     ) -> Result<KonaNodeHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
@@ -416,6 +431,23 @@ impl KonaNodeBuilder {
             }
         }
 
+        // Flashblocks configuration
+        if self.flashblocks_enabled {
+            cmd_builder = cmd_builder.flashblocks(true);
+        }
+        if let Some(builder_url) = flashblocks_builder_url {
+            cmd_builder = cmd_builder.flashblocks_builder_url(builder_url);
+        }
+
+        // Determine flashblocks relay port for sequencer nodes that serve as relay
+        let flashblocks_relay_port = self
+            .flashblocks_relay_port
+            .filter(|_| self.flashblocks_enabled && role == L2NodeRole::Sequencer);
+
+        if let Some(port) = flashblocks_relay_port {
+            cmd_builder = cmd_builder.flashblocks_relay("0.0.0.0", port);
+        }
+
         cmd_builder = cmd_builder.unsafe_block_signer_key(
             anvil_handler
                 .accounts
@@ -435,7 +467,7 @@ impl KonaNodeBuilder {
         .flatten()
         .collect();
 
-        let service_config = ServiceConfig::new(self.docker_image.clone())
+        let mut service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports(port_mappings)
             .expose(ExposedPort::tcp(self.rpc_port))
@@ -443,6 +475,10 @@ impl KonaNodeBuilder {
             .expose(ExposedPort::tcp(DEFAULT_P2P_PORT))
             .expose(ExposedPort::udp(DEFAULT_P2P_PORT))
             .bind(host_config_path, &container_config_path, "rw");
+
+        if let Some(relay_port) = flashblocks_relay_port {
+            service_config = service_config.expose(ExposedPort::tcp(relay_port));
+        }
 
         let handler = docker
             .start_service(
@@ -471,11 +507,18 @@ impl KonaNodeBuilder {
             .transpose()
             .context("Failed to build metrics host URL")?;
 
+        // Build flashblocks relay URL if this is a sequencer relay
+        let flashblocks_relay_url = flashblocks_relay_port
+            .map(|port| KupDocker::build_ws_url(&handler.container_name, port))
+            .transpose()
+            .context("Failed to build flashblocks relay URL")?;
+
         tracing::info!(
             container_id = %handler.container_id,
             container_name = %handler.container_name,
             ?rpc_host_url,
             ?metrics_host_url,
+            ?flashblocks_relay_url,
             "kona-node container started"
         );
 
@@ -487,6 +530,7 @@ impl KonaNodeBuilder {
             rpc_url,
             rpc_host_url,
             metrics_host_url,
+            flashblocks_relay_url,
         })
     }
 }

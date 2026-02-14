@@ -74,6 +74,12 @@ pub struct OpRethBuilder {
     /// If None, op-reth's default (500) is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_max_connections: Option<u32>,
+    /// Whether flashblocks support is enabled (uses op-rbuilder image).
+    #[serde(default)]
+    pub flashblocks_enabled: bool,
+    /// Port for the flashblocks WebSocket server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flashblocks_port: Option<u16>,
     /// Extra arguments to pass to op-reth.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -83,6 +89,13 @@ pub struct OpRethBuilder {
 pub const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/paradigmxyz/op-reth";
 /// Default Docker tag for op-reth.
 pub const DEFAULT_DOCKER_TAG: &str = "v1.10.2";
+
+/// Default Docker image for op-rbuilder (flashblocks-enabled execution client).
+pub const DEFAULT_RBUILDER_DOCKER_IMAGE: &str = "ghcr.io/flashbots/op-rbuilder";
+/// Default Docker tag for op-rbuilder.
+pub const DEFAULT_RBUILDER_DOCKER_TAG: &str = "v0.3.2-rc3";
+/// Default port for the flashblocks WebSocket server.
+pub const DEFAULT_FLASHBLOCKS_PORT: u16 = 1111;
 
 impl Default for OpRethBuilder {
     fn default() -> Self {
@@ -106,6 +119,8 @@ impl Default for OpRethBuilder {
             net_if: None,
             p2p_secret_key: None,
             rpc_max_connections: None,
+            flashblocks_enabled: false,
+            flashblocks_port: None,
             extra_args: Vec::new(),
         }
     }
@@ -133,6 +148,8 @@ pub struct OpRethHandler {
     pub http_host_url: Option<Url>,
     /// The WebSocket RPC URL accessible from host (if published). None if not published.
     pub ws_host_url: Option<Url>,
+    /// The flashblocks WebSocket URL (internal Docker network). None if flashblocks not enabled.
+    pub flashblocks_ws_url: Option<Url>,
 }
 
 impl OpRethHandler {
@@ -214,6 +231,11 @@ impl OpRethBuilder {
             cmd_builder = cmd_builder.rpc_max_connections(max);
         }
 
+        let flashblocks_port = self.flashblocks_port.unwrap_or(DEFAULT_FLASHBLOCKS_PORT);
+        if self.flashblocks_enabled {
+            cmd_builder = cmd_builder.flashblocks(flashblocks_port);
+        }
+
         let cmd = cmd_builder.build();
 
         // Build port mappings only for ports that should be published to host
@@ -231,16 +253,18 @@ impl OpRethBuilder {
         .flatten()
         .collect();
 
-        let exposed_ports: Vec<ExposedPort> = [
+        let mut exposed_ports: Vec<ExposedPort> = vec![
             ExposedPort::tcp(self.http_port),
             ExposedPort::tcp(self.ws_port),
             ExposedPort::tcp(self.authrpc_port),
             ExposedPort::tcp(self.metrics_port),
             ExposedPort::tcp(self.listen_port),
             ExposedPort::udp(self.discovery_port),
-        ]
-        .into_iter()
-        .collect();
+        ];
+
+        if self.flashblocks_enabled {
+            exposed_ports.push(ExposedPort::tcp(flashblocks_port));
+        }
 
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
@@ -277,11 +301,18 @@ impl OpRethBuilder {
             .transpose()
             .context("Failed to build WebSocket host URL")?;
 
+        // Build flashblocks WebSocket URL if enabled
+        let flashblocks_ws_url = self
+            .flashblocks_enabled
+            .then(|| KupDocker::build_ws_url(&handler.container_name, flashblocks_port))
+            .transpose()?;
+
         tracing::info!(
             container_id = %handler.container_id,
             container_name = %handler.container_name,
             ?http_host_url,
             ?ws_host_url,
+            ?flashblocks_ws_url,
             "op-reth container started"
         );
 
@@ -296,6 +327,7 @@ impl OpRethBuilder {
             authrpc_url,
             http_host_url,
             ws_host_url,
+            flashblocks_ws_url,
         })
     }
 }

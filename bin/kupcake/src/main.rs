@@ -212,6 +212,9 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         .op_challenger_tag(args.docker_images.op_challenger_tag)
         .op_conductor_image(args.docker_images.op_conductor_image)
         .op_conductor_tag(args.docker_images.op_conductor_tag)
+        .flashblocks(args.flashblocks)
+        .op_rbuilder_image(args.docker_images.op_rbuilder_image)
+        .op_rbuilder_tag(args.docker_images.op_rbuilder_tag)
         .op_deployer_image(args.docker_images.op_deployer_image)
         .op_deployer_tag(args.docker_images.op_deployer_tag)
         .prometheus_image(args.docker_images.prometheus_image)
@@ -237,6 +240,9 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
     }
     if let Some(path) = args.docker_images.op_conductor_binary {
         deployer_builder = deployer_builder.with_op_conductor_binary(path);
+    }
+    if let Some(path) = args.docker_images.op_rbuilder_binary {
+        deployer_builder = deployer_builder.with_op_rbuilder_binary(path);
     }
 
     let deployer = deployer_builder

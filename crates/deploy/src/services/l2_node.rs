@@ -250,6 +250,8 @@ impl L2NodeBuilder {
     /// * `op_reth_enodes` - Mutable list of op-reth enodes for P2P discovery. The node's enode will be added after startup.
     /// * `l1_chain_id` - L1 chain ID (used to determine if we need a custom L1 config for kona-node)
     /// * `conductor_context` - Context for op-conductor startup (leader, follower, or none).
+    /// * `sequencer_flashblocks_relay_url` - Optional flashblocks relay URL from the sequencer's kona-node.
+    ///   For validators, this provides the sequencer's relay WS URL so the validator's kona-node can subscribe.
     pub async fn start(
         &self,
         docker: &mut KupDocker,
@@ -260,6 +262,7 @@ impl L2NodeBuilder {
         op_reth_enodes: &mut Vec<String>,
         l1_chain_id: u64,
         conductor_context: ConductorContext,
+        sequencer_flashblocks_relay_url: Option<&Url>,
     ) -> Result<L2NodeHandler, anyhow::Error> {
         // Generate a unique JWT secret for this node pair
         // Use the op-reth container name as the node ID for uniqueness
@@ -297,6 +300,17 @@ impl L2NodeBuilder {
         // Determine if this sequencer is the Raft leader (first sequencer starts active)
         let is_conductor_leader = matches!(conductor_context, ConductorContext::Leader { .. });
 
+        // Determine the flashblocks builder URL for kona-node:
+        // - For sequencers: use the op-rbuilder's flashblocks WS URL (if flashblocks enabled)
+        // - For validators: use the sequencer's kona-node relay URL (passed from L2StackBuilder)
+        let flashblocks_builder_url = match self.role {
+            L2NodeRole::Sequencer => op_reth_handler
+                .flashblocks_ws_url
+                .as_ref()
+                .map(|u| u.to_string()),
+            L2NodeRole::Validator => sequencer_flashblocks_relay_url.map(|u| u.to_string()),
+        };
+
         // Start kona-node with conductor RPC URL (if configured)
         // kona-node must have --conductor.rpc set for conductor to recognize it
         let kona_node_handler = self
@@ -312,6 +326,7 @@ impl L2NodeBuilder {
                 l1_chain_id,
                 conductor_rpc_url.as_deref(),
                 is_conductor_leader,
+                flashblocks_builder_url.as_deref(),
             )
             .await?;
 

@@ -17,9 +17,12 @@ use crate::{
     L2StackBuilder, MonitoringConfig, OP_BATCHER_DEFAULT_IMAGE, OP_BATCHER_DEFAULT_TAG,
     OP_CHALLENGER_DEFAULT_IMAGE, OP_CHALLENGER_DEFAULT_TAG, OP_CONDUCTOR_DEFAULT_IMAGE,
     OP_CONDUCTOR_DEFAULT_TAG, OP_DEPLOYER_DEFAULT_IMAGE, OP_DEPLOYER_DEFAULT_TAG,
-    OP_PROPOSER_DEFAULT_IMAGE, OP_PROPOSER_DEFAULT_TAG, OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG,
-    OpBatcherBuilder, OpChallengerBuilder, OpConductorBuilder, OpDeployerConfig, OpProposerBuilder,
-    OpRethBuilder, PROMETHEUS_DEFAULT_IMAGE, PROMETHEUS_DEFAULT_TAG, PrometheusConfig,
+    OP_PROPOSER_DEFAULT_IMAGE, OP_PROPOSER_DEFAULT_TAG, OP_RBUILDER_DEFAULT_IMAGE,
+    OP_RBUILDER_DEFAULT_TAG, OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG, OpBatcherBuilder,
+    OpChallengerBuilder, OpConductorBuilder, OpDeployerConfig, OpProposerBuilder, OpRethBuilder,
+    PROMETHEUS_DEFAULT_IMAGE, PROMETHEUS_DEFAULT_TAG, PrometheusConfig,
+    services::op_reth::DEFAULT_FLASHBLOCKS_PORT,
+    services::kona_node::DEFAULT_FLASHBLOCKS_RELAY_PORT,
 };
 
 /// Block header information from an RPC response.
@@ -132,6 +135,9 @@ pub struct DeployerBuilder {
     /// Number of sequencer nodes.
     sequencer_count: usize,
 
+    /// Whether flashblocks support is enabled.
+    flashblocks: bool,
+
     // Docker images
     anvil_docker: DockerImage,
     op_reth_docker: DockerImage,
@@ -140,6 +146,7 @@ pub struct DeployerBuilder {
     op_proposer_docker: DockerImage,
     op_challenger_docker: DockerImage,
     op_conductor_docker: DockerImage,
+    op_rbuilder_docker: DockerImage,
     op_deployer_docker: DockerImage,
     prometheus_docker: DockerImage,
     grafana_docker: DockerImage,
@@ -163,6 +170,7 @@ impl DeployerBuilder {
             genesis_timestamp: None,
             l2_node_count: 1,
             sequencer_count: 1,
+            flashblocks: false,
             anvil_docker: DockerImage::new(ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG),
             op_reth_docker: DockerImage::new(OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG),
             kona_node_docker: DockerImage::new(KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG),
@@ -178,6 +186,10 @@ impl DeployerBuilder {
             op_conductor_docker: DockerImage::new(
                 OP_CONDUCTOR_DEFAULT_IMAGE,
                 OP_CONDUCTOR_DEFAULT_TAG,
+            ),
+            op_rbuilder_docker: DockerImage::new(
+                OP_RBUILDER_DEFAULT_IMAGE,
+                OP_RBUILDER_DEFAULT_TAG,
             ),
             op_deployer_docker: DockerImage::new(
                 OP_DEPLOYER_DEFAULT_IMAGE,
@@ -314,6 +326,33 @@ impl DeployerBuilder {
         self
     }
 
+    /// Enable or disable flashblocks support.
+    pub fn flashblocks(mut self, enabled: bool) -> Self {
+        self.flashblocks = enabled;
+        self
+    }
+
+    /// Set Docker image for op-rbuilder.
+    pub fn op_rbuilder_image(mut self, image: impl Into<String>) -> Self {
+        self.op_rbuilder_docker.image = Some(image.into());
+        self
+    }
+
+    /// Set Docker tag for op-rbuilder.
+    pub fn op_rbuilder_tag(mut self, tag: impl Into<String>) -> Self {
+        self.op_rbuilder_docker.tag = Some(tag.into());
+        self
+    }
+
+    /// Use a local binary or source directory for op-rbuilder instead of a Docker image.
+    ///
+    /// If a directory is provided, `cargo build --release --bin op-rbuilder` will be run
+    /// automatically (cross-compiling for Linux on macOS).
+    pub fn with_op_rbuilder_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        self.op_rbuilder_docker = DockerImage::from_binary_with_name(path, "op-rbuilder");
+        self
+    }
+
     /// Set Docker image for op-conductor.
     pub fn op_conductor_image(mut self, image: impl Into<String>) -> Self {
         self.op_conductor_docker.image = Some(image.into());
@@ -364,51 +403,63 @@ impl DeployerBuilder {
 
     // ==================== Binary Path Setters ====================
 
-    /// Use a local binary for op-reth instead of a Docker image.
+    /// Use a local binary or source directory for op-reth instead of a Docker image.
     ///
-    /// The binary will be copied into a lightweight Docker image and used for deployment.
-    pub fn with_op_reth_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
-        self.op_reth_docker = DockerImage::from_binary(binary_path);
+    /// If a file path is provided, the binary is loaded directly (must be a Linux ELF).
+    /// If a directory is provided, `cargo build --release --bin op-reth` will be run
+    /// automatically (cross-compiling for Linux on macOS).
+    pub fn with_op_reth_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        self.op_reth_docker = DockerImage::from_binary_with_name(path, "op-reth");
         self
     }
 
-    /// Use a local binary for kona-node instead of a Docker image.
+    /// Use a local binary or source directory for kona-node instead of a Docker image.
     ///
-    /// The binary will be copied into a lightweight Docker image and used for deployment.
-    pub fn with_kona_node_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
-        self.kona_node_docker = DockerImage::from_binary(binary_path);
+    /// If a file path is provided, the binary is loaded directly (must be a Linux ELF).
+    /// If a directory is provided, `cargo build --release --bin kona-node` will be run
+    /// automatically (cross-compiling for Linux on macOS).
+    pub fn with_kona_node_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        self.kona_node_docker = DockerImage::from_binary_with_name(path, "kona-node");
         self
     }
 
-    /// Use a local binary for op-batcher instead of a Docker image.
+    /// Use a local binary or source directory for op-batcher instead of a Docker image.
     ///
-    /// The binary will be copied into a lightweight Docker image and used for deployment.
-    pub fn with_op_batcher_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
-        self.op_batcher_docker = DockerImage::from_binary(binary_path);
+    /// If a file path is provided, the binary is loaded directly (must be a Linux ELF).
+    /// If a directory is provided, `cargo build --release --bin op-batcher` will be run
+    /// automatically (cross-compiling for Linux on macOS).
+    pub fn with_op_batcher_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        self.op_batcher_docker = DockerImage::from_binary_with_name(path, "op-batcher");
         self
     }
 
-    /// Use a local binary for op-proposer instead of a Docker image.
+    /// Use a local binary or source directory for op-proposer instead of a Docker image.
     ///
-    /// The binary will be copied into a lightweight Docker image and used for deployment.
-    pub fn with_op_proposer_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
-        self.op_proposer_docker = DockerImage::from_binary(binary_path);
+    /// If a file path is provided, the binary is loaded directly (must be a Linux ELF).
+    /// If a directory is provided, `cargo build --release --bin op-proposer` will be run
+    /// automatically (cross-compiling for Linux on macOS).
+    pub fn with_op_proposer_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        self.op_proposer_docker = DockerImage::from_binary_with_name(path, "op-proposer");
         self
     }
 
-    /// Use a local binary for op-challenger instead of a Docker image.
+    /// Use a local binary or source directory for op-challenger instead of a Docker image.
     ///
-    /// The binary will be copied into a lightweight Docker image and used for deployment.
-    pub fn with_op_challenger_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
-        self.op_challenger_docker = DockerImage::from_binary(binary_path);
+    /// If a file path is provided, the binary is loaded directly (must be a Linux ELF).
+    /// If a directory is provided, `cargo build --release --bin op-challenger` will be run
+    /// automatically (cross-compiling for Linux on macOS).
+    pub fn with_op_challenger_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        self.op_challenger_docker = DockerImage::from_binary_with_name(path, "op-challenger");
         self
     }
 
-    /// Use a local binary for op-conductor instead of a Docker image.
+    /// Use a local binary or source directory for op-conductor instead of a Docker image.
     ///
-    /// The binary will be copied into a lightweight Docker image and used for deployment.
-    pub fn with_op_conductor_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
-        self.op_conductor_docker = DockerImage::from_binary(binary_path);
+    /// If a file path is provided, the binary is loaded directly (must be a Linux ELF).
+    /// If a directory is provided, `cargo build --release --bin op-conductor` will be run
+    /// automatically (cross-compiling for Linux on macOS).
+    pub fn with_op_conductor_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        self.op_conductor_docker = DockerImage::from_binary_with_name(path, "op-conductor");
         self
     }
 
@@ -675,11 +726,20 @@ impl DeployerBuilder {
                         None
                     };
 
+                    // When flashblocks is enabled, sequencers use op-rbuilder image
+                    let sequencer_docker_image = if self.flashblocks {
+                        self.op_rbuilder_docker.clone()
+                    } else {
+                        self.op_reth_docker.clone()
+                    };
+
                     sequencers.push(L2NodeBuilder {
                         role: L2NodeRole::Sequencer,
                         op_reth: OpRethBuilder {
-                            docker_image: self.op_reth_docker.clone(),
+                            docker_image: sequencer_docker_image,
                             container_name: format!("{}-op-reth{}", network_name, suffix),
+                            flashblocks_enabled: self.flashblocks,
+                            flashblocks_port: self.flashblocks.then_some(DEFAULT_FLASHBLOCKS_PORT),
                             ..Default::default()
                         },
                         kona_node: KonaNodeBuilder {
@@ -688,6 +748,10 @@ impl DeployerBuilder {
                             l1_slot_duration: self.block_time,
                             rpc_host_port: Some(0), // Explicitly publish RPC port
                             metrics_host_port: if self.publish_all_ports { Some(0) } else { None },
+                            flashblocks_enabled: self.flashblocks,
+                            flashblocks_relay_port: self
+                                .flashblocks
+                                .then_some(DEFAULT_FLASHBLOCKS_RELAY_PORT),
                             ..Default::default()
                         },
                         op_conductor,
@@ -714,6 +778,8 @@ impl DeployerBuilder {
                             l1_slot_duration: self.block_time,
                             rpc_host_port: Some(0), // Explicitly publish RPC port
                             metrics_host_port: if self.publish_all_ports { Some(0) } else { None },
+                            // Validators consume flashblocks but don't relay them
+                            flashblocks_enabled: self.flashblocks,
                             ..Default::default()
                         },
                         op_conductor: None,

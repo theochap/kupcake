@@ -137,6 +137,7 @@ Deployer
 ├── L2StackBuilder/Handler
 │   ├── Sequencers (Vec<L2NodeBuilder>)
 │   │   └── Each: OpRethBuilder + KonaNodeBuilder
+│   │         (op-rbuilder replaces op-reth when --flashblocks enabled)
 │   ├── Validators (Vec<L2NodeBuilder>)
 │   │   └── Each: OpRethBuilder + KonaNodeBuilder
 │   ├── OpBatcherBuilder/Handler

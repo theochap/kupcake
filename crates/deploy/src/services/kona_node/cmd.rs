@@ -33,6 +33,14 @@ pub struct KonaNodeCmdBuilder {
     extra_args: Vec<String>,
     /// Path to L1 chain config file (for custom/local L1 chains)
     l1_config_file: Option<String>,
+    /// Whether flashblocks support is enabled.
+    flashblocks_enabled: bool,
+    /// URL of the flashblocks builder (op-rbuilder or sequencer relay).
+    flashblocks_builder_url: Option<String>,
+    /// Host to bind the flashblocks relay server on.
+    flashblocks_host: Option<String>,
+    /// Port for the flashblocks relay server.
+    flashblocks_port: Option<u16>,
 }
 
 impl KonaNodeCmdBuilder {
@@ -65,6 +73,10 @@ impl KonaNodeCmdBuilder {
             sequencer_stopped: false,
             extra_args: Vec::new(),
             l1_config_file: None,
+            flashblocks_enabled: false,
+            flashblocks_builder_url: None,
+            flashblocks_host: None,
+            flashblocks_port: None,
         }
     }
 
@@ -144,6 +156,25 @@ impl KonaNodeCmdBuilder {
     /// activates it. Used with `conductor_rpc` for high-availability setups.
     pub fn sequencer_stopped(mut self, stopped: bool) -> Self {
         self.sequencer_stopped = stopped;
+        self
+    }
+
+    /// Enable flashblocks support.
+    pub fn flashblocks(mut self, enabled: bool) -> Self {
+        self.flashblocks_enabled = enabled;
+        self
+    }
+
+    /// Set the flashblocks builder URL (op-rbuilder WS or sequencer relay WS).
+    pub fn flashblocks_builder_url(mut self, url: impl Into<String>) -> Self {
+        self.flashblocks_builder_url = Some(url.into());
+        self
+    }
+
+    /// Configure this node as a flashblocks relay server.
+    pub fn flashblocks_relay(mut self, host: impl Into<String>, port: u16) -> Self {
+        self.flashblocks_host = Some(host.into());
+        self.flashblocks_port = Some(port);
         self
     }
 
@@ -252,6 +283,24 @@ impl KonaNodeCmdBuilder {
             cmd.push(l1_config_file);
         }
 
+        // Flashblocks configuration
+        if self.flashblocks_enabled {
+            cmd.push("--flashblocks".to_string());
+            // kona-node defaults --flashblocks-host to "localhost" which is not a valid
+            // IpAddr and causes a parse error. Always provide 0.0.0.0 as a safe default.
+            let host = self.flashblocks_host.unwrap_or_else(|| "0.0.0.0".to_string());
+            cmd.push("--flashblocks-host".to_string());
+            cmd.push(host);
+        }
+        if let Some(builder_url) = self.flashblocks_builder_url {
+            cmd.push("--flashblocks-builder-url".to_string());
+            cmd.push(builder_url);
+        }
+        if let Some(port) = self.flashblocks_port {
+            cmd.push("--flashblocks-port".to_string());
+            cmd.push(port.to_string());
+        }
+
         cmd.push("-vvvv".to_string());
         cmd.extend(self.extra_args);
 
@@ -279,5 +328,47 @@ mod tests {
         assert!(cmd.contains(&"node".to_string()));
         assert!(cmd.contains(&"--mode".to_string()));
         assert!(cmd.contains(&"validator".to_string()));
+    }
+
+    #[test]
+    fn test_flashblocks_flags() {
+        let cmd = KonaNodeCmdBuilder::new(
+            "http://localhost:8545",
+            "http://localhost:9551",
+            "0.0.0.0",
+            "/data/rollup.json",
+            "/data/jwt.hex",
+        )
+        .flashblocks(true)
+        .flashblocks_builder_url("ws://op-rbuilder:1111")
+        .flashblocks_relay("0.0.0.0", 1112)
+        .build();
+
+        assert!(cmd.contains(&"--flashblocks".to_string()));
+        let builder_pos = cmd.iter().position(|s| s == "--flashblocks-builder-url");
+        assert!(builder_pos.is_some());
+        assert_eq!(cmd[builder_pos.unwrap() + 1], "ws://op-rbuilder:1111");
+        let host_pos = cmd.iter().position(|s| s == "--flashblocks-host");
+        assert!(host_pos.is_some());
+        assert_eq!(cmd[host_pos.unwrap() + 1], "0.0.0.0");
+        let port_pos = cmd.iter().position(|s| s == "--flashblocks-port");
+        assert!(port_pos.is_some());
+        assert_eq!(cmd[port_pos.unwrap() + 1], "1112");
+    }
+
+    #[test]
+    fn test_flashblocks_absent_by_default() {
+        let cmd = KonaNodeCmdBuilder::new(
+            "http://localhost:8545",
+            "http://localhost:9551",
+            "0.0.0.0",
+            "/data/rollup.json",
+            "/data/jwt.hex",
+        )
+        .build();
+        assert!(
+            !cmd.contains(&"--flashblocks".to_string()),
+            "Should not contain flashblocks flags when not enabled"
+        );
     }
 }

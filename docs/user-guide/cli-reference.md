@@ -517,6 +517,37 @@ kupcake --sequencer-count 3  # Multi-sequencer with conductor
 
 See: [Multi-Sequencer Guide](multi-sequencer.md)
 
+#### `--flashblocks`
+
+Enable flashblocks support.
+
+**Default**: `false`
+**Environment Variable**: `KUP_FLASHBLOCKS`
+
+**Behavior**:
+- Sequencer nodes use op-rbuilder (a fork of op-reth with flashblocks capabilities) instead of op-reth
+- Validator nodes continue using op-reth
+- Kona-node's built-in flashblocks relay connects the sequencer's op-rbuilder to validator nodes
+
+**Data Flow**:
+```
+Sequencer:
+  op-rbuilder (flashblocks WS on port 1111)
+       ↓
+  sequencer kona-node (relay on port 1112)
+       ↓
+  validator kona-node (subscribes to relay)
+       ↓
+  validator op-reth (unchanged)
+```
+
+**Examples**:
+```bash
+kupcake --flashblocks
+kupcake --flashblocks --l2-nodes 3 --sequencer-count 1
+kupcake --flashblocks --op-rbuilder-tag v0.4.0
+```
+
 ### Configuration File
 
 #### `--config <PATH>`
@@ -608,6 +639,17 @@ Override default Docker images for any service.
 
 **Environment Variables**: `KUP_OP_CONDUCTOR_IMAGE`, `KUP_OP_CONDUCTOR_TAG`
 
+### op-rbuilder (Flashblocks Execution)
+
+```bash
+--op-rbuilder-image <IMAGE> # Default: ghcr.io/flashbots/op-rbuilder
+--op-rbuilder-tag <TAG>     # Default: v0.3.2-rc3
+```
+
+**Environment Variables**: `KUP_OP_RBUILDER_IMAGE`, `KUP_OP_RBUILDER_TAG`
+
+Used when `--flashblocks` is enabled. Replaces op-reth for sequencer nodes only.
+
 ### op-deployer
 
 ```bash
@@ -655,11 +697,15 @@ See: [Docker Images Guide](docker-images.md)
 
 ## Local Binary Deployment
 
-Deploy services from local binaries instead of Docker images.
+Deploy services from local binaries or source directories instead of Docker images.
 
 **Format**: `--<service>-binary <PATH>`
 
-When a binary path is provided, Kupcake creates a lightweight Docker image from the binary using `debian:trixie-slim` as the base. The image is cached based on the binary's SHA256 hash.
+The `<PATH>` can be either:
+- **A file path** (pre-built binary): Must be a Linux ELF executable. Kupcake validates the binary format and creates a lightweight Docker image from it.
+- **A directory path** (Rust source): Must contain a `Cargo.toml`. Kupcake runs `cargo build --release --bin <service>` automatically. On macOS, it detects Docker's platform and cross-compiles for the correct Linux target.
+
+Built images are cached based on the binary's SHA256 hash.
 
 ### op-reth
 
@@ -669,10 +715,14 @@ When a binary path is provided, Kupcake creates a lightweight Docker image from 
 
 **Environment Variable**: `KUP_OP_RETH_BINARY`
 
-Deploy op-reth from a local binary:
+Deploy op-reth from a local binary or source directory:
 
 ```bash
+# From pre-built binary
 kupcake --op-reth-binary ./op-reth/target/release/op-reth
+
+# From source directory (auto-builds, cross-compiles on macOS)
+kupcake --op-reth-binary ./op-reth
 ```
 
 ### kona-node
@@ -683,10 +733,14 @@ kupcake --op-reth-binary ./op-reth/target/release/op-reth
 
 **Environment Variable**: `KUP_KONA_NODE_BINARY`
 
-Deploy kona-node from a local binary:
+Deploy kona-node from a local binary or source directory:
 
 ```bash
+# From pre-built binary
 kupcake --kona-node-binary ./kona/target/release/kona-node
+
+# From source directory (auto-builds, cross-compiles on macOS)
+kupcake --kona-node-binary ./kona
 ```
 
 ### op-batcher
@@ -697,7 +751,7 @@ kupcake --kona-node-binary ./kona/target/release/kona-node
 
 **Environment Variable**: `KUP_OP_BATCHER_BINARY`
 
-Deploy op-batcher from a local binary:
+Deploy op-batcher from a local binary or source directory:
 
 ```bash
 kupcake --op-batcher-binary ./optimism/op-batcher/bin/op-batcher
@@ -711,7 +765,7 @@ kupcake --op-batcher-binary ./optimism/op-batcher/bin/op-batcher
 
 **Environment Variable**: `KUP_OP_PROPOSER_BINARY`
 
-Deploy op-proposer from a local binary:
+Deploy op-proposer from a local binary or source directory:
 
 ```bash
 kupcake --op-proposer-binary ./optimism/op-proposer/bin/op-proposer
@@ -725,7 +779,7 @@ kupcake --op-proposer-binary ./optimism/op-proposer/bin/op-proposer
 
 **Environment Variable**: `KUP_OP_CHALLENGER_BINARY`
 
-Deploy op-challenger from a local binary:
+Deploy op-challenger from a local binary or source directory:
 
 ```bash
 kupcake --op-challenger-binary ./optimism/op-challenger/bin/op-challenger
@@ -739,15 +793,35 @@ kupcake --op-challenger-binary ./optimism/op-challenger/bin/op-challenger
 
 **Environment Variable**: `KUP_OP_CONDUCTOR_BINARY`
 
-Deploy op-conductor from a local binary:
+Deploy op-conductor from a local binary or source directory:
 
 ```bash
 kupcake --op-conductor-binary ./optimism/op-conductor/bin/op-conductor
 ```
 
+### op-rbuilder
+
+```bash
+--op-rbuilder-binary <PATH>
+```
+
+**Environment Variable**: `KUP_OP_RBUILDER_BINARY`
+
+Deploy op-rbuilder from a local binary or source directory (used when `--flashblocks` is enabled):
+
+```bash
+kupcake --flashblocks --op-rbuilder-binary ./op-rbuilder/target/release/op-rbuilder
+```
+
 ### Examples
 
-Deploy with single local binary:
+Build from source directory (recommended on macOS):
+
+```bash
+kupcake --kona-node-binary ./kona
+```
+
+Deploy with a pre-built Linux binary:
 
 ```bash
 kupcake --kona-node-binary ./kona/target/release/kona-node
@@ -757,8 +831,8 @@ Deploy with multiple local binaries:
 
 ```bash
 kupcake \
-  --op-reth-binary ./op-reth/target/release/op-reth \
-  --kona-node-binary ./kona/target/release/kona-node \
+  --op-reth-binary ./op-reth \
+  --kona-node-binary ./kona \
   --op-batcher-binary ./optimism/op-batcher/bin/op-batcher
 ```
 
@@ -766,15 +840,19 @@ Mix local binaries with Docker images:
 
 ```bash
 kupcake \
-  --kona-node-binary ./kona/target/release/kona-node \
+  --kona-node-binary ./kona \
   --op-reth-tag v1.0.0 \
   --op-batcher-tag latest
 ```
 
-**Binary Requirements**:
-- Must be compiled for Linux (the Docker container OS)
+**Binary Requirements** (for pre-built binaries):
+- Must be a Linux ELF executable (macOS Mach-O binaries are rejected with a helpful error)
 - Must be compatible with GLIBC 2.38 or earlier
 - Must be executable (`chmod +x`)
+
+**Source Directory Requirements** (for build-from-source):
+- Must contain a `Cargo.toml`
+- On macOS, requires a one-time toolchain setup: `rustup target add aarch64-unknown-linux-gnu` and `brew install messense/macos-cross-toolchains/aarch64-unknown-linux-gnu` (see [Docker Images Guide - macOS Cross-Compilation Setup](docker-images.md#macos-cross-compilation-setup))
 
 **See**: [Docker Images Guide - Local Binary Deployment](docker-images.md#local-binary-deployment)
 

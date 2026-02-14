@@ -29,6 +29,10 @@ pub struct OpRethCmdBuilder {
     /// Maximum number of concurrent RPC connections (HTTP + WS combined).
     rpc_max_connections: Option<u32>,
     log_format: String,
+    /// Whether flashblocks support is enabled (op-rbuilder only).
+    flashblocks_enabled: bool,
+    /// Port for the flashblocks WebSocket server.
+    flashblocks_port: u16,
     extra_args: Vec<String>,
 }
 
@@ -58,6 +62,8 @@ impl OpRethCmdBuilder {
             p2p_secret_key: None,
             rpc_max_connections: None,
             log_format: "terminal".to_string(),
+            flashblocks_enabled: false,
+            flashblocks_port: 1111,
             extra_args: Vec::new(),
         }
     }
@@ -183,6 +189,13 @@ impl OpRethCmdBuilder {
         self
     }
 
+    /// Enable flashblocks support (op-rbuilder only).
+    pub fn flashblocks(mut self, port: u16) -> Self {
+        self.flashblocks_enabled = true;
+        self.flashblocks_port = port;
+        self
+    }
+
     /// Add extra arguments.
     pub fn extra_args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.extra_args.extend(args.into_iter().map(|s| s.into()));
@@ -269,6 +282,14 @@ impl OpRethCmdBuilder {
             cmd.push(max.to_string());
         }
 
+        if self.flashblocks_enabled {
+            cmd.push("--flashblocks.enabled".to_string());
+            cmd.push("--flashblocks.addr".to_string());
+            cmd.push("0.0.0.0".to_string());
+            cmd.push("--flashblocks.port".to_string());
+            cmd.push(self.flashblocks_port.to_string());
+        }
+
         cmd.push("--log.stdout.format".to_string());
         cmd.push(self.log_format);
 
@@ -317,6 +338,30 @@ mod tests {
         assert!(
             !cmd.contains(&"--rpc.max-connections".to_string()),
             "Should not contain --rpc.max-connections when not set"
+        );
+    }
+
+    #[test]
+    fn test_flashblocks_flags() {
+        let cmd = OpRethCmdBuilder::new("/data/genesis.json", "/data/reth-data")
+            .flashblocks(1111)
+            .build();
+
+        assert!(cmd.contains(&"--flashblocks.enabled".to_string()));
+        let addr_pos = cmd.iter().position(|s| s == "--flashblocks.addr");
+        assert!(addr_pos.is_some());
+        assert_eq!(cmd[addr_pos.unwrap() + 1], "0.0.0.0");
+        let port_pos = cmd.iter().position(|s| s == "--flashblocks.port");
+        assert!(port_pos.is_some());
+        assert_eq!(cmd[port_pos.unwrap() + 1], "1111");
+    }
+
+    #[test]
+    fn test_flashblocks_absent_by_default() {
+        let cmd = OpRethCmdBuilder::new("/data/genesis.json", "/data/reth-data").build();
+        assert!(
+            !cmd.contains(&"--flashblocks.enabled".to_string()),
+            "Should not contain flashblocks flags when not enabled"
         );
     }
 }

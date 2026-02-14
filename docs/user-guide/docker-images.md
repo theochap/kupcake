@@ -131,7 +131,7 @@ kupcake \
 
 ## Local Binary Deployment
 
-**New in Kupcake**: Deploy services from local binaries instead of Docker images.
+Deploy services from local binaries or source directories instead of Docker images.
 
 This is useful for:
 - Testing local builds during development
@@ -141,12 +141,21 @@ This is useful for:
 
 ### How It Works
 
-When you provide a binary path, Kupcake:
-1. Computes a SHA256 hash of the binary
-2. Checks if a Docker image with that hash already exists (caching)
-3. If not, creates a lightweight Docker image using `debian:trixie-slim` as the base
-4. Copies the binary into the image and sets it as the entrypoint
-5. Deploys the container using the generated image
+The `--<service>-binary` flag accepts either a **file path** or a **directory path**:
+
+**File path** (pre-built binary):
+1. Validates the binary is a Linux ELF executable (rejects macOS Mach-O with a helpful error)
+2. Computes a SHA256 hash of the binary
+3. Checks if a Docker image with that hash already exists (caching)
+4. If not, creates a lightweight Docker image using `debian:trixie-slim` as the base
+5. Copies the binary into the image and sets it as the entrypoint
+
+**Directory path** (Rust source — recommended on macOS):
+1. Verifies the directory contains a `Cargo.toml`
+2. Detects Docker's platform architecture (aarch64 or x86_64)
+3. On macOS, cross-compiles with `cargo build --release --target <linux-target> --bin <service>`
+4. On Linux, builds natively with `cargo build --release --bin <service>`
+5. Creates the Docker image from the resulting binary (same as file path flow)
 
 **Base Image**: `debian:trixie-slim` (provides GLIBC 2.38+ support)
 
@@ -163,33 +172,33 @@ All OP Stack services support local binary deployment:
 
 ### Basic Usage
 
-Deploy with a local kona-node binary:
+Build from source directory (recommended, handles cross-compilation automatically):
 
 ```bash
-# Build kona-node locally
-cd kona
-cargo build --release --bin kona-node
+# Just point to the source directory
+kupcake --kona-node-binary ./kona
+```
 
-# Deploy using the local binary
-kupcake --kona-node-binary ./target/release/kona-node
+Deploy with a pre-built Linux binary:
+
+```bash
+kupcake --kona-node-binary ./kona/target/release/kona-node
 ```
 
 ### Multiple Local Binaries
 
-Deploy multiple services from local binaries:
-
 ```bash
 kupcake \
-  --op-reth-binary ./op-reth/target/release/op-reth \
-  --kona-node-binary ./kona/target/release/kona-node \
+  --op-reth-binary ./op-reth \
+  --kona-node-binary ./kona \
   --op-batcher-binary ./optimism/op-batcher/bin/op-batcher
 ```
 
 ### Environment Variables
 
 ```bash
-export KUP_KONA_NODE_BINARY=./kona/target/release/kona-node
-export KUP_OP_RETH_BINARY=./op-reth/target/release/op-reth
+export KUP_KONA_NODE_BINARY=./kona
+export KUP_OP_RETH_BINARY=./op-reth
 kupcake
 ```
 
@@ -199,7 +208,7 @@ Mix local binaries with Docker images:
 
 ```bash
 kupcake \
-  --kona-node-binary ./kona/target/release/kona-node \
+  --kona-node-binary ./kona \
   --op-reth-tag v1.0.0 \
   --op-batcher-tag latest
 ```
@@ -248,17 +257,45 @@ kupcake --kona-node-binary ./target/debug/kona-node
 
 **Note**: Debug builds are much larger and slower than release builds.
 
-### Binary Requirements
+### Binary Requirements (pre-built binaries)
 
 Your binary must:
-- Be compiled for Linux (the Docker container OS)
+- Be a Linux ELF executable (macOS Mach-O binaries are rejected with a helpful error)
 - Be statically linked or have all dependencies available in `debian:trixie-slim`
 - Require GLIBC 2.38 or earlier
 - Be executable (`chmod +x`)
 
-### Cross-Compilation Example
+### Source Directory Requirements (build-from-source)
 
-If compiling on macOS for Linux:
+Your directory must:
+- Contain a `Cargo.toml`
+- On macOS, have the cross-compilation toolchain installed (see below)
+
+### macOS Cross-Compilation Setup
+
+When passing a source directory on macOS, Kupcake auto cross-compiles for Docker's Linux platform. This requires a one-time toolchain setup:
+
+```bash
+# 1. Install the Rust cross-compilation target
+#    For Apple Silicon Macs running Docker Desktop (arm64/aarch64):
+rustup target add aarch64-unknown-linux-gnu
+
+#    For Intel Macs or Docker configured for amd64:
+rustup target add x86_64-unknown-linux-gnu
+
+# 2. Install the cross-linker (via Homebrew)
+brew tap messense/macos-cross-toolchains
+brew install aarch64-unknown-linux-gnu    # for arm64
+# or: brew install x86_64-unknown-linux-gnu  # for amd64
+```
+
+Kupcake automatically sets `CARGO_TARGET_<TRIPLE>_LINKER` when cross-compiling, so no `.cargo/config.toml` is needed.
+
+### Cross-Compilation
+
+Kupcake handles cross-compilation automatically when you pass a source directory on macOS. It queries Docker for its platform and builds for the correct target.
+
+Manual cross-compilation is also supported:
 
 ```bash
 # Install cross-compilation target
@@ -272,6 +309,17 @@ kupcake --kona-node-binary ./target/x86_64-unknown-linux-gnu/release/kona-node
 ```
 
 ### Troubleshooting Local Binaries
+
+#### macOS Binary Passed to Docker
+
+```
+Error: Binary is a macOS Mach-O executable and cannot run in Docker containers.
+```
+
+**Solution**: Pass a source directory instead to auto-build for Linux:
+```bash
+kupcake --kona-node-binary ./kona
+```
 
 #### GLIBC Version Mismatch
 

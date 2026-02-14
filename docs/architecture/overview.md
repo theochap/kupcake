@@ -178,13 +178,28 @@ Kupcake deploys services in this order (see [Deployment Flow](deployment-flow.md
 5. **Deploy contracts** (op-deployer init + apply) - Only if needed
 6. **Save deployment version** - Store hash, timestamp, and Kupcake version
 7. **Generate genesis/rollup configs**
-8. **Start all op-reth instances** (execution layer)
-9. **Start all kona-node instances** (consensus layer)
+8. **Start all op-reth instances** (execution layer; op-rbuilder for sequencers if `--flashblocks`)
+9. **Start all kona-node instances** (consensus layer; with flashblocks relay if `--flashblocks`)
 10. **Start op-batcher, op-proposer, op-challenger**
 11. **Start op-conductor** (if multi-sequencer)
 12. **Start Prometheus and Grafana**
 
 Each step waits for the previous step to complete.
+
+### Flashblocks Data Flow
+
+When `--flashblocks` is enabled, the sequencer's execution client is replaced with op-rbuilder (a fork of op-reth). Kona-node's built-in flashblocks relay propagates sub-block data:
+
+```
+Sequencer:
+  op-rbuilder (flashblocks WS on port 1111)
+       ↓ ws://op-rbuilder:1111
+  sequencer kona-node (--flashblocks, relay on port 1112)
+       ↓ ws://sequencer-kona-node:1112
+  validator kona-node (--flashblocks, subscribes to relay)
+       ↓
+  validator op-reth (unchanged)
+```
 
 ## Docker Integration
 

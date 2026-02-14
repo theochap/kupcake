@@ -167,9 +167,9 @@ impl L2StackBuilder {
         self.sequencers.iter().any(|s| s.op_conductor.is_some())
     }
 
-    /// Set the binary path for op-reth for all nodes (sequencers and validators).
-    pub fn set_op_reth_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
-        let docker_image = crate::docker::DockerImage::from_binary(binary_path);
+    /// Set the binary path or source directory for op-reth for all nodes (sequencers and validators).
+    pub fn set_op_reth_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        let docker_image = crate::docker::DockerImage::from_binary_with_name(path, "op-reth");
         for sequencer in &mut self.sequencers {
             sequencer.op_reth.docker_image = docker_image.clone();
         }
@@ -179,9 +179,9 @@ impl L2StackBuilder {
         self
     }
 
-    /// Set the binary path for kona-node for all nodes (sequencers and validators).
-    pub fn set_kona_node_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
-        let docker_image = crate::docker::DockerImage::from_binary(binary_path);
+    /// Set the binary path or source directory for kona-node for all nodes (sequencers and validators).
+    pub fn set_kona_node_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        let docker_image = crate::docker::DockerImage::from_binary_with_name(path, "kona-node");
         for sequencer in &mut self.sequencers {
             sequencer.kona_node.docker_image = docker_image.clone();
         }
@@ -191,27 +191,31 @@ impl L2StackBuilder {
         self
     }
 
-    /// Set the binary path for op-batcher.
-    pub fn set_op_batcher_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
-        self.op_batcher.docker_image = crate::docker::DockerImage::from_binary(binary_path);
+    /// Set the binary path or source directory for op-batcher.
+    pub fn set_op_batcher_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        self.op_batcher.docker_image =
+            crate::docker::DockerImage::from_binary_with_name(path, "op-batcher");
         self
     }
 
-    /// Set the binary path for op-proposer.
-    pub fn set_op_proposer_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
-        self.op_proposer.docker_image = crate::docker::DockerImage::from_binary(binary_path);
+    /// Set the binary path or source directory for op-proposer.
+    pub fn set_op_proposer_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        self.op_proposer.docker_image =
+            crate::docker::DockerImage::from_binary_with_name(path, "op-proposer");
         self
     }
 
-    /// Set the binary path for op-challenger.
-    pub fn set_op_challenger_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
-        self.op_challenger.docker_image = crate::docker::DockerImage::from_binary(binary_path);
+    /// Set the binary path or source directory for op-challenger.
+    pub fn set_op_challenger_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        self.op_challenger.docker_image =
+            crate::docker::DockerImage::from_binary_with_name(path, "op-challenger");
         self
     }
 
-    /// Set the binary path for op-conductor for all sequencers that have conductor config.
-    pub fn set_op_conductor_binary(mut self, binary_path: impl Into<PathBuf>) -> Self {
-        let docker_image = crate::docker::DockerImage::from_binary(binary_path);
+    /// Set the binary path or source directory for op-conductor for all sequencers that have conductor config.
+    pub fn set_op_conductor_binary(mut self, path: impl Into<PathBuf>) -> Self {
+        let docker_image =
+            crate::docker::DockerImage::from_binary_with_name(path, "op-conductor");
         for sequencer in &mut self.sequencers {
             if let Some(conductor) = &mut sequencer.op_conductor {
                 conductor.docker_image = docker_image.clone();
@@ -288,6 +292,7 @@ impl L2StackBuilder {
                     &mut op_reth_enodes,
                     l1_chain_id,
                     conductor_context,
+                    None, // Sequencers get flashblocks URL from their own op-rbuilder
                 )
                 .await
                 .context(format!("Failed to start sequencer node {}", i + 1))?;
@@ -297,6 +302,12 @@ impl L2StackBuilder {
 
         // Get the primary sequencer's RPC URL for validators to follow
         let sequencer_rpc = sequencer_handlers[0].op_reth.http_rpc_url.clone();
+
+        // Get the primary sequencer's flashblocks relay URL for validators (if flashblocks enabled)
+        let sequencer_flashblocks_relay_url = sequencer_handlers[0]
+            .kona_node
+            .flashblocks_relay_url
+            .as_ref();
 
         // Start validator nodes (no conductors)
         let mut validator_handlers: Vec<L2NodeHandler> = Vec::with_capacity(self.validators.len());
@@ -313,6 +324,7 @@ impl L2StackBuilder {
                     &mut op_reth_enodes,
                     l1_chain_id,
                     ConductorContext::None,
+                    sequencer_flashblocks_relay_url,
                 )
                 .await
                 .context(format!("Failed to start validator node {}", i + 1))?;

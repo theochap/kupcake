@@ -5,7 +5,8 @@ use kupcake_deploy::{
     OP_BATCHER_DEFAULT_TAG, OP_CHALLENGER_DEFAULT_IMAGE, OP_CHALLENGER_DEFAULT_TAG,
     OP_CONDUCTOR_DEFAULT_IMAGE, OP_CONDUCTOR_DEFAULT_TAG, OP_DEPLOYER_DEFAULT_IMAGE,
     OP_DEPLOYER_DEFAULT_TAG, OP_PROPOSER_DEFAULT_IMAGE, OP_PROPOSER_DEFAULT_TAG,
-    OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG, PROMETHEUS_DEFAULT_IMAGE, PROMETHEUS_DEFAULT_TAG,
+    OP_RBUILDER_DEFAULT_IMAGE, OP_RBUILDER_DEFAULT_TAG, OP_RETH_DEFAULT_IMAGE,
+    OP_RETH_DEFAULT_TAG, PROMETHEUS_DEFAULT_IMAGE, PROMETHEUS_DEFAULT_TAG,
 };
 use tracing::level_filters::LevelFilter;
 
@@ -359,6 +360,14 @@ pub struct DeployArgs {
     )]
     pub sequencer_count: usize,
 
+    /// Enable flashblocks support.
+    ///
+    /// When enabled, sequencer nodes use op-rbuilder (a fork of op-reth with
+    /// flashblocks capabilities) instead of op-reth. Kona-node's built-in
+    /// flashblocks relay connects the sequencer's op-rbuilder to validator nodes.
+    #[arg(long, env = "KUP_FLASHBLOCKS")]
+    pub flashblocks: bool,
+
     /// Path to an existing kupconf.toml configuration file to load.
     ///
     /// When provided, the deployment will use the configuration from this file
@@ -387,6 +396,7 @@ impl Default for DeployArgs {
             genesis_timestamp: None,
             l2_nodes: 5,
             sequencer_count: 2,
+            flashblocks: false,
             config: None,
             docker_images: DockerImageOverrides::default(),
         }
@@ -476,6 +486,14 @@ pub struct DockerImageOverrides {
     #[arg(long, env = "KUP_GRAFANA_TAG", default_value = GRAFANA_DEFAULT_TAG)]
     pub grafana_tag: String,
 
+    /// Docker image for op-rbuilder (flashblocks-enabled execution client).
+    #[arg(long, env = "KUP_OP_RBUILDER_IMAGE", default_value = OP_RBUILDER_DEFAULT_IMAGE)]
+    pub op_rbuilder_image: String,
+
+    /// Docker tag for op-rbuilder.
+    #[arg(long, env = "KUP_OP_RBUILDER_TAG", default_value = OP_RBUILDER_DEFAULT_TAG)]
+    pub op_rbuilder_tag: String,
+
     // Binary path overrides (alternative to Docker images)
     /// Path to a local op-reth binary to use instead of a Docker image.
     ///
@@ -518,6 +536,13 @@ pub struct DockerImageOverrides {
     /// This is useful for testing local builds.
     #[arg(long, env = "KUP_OP_CONDUCTOR_BINARY")]
     pub op_conductor_binary: Option<String>,
+
+    /// Path to a local op-rbuilder binary to use instead of a Docker image.
+    ///
+    /// When provided, the binary will be copied into a lightweight Docker image.
+    /// This is useful for testing local builds.
+    #[arg(long, env = "KUP_OP_RBUILDER_BINARY")]
+    pub op_rbuilder_binary: Option<String>,
 }
 
 impl Default for DockerImageOverrides {
@@ -543,12 +568,15 @@ impl Default for DockerImageOverrides {
             prometheus_tag: PROMETHEUS_DEFAULT_TAG.to_string(),
             grafana_image: GRAFANA_DEFAULT_IMAGE.to_string(),
             grafana_tag: GRAFANA_DEFAULT_TAG.to_string(),
+            op_rbuilder_image: OP_RBUILDER_DEFAULT_IMAGE.to_string(),
+            op_rbuilder_tag: OP_RBUILDER_DEFAULT_TAG.to_string(),
             op_reth_binary: None,
             kona_node_binary: None,
             op_batcher_binary: None,
             op_proposer_binary: None,
             op_challenger_binary: None,
             op_conductor_binary: None,
+            op_rbuilder_binary: None,
         }
     }
 }

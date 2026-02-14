@@ -1138,8 +1138,8 @@ async fn test_rpc_endpoint(rpc_url: &str, method: &str) -> Result<()> {
 /// Test deploying a network with a local kona-node binary.
 ///
 /// This test:
-/// - Builds kona-node from the submodule (if not already built)
-/// - Deploys a network using the local binary instead of a Docker image
+/// - Passes the kona source directory to with_kona_node_binary (auto-builds and cross-compiles)
+/// - Deploys a network using the locally-built binary instead of a Docker image
 /// - Verifies the network starts successfully
 /// - Verifies sync status can be queried
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1157,40 +1157,22 @@ async fn test_local_kona_binary() -> Result<()> {
 
     // Path to the kona submodule (relative to the test crate)
     // env!("CARGO_MANIFEST_DIR") points to crates/deploy
+    // Pass the directory — ensure_image_ready will auto-build and cross-compile
     let kona_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/kona");
-    let kona_binary_path = kona_dir.join("target/release/kona-node");
 
-    // Verify binary exists
-    if !kona_binary_path.exists() {
-        println!("=== Building kona-node binary (this may take a few minutes)... ===");
-        let output = Command::new("cargo")
-            .args(["build", "--bin", "kona-node", "--release"])
-            .current_dir(&kona_dir)
-            .output()
-            .context("Failed to build kona-node")?;
+    println!(
+        "=== Using kona source directory at {} (will auto-build) ===",
+        kona_dir.display()
+    );
 
-        if !output.status.success() {
-            anyhow::bail!(
-                "Failed to build kona-node: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        println!("=== kona-node build completed ===");
-    } else {
-        println!(
-            "=== Using existing kona-node binary at {} ===",
-            kona_binary_path.display()
-        );
-    }
-
-    // Deploy with local kona-node binary
+    // Deploy with local kona-node source directory (auto-builds for Docker's platform)
     let deployer = DeployerBuilder::new(l1_chain_id)
         .network_name(&network_name)
         .outdata(OutDataPath::Path(outdata_path.clone()))
         .l2_node_count(2) // 1 sequencer + 1 validator
         .sequencer_count(1)
         .block_time(2)
-        .with_kona_node_binary(kona_binary_path.clone())
+        .with_kona_node_binary(&kona_dir)
         .publish_all_ports(true) // Ensure all ports (including kona-node RPC) are published
         .detach(true)
         .build()
@@ -3134,5 +3116,224 @@ async fn test_spam_deploy_no_wait_then_reload_and_spam() -> Result<()> {
     );
 
     println!("=== Test passed! Full --spam flow: deploy(no-wait) → reload → spam → cleanup ===");
+    Ok(())
+}
+
+/// Get the Docker image used by a container via docker inspect.
+fn get_container_image(container_name: &str) -> Result<String> {
+    let output = Command::new("docker")
+        .args([
+            "inspect",
+            "--format",
+            "{{.Config.Image}}",
+            container_name,
+        ])
+        .output()
+        .context("Failed to run docker inspect")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "docker inspect failed for {}: {}",
+            container_name,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Get the exposed ports of a container via docker inspect.
+fn get_container_exposed_ports(container_name: &str) -> Result<String> {
+    let output = Command::new("docker")
+        .args([
+            "inspect",
+            "--format",
+            "{{json .Config.ExposedPorts}}",
+            container_name,
+        ])
+        .output()
+        .context("Failed to run docker inspect")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "docker inspect failed for {}: {}",
+            container_name,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Test flashblocks deployment with op-rbuilder.
+///
+/// This test verifies:
+/// - Sequencer uses op-rbuilder Docker image when flashblocks is enabled
+/// - Validator still uses op-reth (not op-rbuilder)
+/// - Flashblocks WS port (1111) is exposed on the sequencer's execution client container
+/// - Blocks are advancing on both sequencer and validator
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_flashblocks_deployment() -> Result<()> {
+    init_test_tracing();
+
+    let ctx = TestContext::new("flashblocks");
+    println!(
+        "=== Starting flashblocks test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name, ctx.l1_chain_id
+    );
+
+    // Deploy with flashblocks enabled
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(2) // 1 sequencer + 1 validator
+        .sequencer_count(1)
+        .block_time(2)
+        .flashblocks(true)
+        .detach(true)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
+
+    deployer.save_config()?;
+
+    println!("=== Deploying network with flashblocks enabled... ===");
+    let deployment = ctx.deploy(deployer).await?;
+    println!("=== Deployment completed successfully ===");
+
+    // Verify sequencer op-reth container uses op-rbuilder image
+    println!("=== Verifying sequencer uses op-rbuilder image... ===");
+    let sequencer_reth_name = format!("{}-op-reth", ctx.network_name);
+    let sequencer_image = get_container_image(&sequencer_reth_name)?;
+    println!("Sequencer execution client image: {}", sequencer_image);
+
+    if !sequencer_image.contains("op-rbuilder") {
+        ctx.cleanup().await?;
+        anyhow::bail!(
+            "Expected sequencer to use op-rbuilder image, got: {}",
+            sequencer_image
+        );
+    }
+
+    // Verify validator op-reth container still uses op-reth image (not op-rbuilder)
+    println!("=== Verifying validator uses op-reth image (not op-rbuilder)... ===");
+    let validator_reth_name = format!("{}-op-reth-validator-1", ctx.network_name);
+    let validator_image = get_container_image(&validator_reth_name)?;
+    println!("Validator execution client image: {}", validator_image);
+
+    if validator_image.contains("op-rbuilder") {
+        ctx.cleanup().await?;
+        anyhow::bail!(
+            "Expected validator to use op-reth image (not op-rbuilder), got: {}",
+            validator_image
+        );
+    }
+
+    // Verify flashblocks port (1111) is exposed on sequencer's execution client
+    println!("=== Verifying flashblocks port is exposed on sequencer... ===");
+    let exposed_ports = get_container_exposed_ports(&sequencer_reth_name)?;
+    println!("Sequencer exposed ports: {}", exposed_ports);
+
+    if !exposed_ports.contains("1111/tcp") {
+        ctx.cleanup().await?;
+        anyhow::bail!(
+            "Expected flashblocks port 1111/tcp to be exposed on sequencer, got: {}",
+            exposed_ports
+        );
+    }
+
+    // Verify flashblocks port is NOT exposed on validator
+    let validator_exposed_ports = get_container_exposed_ports(&validator_reth_name)?;
+    if validator_exposed_ports.contains("1111/tcp") {
+        ctx.cleanup().await?;
+        anyhow::bail!(
+            "Flashblocks port 1111/tcp should NOT be exposed on validator, got: {}",
+            validator_exposed_ports
+        );
+    }
+
+    // Wait for both sequencer and validator op-reth to be ready
+    println!("=== Waiting for op-reth nodes to be ready... ===");
+    for node in deployment.l2_stack.all_nodes() {
+        let label = if node.is_sequencer() { "sequencer" } else { "validator" };
+        if let Err(e) = node.op_reth.wait_until_ready(NODE_READY_TIMEOUT_SECS).await {
+            ctx.cleanup().await?;
+            anyhow::bail!("{} op-reth not ready: {}", label, e);
+        }
+        println!("{} op-reth is ready", label);
+    }
+
+    // Wait for both kona-nodes to be ready (validator may need extra time with flashblocks)
+    println!("=== Waiting for kona-node consensus clients to be ready... ===");
+    for node in deployment.l2_stack.all_nodes() {
+        let label = if node.is_sequencer() { "sequencer" } else { "validator" };
+        // Give kona-nodes extra time (180s) since flashblocks relay adds startup latency
+        if let Err(e) = node.kona_node.wait_until_ready(180).await {
+            ctx.cleanup().await?;
+            anyhow::bail!("{} kona-node not ready: {}", label, e);
+        }
+        println!("{} kona-node is ready", label);
+    }
+
+    // Get initial block numbers from op-reth (both sequencer and validator)
+    println!("=== Getting initial op-reth block numbers... ===");
+    let mut initial_blocks = Vec::new();
+    for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
+        let label = if node.is_sequencer() {
+            "sequencer".to_string()
+        } else {
+            format!("validator-{}", idx)
+        };
+        let status = node.op_reth.sync_status().await
+            .with_context(|| format!("Failed to get {} op-reth status", label))?;
+        println!("{}: block={}", label, status.block_number);
+        initial_blocks.push((label, status.block_number));
+    }
+
+    // Wait for blocks to be produced
+    println!("=== Waiting 30 seconds for blocks to be produced... ===");
+    sleep(Duration::from_secs(30)).await;
+
+    // Check that both sequencer and validator have advanced
+    println!("=== Checking that all nodes have advanced... ===");
+    let mut errors = Vec::new();
+
+    for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
+        let label = if node.is_sequencer() {
+            "sequencer".to_string()
+        } else {
+            format!("validator-{}", idx)
+        };
+
+        if let Some((_, initial_block)) = initial_blocks.iter().find(|(l, _)| l == &label) {
+            let status = node.op_reth.sync_status().await
+                .with_context(|| format!("Failed to get {} op-reth status", label))?;
+            let advanced = status.block_number > *initial_block;
+            println!(
+                "{}: block {} -> {} ({})",
+                label,
+                initial_block,
+                status.block_number,
+                if advanced { "ADVANCING" } else { "STALLED" }
+            );
+
+            if !advanced {
+                errors.push(format!("{}: block number not advancing", label));
+            }
+        }
+    }
+
+    // Cleanup
+    println!("=== Cleaning up network... ===");
+    ctx.cleanup().await?;
+
+    if !errors.is_empty() {
+        anyhow::bail!(
+            "Not all nodes are advancing:\n{}",
+            errors.join("\n")
+        );
+    }
+
+    println!("=== Test passed! Flashblocks deployment with op-rbuilder is working. ===");
     Ok(())
 }

@@ -141,6 +141,16 @@ export KUP_SEQUENCERS=3
 kupcake
 ```
 
+### `KUP_FLASHBLOCKS`
+
+Enable flashblocks support.
+
+```bash
+export KUP_FLASHBLOCKS=true
+kupcake
+# Sequencers use op-rbuilder instead of op-reth
+```
+
 ### `KUP_CONFIG`
 
 Path to configuration file.
@@ -216,6 +226,15 @@ export KUP_OP_CONDUCTOR_IMAGE=ghcr.io/ethereum-optimism/op-conductor
 export KUP_OP_CONDUCTOR_TAG=latest
 ```
 
+### op-rbuilder (Flashblocks Execution)
+
+```bash
+export KUP_OP_RBUILDER_IMAGE=ghcr.io/flashbots/op-rbuilder
+export KUP_OP_RBUILDER_TAG=v0.3.2-rc3
+```
+
+Used when `KUP_FLASHBLOCKS=true`. Replaces op-reth for sequencer nodes only.
+
 ### op-deployer
 
 ```bash
@@ -239,25 +258,35 @@ export KUP_GRAFANA_TAG=latest
 
 ## Local Binary Paths
 
-Deploy services from local binaries instead of Docker images.
+Deploy services from local binaries or source directories instead of Docker images.
 
 **Note**: When a binary path is set, the corresponding image and tag variables are ignored.
+
+The value can be either a **file path** (pre-built Linux ELF binary) or a **directory path** (Rust source directory with `Cargo.toml`). When a directory is provided, Kupcake automatically runs `cargo build --release` and cross-compiles for Docker's platform on macOS.
 
 ### op-reth
 
 ```bash
+# Pre-built binary
 export KUP_OP_RETH_BINARY=./op-reth/target/release/op-reth
+
+# Source directory (auto-builds, cross-compiles on macOS)
+export KUP_OP_RETH_BINARY=./op-reth
 ```
 
-Deploy op-reth from a local binary.
+Deploy op-reth from a local binary or source directory.
 
 ### kona-node
 
 ```bash
+# Pre-built binary
 export KUP_KONA_NODE_BINARY=./kona/target/release/kona-node
+
+# Source directory (auto-builds, cross-compiles on macOS)
+export KUP_KONA_NODE_BINARY=./kona
 ```
 
-Deploy kona-node from a local binary.
+Deploy kona-node from a local binary or source directory.
 
 ### op-batcher
 
@@ -265,7 +294,7 @@ Deploy kona-node from a local binary.
 export KUP_OP_BATCHER_BINARY=./optimism/op-batcher/bin/op-batcher
 ```
 
-Deploy op-batcher from a local binary.
+Deploy op-batcher from a local binary or source directory.
 
 ### op-proposer
 
@@ -273,7 +302,7 @@ Deploy op-batcher from a local binary.
 export KUP_OP_PROPOSER_BINARY=./optimism/op-proposer/bin/op-proposer
 ```
 
-Deploy op-proposer from a local binary.
+Deploy op-proposer from a local binary or source directory.
 
 ### op-challenger
 
@@ -281,7 +310,7 @@ Deploy op-proposer from a local binary.
 export KUP_OP_CHALLENGER_BINARY=./optimism/op-challenger/bin/op-challenger
 ```
 
-Deploy op-challenger from a local binary.
+Deploy op-challenger from a local binary or source directory.
 
 ### op-conductor
 
@@ -289,7 +318,15 @@ Deploy op-challenger from a local binary.
 export KUP_OP_CONDUCTOR_BINARY=./optimism/op-conductor/bin/op-conductor
 ```
 
-Deploy op-conductor from a local binary.
+Deploy op-conductor from a local binary or source directory.
+
+### op-rbuilder
+
+```bash
+export KUP_OP_RBUILDER_BINARY=./op-rbuilder/target/release/op-rbuilder
+```
+
+Deploy op-rbuilder from a local binary or source directory (used when `KUP_FLASHBLOCKS=true`).
 
 ### Example: Development with Local Binaries
 
@@ -297,13 +334,13 @@ Deploy op-conductor from a local binary.
 #!/bin/bash
 # dev-deploy.sh - Deploy with locally built components
 
-# Build services locally
-cd ~/kona && cargo build --release --bin kona-node
-cd ~/op-reth && cargo build --release
+# Option 1: Point to source directories (auto-builds, cross-compiles on macOS)
+export KUP_KONA_NODE_BINARY=~/kona
+export KUP_OP_RETH_BINARY=~/op-reth
 
-# Set binary paths
-export KUP_KONA_NODE_BINARY=~/kona/target/release/kona-node
-export KUP_OP_RETH_BINARY=~/op-reth/target/release/op-reth
+# Option 2: Point to pre-built Linux binaries
+# export KUP_KONA_NODE_BINARY=~/kona/target/release/kona-node
+# export KUP_OP_RETH_BINARY=~/op-reth/target/release/op-reth
 
 # Network config
 export KUP_NETWORK_NAME=dev-local
@@ -315,10 +352,14 @@ export KUP_DETACH=true
 kupcake
 ```
 
-**Binary Requirements**:
-- Must be compiled for Linux
+**Binary Requirements** (for pre-built binaries):
+- Must be a Linux ELF executable (macOS binaries are rejected with a helpful error)
 - Must be compatible with GLIBC 2.38 or earlier
 - Must be executable (`chmod +x`)
+
+**Source Directory Requirements** (for build-from-source):
+- Must contain a `Cargo.toml`
+- On macOS, requires a one-time toolchain setup (see [Docker Images Guide - macOS Cross-Compilation Setup](docker-images.md#macos-cross-compilation-setup))
 
 **See**: [Docker Images Guide - Local Binary Deployment](docker-images.md#local-binary-deployment)
 
