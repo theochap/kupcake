@@ -3539,3 +3539,301 @@ async fn test_flashblocks_with_spam() -> Result<()> {
     );
     Ok(())
 }
+
+/// Test that the flashblocks Grafana dashboard is correctly provisioned and can query
+/// op-rbuilder metrics from Prometheus.
+///
+/// This test verifies:
+/// - Grafana is accessible and healthy
+/// - The flashblocks dashboard is provisioned with the correct datasource UID
+/// - Prometheus is scraping op-rbuilder metrics
+/// - Grafana can query the Prometheus datasource
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_flashblocks_grafana_dashboard() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
+    init_test_tracing();
+
+    let ctx = TestContext::new("fb-dash");
+    tracing::info!(
+        "=== Starting flashblocks dashboard test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name, ctx.l1_chain_id
+    );
+
+    // Deploy with flashblocks enabled and dashboards provisioned
+    let dashboards_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../grafana/dashboards");
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(2) // 1 sequencer + 1 validator
+        .sequencer_count(1)
+        .block_time(2)
+        .flashblocks(true)
+        .dashboards_path(dashboards_path)
+        .detach(true)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
+
+    deployer.save_config()?;
+
+    tracing::info!("=== Deploying network... ===");
+    let _deployment = ctx.deploy(deployer).await?;
+    tracing::info!("=== Deployment completed ===");
+
+    // Get Grafana and Prometheus host ports
+    let grafana_name = format!("{}-grafana", ctx.network_name);
+    let prometheus_name = format!("{}-prometheus", ctx.network_name);
+
+    let grafana_port = get_container_host_port(&grafana_name, 3000)
+        .context("Failed to get Grafana host port")?;
+    let prometheus_port = get_container_host_port(&prometheus_name, 9099)
+        .context("Failed to get Prometheus host port")?;
+
+    let grafana_url = format!("http://localhost:{}", grafana_port);
+    let prometheus_url = format!("http://localhost:{}", prometheus_port);
+
+    tracing::info!(grafana_url = %grafana_url, prometheus_url = %prometheus_url, "Monitoring endpoints");
+
+    let client = rpc::create_client()?;
+
+    // Wait for Grafana to be ready
+    tracing::info!("=== Waiting for Grafana to be ready... ===");
+    let grafana_ready = timeout(Duration::from_secs(30), async {
+        loop {
+            match client.get(format!("{}/api/health", grafana_url)).send().await {
+                Ok(resp) if resp.status().is_success() => return Ok::<(), anyhow::Error>(()),
+                _ => sleep(Duration::from_secs(1)).await,
+            }
+        }
+    })
+    .await;
+
+    if grafana_ready.is_err() {
+        ctx.cleanup().await?;
+        anyhow::bail!("Grafana not ready after 30 seconds");
+    }
+    tracing::info!("Grafana is healthy");
+
+    // Verify the flashblocks dashboard is provisioned (retry since provisioning is async)
+    tracing::info!("=== Checking flashblocks dashboard... ===");
+    let dashboard_json: Value = {
+        let dashboard_result = timeout(Duration::from_secs(30), async {
+            loop {
+                match client
+                    .get(format!("{}/api/dashboards/uid/kupcake-flashblocks", grafana_url))
+                    .basic_auth("admin", Some("admin"))
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        return resp.json::<Value>().await.map_err(|e| anyhow::anyhow!(e));
+                    }
+                    _ => sleep(Duration::from_secs(2)).await,
+                }
+            }
+        })
+        .await;
+
+        match dashboard_result {
+            Ok(Ok(json)) => json,
+            Ok(Err(e)) => {
+                ctx.cleanup().await?;
+                anyhow::bail!("Failed to parse dashboard JSON: {}", e);
+            }
+            Err(_) => {
+                ctx.cleanup().await?;
+                anyhow::bail!("Flashblocks dashboard not provisioned after 30 seconds");
+            }
+        }
+    };
+    let dashboard_title = dashboard_json["dashboard"]["title"]
+        .as_str()
+        .unwrap_or("unknown");
+    tracing::info!("Found dashboard: {}", dashboard_title);
+
+    assert_eq!(
+        dashboard_title, "Flashblocks",
+        "Dashboard title should be 'Flashblocks'"
+    );
+
+    // Verify all panel datasource UIDs point to "Prometheus"
+    let panels = dashboard_json["dashboard"]["panels"]
+        .as_array()
+        .context("No panels in dashboard")?;
+
+    for panel in panels {
+        let panel_title = panel["title"].as_str().unwrap_or("(no title)");
+        if let Some(ds) = panel.get("datasource") {
+            let uid = ds["uid"].as_str().unwrap_or("");
+            if uid != "-- Grafana --" && !uid.is_empty() {
+                assert_eq!(
+                    uid, "Prometheus",
+                    "Panel '{}' has wrong datasource UID: '{}' (expected 'Prometheus')",
+                    panel_title, uid
+                );
+            }
+        }
+        // Also check targets within panels
+        if let Some(targets) = panel["targets"].as_array() {
+            for target in targets {
+                if let Some(ds) = target.get("datasource") {
+                    let uid = ds["uid"].as_str().unwrap_or("");
+                    assert_eq!(
+                        uid, "Prometheus",
+                        "Target in panel '{}' has wrong datasource UID: '{}'",
+                        panel_title, uid
+                    );
+                }
+            }
+        }
+    }
+    tracing::info!("All panel datasource UIDs are correct");
+
+    // Verify Grafana's Prometheus datasource is configured and reachable
+    tracing::info!("=== Verifying Grafana datasource... ===");
+    let datasources_resp = client
+        .get(format!("{}/api/datasources", grafana_url))
+        .basic_auth("admin", Some("admin"))
+        .send()
+        .await
+        .context("Failed to query Grafana datasources API")?;
+
+    let datasources: Vec<Value> = datasources_resp
+        .json()
+        .await
+        .context("Failed to parse datasources")?;
+
+    let prometheus_ds = datasources
+        .iter()
+        .find(|ds| ds["type"].as_str() == Some("prometheus"))
+        .context("No Prometheus datasource found in Grafana")?;
+
+    tracing::info!(
+        "Prometheus datasource: name={}, uid={}",
+        prometheus_ds["name"].as_str().unwrap_or("?"),
+        prometheus_ds["uid"].as_str().unwrap_or("?")
+    );
+
+    // Wait for Prometheus to scrape some op-rbuilder metrics
+    tracing::info!("=== Waiting for Prometheus to scrape op-rbuilder metrics... ===");
+    let metrics_ready = timeout(Duration::from_secs(60), async {
+        loop {
+            let query_url = format!(
+                "{}/api/v1/query?query=reth_op_rbuilder_flags_flashblocks_enabled",
+                prometheus_url
+            );
+            match client.get(&query_url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    if let Ok(json) = resp.json::<Value>().await {
+                        let results = &json["data"]["result"];
+                        if let Some(arr) = results.as_array() {
+                            if !arr.is_empty() {
+                                return Ok::<(), anyhow::Error>(());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            sleep(Duration::from_secs(3)).await;
+        }
+    })
+    .await;
+
+    if metrics_ready.is_err() {
+        ctx.cleanup().await?;
+        anyhow::bail!(
+            "Prometheus did not scrape reth_op_rbuilder_flags_flashblocks_enabled within 60 seconds"
+        );
+    }
+    tracing::info!("Prometheus is scraping op-rbuilder metrics");
+
+    // Verify key op-rbuilder metrics exist in Prometheus
+    let key_metrics = [
+        "reth_op_rbuilder_flags_flashblocks_enabled",
+        "reth_op_rbuilder_block_built_success",
+    ];
+
+    for metric in &key_metrics {
+        let query_url = format!("{}/api/v1/query?query={}", prometheus_url, metric);
+        let resp = client
+            .get(&query_url)
+            .send()
+            .await
+            .with_context(|| format!("Failed to query Prometheus for {}", metric))?;
+
+        let json: Value = resp.json().await.context("Failed to parse Prometheus response")?;
+        let results = json["data"]["result"]
+            .as_array()
+            .context("No result array in Prometheus response")?;
+
+        assert!(
+            !results.is_empty(),
+            "Expected Prometheus to have metric '{}', but got no results",
+            metric
+        );
+        tracing::info!("Metric '{}' present ({} series)", metric, results.len());
+    }
+
+    // Verify Prometheus is scraping validator metrics (standard reth metrics)
+    tracing::info!("=== Verifying validator metrics are being scraped... ===");
+    let validator_metrics_ready = timeout(Duration::from_secs(30), async {
+        loop {
+            let query_url = format!(
+                "{}/api/v1/query?query=up{{job=\"op-reth-validator-1\"}}",
+                prometheus_url
+            );
+            match client.get(&query_url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    if let Ok(json) = resp.json::<Value>().await {
+                        if let Some(arr) = json["data"]["result"].as_array() {
+                            if !arr.is_empty() {
+                                let value = arr[0]["value"][1].as_str().unwrap_or("0");
+                                if value == "1" {
+                                    return Ok::<(), anyhow::Error>(());
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            sleep(Duration::from_secs(2)).await;
+        }
+    })
+    .await;
+
+    if validator_metrics_ready.is_err() {
+        ctx.cleanup().await?;
+        anyhow::bail!("Prometheus is not scraping validator op-reth metrics (up != 1)");
+    }
+
+    // Check validator has standard reth metrics
+    let validator_metric = "reth_info{job=\"op-reth-validator-1\"}";
+    let query_url = format!("{}/api/v1/query?query={}", prometheus_url, validator_metric);
+    let resp = client
+        .get(&query_url)
+        .send()
+        .await
+        .context("Failed to query Prometheus for validator reth_info")?;
+    let json: Value = resp.json().await.context("Failed to parse response")?;
+    let results = json["data"]["result"]
+        .as_array()
+        .context("No result array")?;
+    assert!(
+        !results.is_empty(),
+        "Expected validator to have reth_info metric"
+    );
+    tracing::info!(
+        "Validator metrics confirmed: reth_info present ({} series)",
+        results.len()
+    );
+
+    // Cleanup
+    tracing::info!("=== Cleaning up network... ===");
+    ctx.cleanup().await?;
+
+    tracing::info!("=== Test passed! Flashblocks Grafana dashboard is correctly configured. ===");
+    Ok(())
+}
