@@ -49,12 +49,12 @@ impl SpamPreset {
     /// (e.g. `http://container-name:port/`).
     pub fn to_config(self, rpc_url: &str) -> SpamConfig {
         let (scenario, tps, accounts) = match self {
-            SpamPreset::Light => ("transfers", 10, 5),
-            SpamPreset::Medium => ("transfers", 50, 20),
-            SpamPreset::Heavy => ("transfers", 200, 50),
-            SpamPreset::Erc20 => ("erc20", 50, 20),
-            SpamPreset::Uniswap => ("uni_v2", 20, 10),
-            SpamPreset::Stress => ("transfers", 500, 100),
+            SpamPreset::Light => ("transfers", 5, 3),
+            SpamPreset::Medium => ("transfers", 10, 5),
+            SpamPreset::Heavy => ("transfers", 50, 20),
+            SpamPreset::Erc20 => ("erc20", 10, 5),
+            SpamPreset::Uniswap => ("uni_v2", 5, 5),
+            SpamPreset::Stress => ("transfers", 100, 50),
         };
 
         SpamConfig {
@@ -137,7 +137,6 @@ pub async fn run_spam(deployer: &Deployer, config: &SpamConfig) -> Result<()> {
 
     // Create KupDocker instance — this resolves the network by ID so the
     // Contender container joins the same network as the other services.
-    // Use no_cleanup=true since spam handles its own container lifecycle.
     let mut kup_docker = KupDocker::new(KupDockerConfig {
         ..deployer.docker.clone()
     })
@@ -530,20 +529,20 @@ mod tests {
     fn test_spam_preset_to_config() {
         let config = SpamPreset::Light.to_config("http://test:8545/");
         assert_eq!(config.scenario, "transfers");
-        assert_eq!(config.tps, 10);
-        assert_eq!(config.accounts, 5);
+        assert_eq!(config.tps, 5);
+        assert_eq!(config.accounts, 3);
         assert!(config.forever);
 
         let config = SpamPreset::Uniswap.to_config("http://test:8545/");
         assert_eq!(config.scenario, "uni_v2");
-        assert_eq!(config.tps, 20);
-        assert_eq!(config.accounts, 10);
+        assert_eq!(config.tps, 5);
+        assert_eq!(config.accounts, 5);
         assert!(config.forever);
 
         let config = SpamPreset::Stress.to_config("http://test:8545/");
         assert_eq!(config.scenario, "transfers");
-        assert_eq!(config.tps, 500);
-        assert_eq!(config.accounts, 100);
+        assert_eq!(config.tps, 100);
+        assert_eq!(config.accounts, 50);
         assert!(config.forever);
     }
 

@@ -208,11 +208,6 @@ impl OpRethBuilder {
             "Using P2P keypair for op-reth"
         );
 
-        // For sequencer nodes, point to self. For validators, point to the sequencer.
-        let sequencer_http = sequencer_rpc
-            .map(|url| url.to_string())
-            .unwrap_or_else(|| format!("http://{}:{}", self.container_name, self.http_port));
-
         let mut cmd_builder = OpRethCmdBuilder::new(
             container_config_path.join("genesis.json"),
             container_config_path.join(format!("reth-data-{}", self.container_name)),
@@ -224,13 +219,18 @@ impl OpRethBuilder {
         .metrics("0.0.0.0", self.metrics_port)
         .discovery(true)
         .discovery_port(self.discovery_port)
-        .sequencer_http(sequencer_http)
         .bootnodes(bootnodes.to_vec())
         .extra_args(self.extra_args.clone())
         .net_if(self.net_if.clone())
         .listen_port(self.listen_port)
         .nat_dns(self.container_name.clone())
         .p2p_secret_key(&p2p_keypair.private_key);
+
+        // Only set --rollup.sequencer-http for validator nodes that need to forward
+        // transactions to the sequencer. Sequencer nodes process transactions directly.
+        if let Some(url) = sequencer_rpc {
+            cmd_builder = cmd_builder.sequencer_http(url.to_string());
+        }
 
         if let Some(max) = self.rpc_max_connections {
             cmd_builder = cmd_builder.rpc_max_connections(max);

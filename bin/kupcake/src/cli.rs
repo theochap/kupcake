@@ -324,7 +324,7 @@ pub struct DeployArgs {
     #[arg(
         long,
         num_args = 0..=1,
-        default_missing_value = "light",
+        default_missing_value = "medium",
         value_name = "PRESET",
         env = "KUP_SPAM",
         conflicts_with = "detach"
