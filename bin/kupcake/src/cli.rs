@@ -226,23 +226,39 @@ pub struct SpamArgs {
     pub extra_args: Vec<String>,
 }
 
-impl From<SpamArgs> for kupcake_deploy::spam::SpamConfig {
-    fn from(args: SpamArgs) -> Self {
-        Self {
-            scenario: args.scenario,
-            tps: args.tps,
-            duration: args.duration,
-            forever: args.forever,
-            accounts: args.accounts,
-            min_balance: args.min_balance,
-            fund_amount: args.fund_amount,
-            funder_account_index: args.funder_account_index,
-            report: args.report,
-            contender_image: args.contender_image,
-            contender_tag: args.contender_tag,
-            target_node: args.target_node,
-            extra_args: args.extra_args,
+impl SpamArgs {
+    /// Resolve the target node index to a Docker-internal RPC URL from the deployer
+    /// and build a `SpamConfig`.
+    pub fn into_config(
+        self,
+        deployer: &kupcake_deploy::Deployer,
+    ) -> anyhow::Result<kupcake_deploy::spam::SpamConfig> {
+        if self.target_node >= deployer.l2_stack.sequencers.len() {
+            anyhow::bail!(
+                "Target node index {} is out of range (only {} sequencer(s) available)",
+                self.target_node,
+                deployer.l2_stack.sequencers.len()
+            );
         }
+        let rpc_url = deployer.l2_stack.sequencers[self.target_node]
+            .op_reth
+            .docker_rpc_url();
+
+        Ok(kupcake_deploy::spam::SpamConfig {
+            scenario: self.scenario,
+            tps: self.tps,
+            duration: self.duration,
+            forever: self.forever,
+            accounts: self.accounts,
+            min_balance: self.min_balance,
+            fund_amount: self.fund_amount,
+            funder_account_index: self.funder_account_index,
+            report: self.report,
+            contender_image: self.contender_image,
+            contender_tag: self.contender_tag,
+            rpc_url,
+            extra_args: self.extra_args,
+        })
     }
 }
 

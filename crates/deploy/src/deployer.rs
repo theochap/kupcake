@@ -31,6 +31,9 @@ pub struct DeploymentResult {
     pub anvil: AnvilHandler,
     /// Handlers for all L2 stack components.
     pub l2_stack: L2StackHandler,
+    /// Docker client handle. Containers are cleaned up when this is dropped
+    /// (unless `no_cleanup` was set).
+    _docker: KupDocker,
 }
 
 impl L2StackHandler {
@@ -560,6 +563,6 @@ impl Deployer {
             }
         }
 
-        Ok(DeploymentResult { anvil, l2_stack })
+        Ok(DeploymentResult { anvil, l2_stack, _docker: docker })
     }
 }

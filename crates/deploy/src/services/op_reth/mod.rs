@@ -71,7 +71,7 @@ pub struct OpRethBuilder {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p2p_secret_key: Option<String>,
     /// Maximum number of concurrent RPC connections (HTTP + WS combined).
-    /// If None, op-reth's default (500) is used.
+    /// Defaults to effectively unlimited for local dev use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_max_connections: Option<u32>,
     /// Whether flashblocks support is enabled (uses op-rbuilder image).
@@ -118,7 +118,7 @@ impl Default for OpRethBuilder {
             discovery_host_port: None,
             net_if: None,
             p2p_secret_key: None,
-            rpc_max_connections: None,
+            rpc_max_connections: Some(1_000_000),
             flashblocks_enabled: false,
             flashblocks_port: None,
             extra_args: Vec::new(),
@@ -164,6 +164,11 @@ impl OpRethHandler {
 }
 
 impl OpRethBuilder {
+    /// Returns the Docker-internal HTTP RPC URL for this node.
+    pub fn docker_rpc_url(&self) -> String {
+        format!("http://{}:{}/", self.container_name, self.http_port)
+    }
+
     /// Start the op-reth execution client.
     ///
     /// # Arguments

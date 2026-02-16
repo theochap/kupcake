@@ -120,7 +120,7 @@ async fn run_spam_cmd(args: SpamArgs) -> Result<()> {
     let config_path = resolve_config_path(&args.config);
     let deployer = Deployer::load_from_file(&config_path)?;
 
-    let spam_config: kupcake_deploy::spam::SpamConfig = args.into();
+    let spam_config = args.into_config(&deployer)?;
 
     tracing::info!(
         config = %config_path.display(),
@@ -178,8 +178,8 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
     // - Custom RPC URL: detect chain ID via eth_chainId
     let (l1_chain_id, l1_rpc_url) = resolve_l1_config(args.l1).await?;
 
-    // When spam is requested, force no_cleanup so containers stay alive during spam
-    let no_cleanup = spam_preset.is_some() || args.no_cleanup;
+    // Force no_cleanup when spam (containers stay alive during spam) or detach mode
+    let no_cleanup = spam_preset.is_some() || args.no_cleanup || args.detach;
 
     // Create a new deployment from CLI arguments
     let mut deployer_builder = DeployerBuilder::new(l1_chain_id)
@@ -277,7 +277,10 @@ async fn run_spam_after_deploy(
     // This also picks up any state written during deployment.
     let deployer = Deployer::load_from_file(&config_path.to_path_buf())?;
 
-    let spam_config = preset.to_config();
+    // Resolve RPC URL from the primary sequencer
+    let rpc_url = deployer.l2_stack.sequencers[0].op_reth.docker_rpc_url();
+
+    let spam_config = preset.to_config(&rpc_url);
 
     tracing::info!(
         preset = %preset,

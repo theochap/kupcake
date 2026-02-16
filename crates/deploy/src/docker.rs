@@ -971,8 +971,10 @@ ENTRYPOINT [\"/binary\"]
         Ok(exit_code)
     }
 
-    /// Stream logs from a container.
-    pub async fn stream_logs(&self, container_id: &str) -> Result<JoinHandle<()>> {
+    /// Stream logs from a container in background, outputting to debug logs.
+    ///
+    /// Returns a `JoinHandle` that can be awaited or dropped.
+    pub async fn stream_logs_background(&self, container_id: &str) -> Result<JoinHandle<()>> {
         let logs_options = LogsOptions::<String> {
             stdout: true,
             stderr: true,
@@ -1002,12 +1004,12 @@ ENTRYPOINT [\"/binary\"]
         Ok(logs_handle)
     }
 
-    /// Stream logs and wait for container completion simultaneously.
+    /// Stream logs in background and wait for container completion simultaneously.
     ///
     /// This is useful for short-lived containers where you want to see the output
     /// and know when they're done.
     pub async fn stream_logs_and_wait(&self, container_id: &str) -> Result<i64> {
-        let logs_future = self.stream_logs(container_id);
+        let logs_future = self.stream_logs_background(container_id);
         let wait_future = self.wait_for_container(container_id);
 
         // Run both futures concurrently
@@ -1020,6 +1022,65 @@ ENTRYPOINT [\"/binary\"]
 
         // Return the wait result (which includes the exit code)
         wait_result
+    }
+
+    /// Stream container logs to stdout until the container exits or Ctrl+C is received.
+    ///
+    /// If Ctrl+C is received, returns `Ok(())` immediately.
+    /// If the container exits on its own, checks the exit code and returns an error
+    /// if non-zero.
+    pub async fn stream_logs(&self, container_name: &str) -> Result<()> {
+        let log_options = LogsOptions::<String> {
+            stdout: true,
+            stderr: true,
+            follow: true,
+            ..Default::default()
+        };
+
+        let mut stream = self.logs(container_name, Some(log_options));
+        let ctrl_c = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c);
+
+        let mut cancelled = false;
+
+        loop {
+            tokio::select! {
+                log_item = stream.next() => {
+                    match log_item {
+                        Some(Ok(log)) => tracing::debug!(%log),
+                        Some(Err(e)) => {
+                            tracing::debug!(error = %e, "Log stream ended");
+                            break;
+                        }
+                        None => break,
+                    }
+                }
+                _ = &mut ctrl_c => {
+                    tracing::info!(container_name, "Received Ctrl+C, stopping container...");
+                    cancelled = true;
+                    break;
+                }
+            }
+        }
+
+        if cancelled {
+            return Ok(());
+        }
+
+        // Container exited on its own — check exit code
+        let inspect = self
+            .inspect_container(container_name, None)
+            .await
+            .context("Failed to inspect container")?;
+
+        let exit_code = inspect.state.and_then(|s| s.exit_code).unwrap_or(-1);
+
+        if exit_code != 0 {
+            anyhow::bail!("Container {} exited with code {}", container_name, exit_code);
+        }
+
+        tracing::info!(container_name, "Container completed successfully");
+        Ok(())
     }
 
     /// Create and start a container.
@@ -1052,7 +1113,7 @@ ENTRYPOINT [\"/binary\"]
             .context("Failed to start container")?;
 
         if options.stream_logs {
-            self.stream_logs(&container_id).await?;
+            self.stream_logs_background(&container_id).await?;
         }
 
         if options.wait_for_container {
@@ -1375,6 +1436,7 @@ ENTRYPOINT [\"/binary\"]
 
         output
     }
+
 }
 
 #[derive(Default)]

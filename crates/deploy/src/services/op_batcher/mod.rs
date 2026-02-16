@@ -144,10 +144,7 @@ impl OpBatcherBuilder {
             .start_service(
                 &self.container_name,
                 service_config,
-                CreateAndStartContainerOptions {
-                    stream_logs: true,
-                    ..Default::default()
-                },
+                CreateAndStartContainerOptions::default(),
             )
             .await
             .context("Failed to start op-batcher container")?;

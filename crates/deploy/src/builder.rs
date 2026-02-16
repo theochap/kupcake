@@ -683,7 +683,7 @@ impl DeployerBuilder {
 
             docker: KupDockerConfig {
                 net_name: format!("{}-network", network_name),
-                no_cleanup: self.no_cleanup || self.detach,
+                no_cleanup: self.no_cleanup,
                 publish_all_ports: self.publish_all_ports,
             },
 

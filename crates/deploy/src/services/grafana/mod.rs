@@ -382,10 +382,7 @@ providers:
             .start_service(
                 &self.prometheus.container_name,
                 service_config,
-                CreateAndStartContainerOptions {
-                    stream_logs: true,
-                    ..Default::default()
-                },
+                CreateAndStartContainerOptions::default(),
             )
             .await
             .context("Failed to start Prometheus container")?;
@@ -455,10 +452,7 @@ providers:
             .start_service(
                 &self.grafana.container_name,
                 service_config,
-                CreateAndStartContainerOptions {
-                    stream_logs: true,
-                    ..Default::default()
-                },
+                CreateAndStartContainerOptions::default(),
             )
             .await
             .context("Failed to start Grafana container")?;

@@ -141,10 +141,7 @@ impl OpChallengerBuilder {
             .start_service(
                 &self.container_name,
                 service_config,
-                CreateAndStartContainerOptions {
-                    stream_logs: true,
-                    ..Default::default()
-                },
+                CreateAndStartContainerOptions::default(),
             )
             .await
             .context("Failed to start op-challenger container")?;

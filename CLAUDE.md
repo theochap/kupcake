@@ -398,7 +398,7 @@ let response = client
 ```
 
 ### Logging
-- Use `tracing` macros (`tracing::info!`, `tracing::debug!`, etc.) instead of `println!`
+- **NEVER use `print!`, `println!`, `eprint!`, or `eprintln!`** — always use `tracing` macros (`tracing::info!`, `tracing::debug!`, etc.)
 - Include structured fields in log messages
 
 ```rust

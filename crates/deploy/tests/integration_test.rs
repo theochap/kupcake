@@ -111,12 +111,12 @@ impl TestContext {
     /// Cleanup network resources.
     async fn cleanup(&self) -> Result<()> {
         let cleanup_result = cleanup_by_prefix(&self.network_name).await?;
-        println!(
+        tracing::info!(
             "Cleaned up {} containers",
             cleanup_result.containers_removed.len()
         );
         if let Some(network) = cleanup_result.network_removed {
-            println!("Removed network: {}", network);
+            tracing::info!("Removed network: {}", network);
         }
         Ok(())
     }
@@ -139,14 +139,14 @@ async fn collect_all_sync_status(deployment: &DeploymentResult) -> Vec<(String, 
 
         match node.kona_node.sync_status().await {
             Ok(status) => {
-                println!(
+                tracing::info!(
                     "{}: unsafe_l2={}, safe_l2={}, finalized_l2={}",
                     label, status.unsafe_l2.number, status.safe_l2.number, status.finalized_l2.number
                 );
                 statuses.push((label, status));
             }
             Err(e) => {
-                println!("Warning: Failed to get status for {}: {}", label, e);
+                tracing::info!("Warning: Failed to get status for {}: {}", label, e);
             }
         }
     }
@@ -164,7 +164,7 @@ async fn wait_for_all_nodes(deployment: &DeploymentResult) {
         };
 
         if let Err(e) = node.kona_node.wait_until_ready(NODE_READY_TIMEOUT_SECS).await {
-            println!("Warning: {} not ready: {}", label, e);
+            tracing::info!("Warning: {} not ready: {}", label, e);
         }
     }
 }
@@ -197,6 +197,11 @@ async fn wait_for_node_ready(rpc_url: &str, timeout_secs: u64) -> Result<()> {
 }
 
 /// Get the host port mapped to a container port using docker inspect.
+/// Build the Docker-internal RPC URL for the primary sequencer from a loaded deployer.
+fn sequencer_rpc_url(deployer: &kupcake_deploy::Deployer) -> String {
+    deployer.l2_stack.sequencers[0].op_reth.docker_rpc_url()
+}
+
 fn get_container_host_port(container_name: &str, container_port: u16) -> Result<u16> {
     let output = Command::new("docker")
         .args([
@@ -303,7 +308,7 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
     let network_name = format!("kup-test-{}", l1_chain_id);
     let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
 
-    println!(
+    tracing::info!(
         "=== Starting test deployment with network: {} (L1 chain ID: {}) ===",
         network_name, l1_chain_id
     );
@@ -324,14 +329,14 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
     // Save config for debugging
     deployer.save_config()?;
 
-    println!("=== Deploying network... ===");
+    tracing::info!("=== Deploying network... ===");
 
     // Deploy with a timeout
     let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false, false)).await;
 
     let deployment = match deploy_result {
         Ok(Ok(deployment)) => {
-            println!("=== Deployment completed successfully ===");
+            tracing::info!("=== Deployment completed successfully ===");
             deployment
         }
         Ok(Err(e)) => {
@@ -347,11 +352,11 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
     };
 
     // Wait for all nodes to be ready using handlers
-    println!("=== Waiting for nodes to be ready... ===");
+    tracing::info!("=== Waiting for nodes to be ready... ===");
     wait_for_all_nodes(&deployment).await;
 
     // Get initial sync status using handlers
-    println!("=== Getting initial sync status... ===");
+    tracing::info!("=== Getting initial sync status... ===");
     let initial_status = collect_all_sync_status(&deployment).await;
 
     if initial_status.is_empty() {
@@ -360,11 +365,11 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
     }
 
     // Wait for blocks to be produced (with 2s block time, wait ~30s for several blocks)
-    println!("=== Waiting 30 seconds for blocks to be produced... ===");
+    tracing::info!("=== Waiting 30 seconds for blocks to be produced... ===");
     sleep(Duration::from_secs(30)).await;
 
     // Check that nodes have advanced
-    println!("=== Checking that nodes have advanced... ===");
+    tracing::info!("=== Checking that nodes have advanced... ===");
     let mut all_advancing = true;
     let mut errors = Vec::new();
 
@@ -376,7 +381,7 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
             let unsafe_advanced = current.unsafe_l2.number > initial.unsafe_l2.number;
             let safe_advanced = current.safe_l2.number > initial.safe_l2.number;
 
-            println!(
+            tracing::info!(
                 "{}: unsafe {} -> {} ({}), safe {} -> {} ({})",
                 label,
                 initial.unsafe_l2.number,
@@ -417,7 +422,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
     let network_name = format!("kup-reth-test-{}", l1_chain_id);
     let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
 
-    println!(
+    tracing::info!(
         "=== Starting op-reth test deployment with network: {} (L1 chain ID: {}) ===",
         network_name, l1_chain_id
     );
@@ -437,13 +442,13 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
 
     deployer.save_config()?;
 
-    println!("=== Deploying network... ===");
+    tracing::info!("=== Deploying network... ===");
 
     let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false, false)).await;
 
     let deployment = match deploy_result {
         Ok(Ok(deployment)) => {
-            println!("=== Deployment completed successfully ===");
+            tracing::info!("=== Deployment completed successfully ===");
             deployment
         }
         Ok(Err(e)) => {
@@ -457,7 +462,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
     };
 
     // Wait for op-reth nodes to be ready using handlers
-    println!("=== Waiting for op-reth nodes to be ready... ===");
+    tracing::info!("=== Waiting for op-reth nodes to be ready... ===");
     for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
         let label = if node.is_sequencer() {
             "sequencer-reth".to_string()
@@ -466,12 +471,12 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
         };
 
         if let Err(e) = node.op_reth.wait_until_ready(NODE_READY_TIMEOUT_SECS).await {
-            println!("Warning: {} not ready: {}", label, e);
+            tracing::info!("Warning: {} not ready: {}", label, e);
         }
     }
 
     // Get initial block numbers using handlers
-    println!("=== Getting initial op-reth status... ===");
+    tracing::info!("=== Getting initial op-reth status... ===");
     let mut initial_blocks = Vec::new();
     for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
         let label = if node.is_sequencer() {
@@ -482,7 +487,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
 
         match node.op_reth.sync_status().await {
             Ok(status) => {
-                println!(
+                tracing::info!(
                     "{}: block={}, syncing={}{}",
                     label,
                     status.block_number,
@@ -499,7 +504,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
                 initial_blocks.push((label.clone(), status.block_number));
             }
             Err(e) => {
-                println!("{}: failed to get status: {}", label, e);
+                tracing::info!("{}: failed to get status: {}", label, e);
             }
         }
     }
@@ -510,11 +515,11 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
     }
 
     // Wait for blocks to be produced
-    println!("=== Waiting 30 seconds for blocks to be produced... ===");
+    tracing::info!("=== Waiting 30 seconds for blocks to be produced... ===");
     sleep(Duration::from_secs(30)).await;
 
     // Check that block numbers have advanced using handlers
-    println!("=== Checking that op-reth block numbers have advanced... ===");
+    tracing::info!("=== Checking that op-reth block numbers have advanced... ===");
     let mut all_advancing = true;
     let mut errors = Vec::new();
 
@@ -530,7 +535,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
             match node.op_reth.sync_status().await {
                 Ok(status) => {
                     let advanced = status.block_number > *initial_block;
-                    println!(
+                    tracing::info!(
                         "{}: block {} -> {} ({})",
                         label,
                         initial_block,
@@ -552,14 +557,14 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
     }
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     let cleanup_result = cleanup_by_prefix(&network_name).await?;
-    println!(
+    tracing::info!(
         "Cleaned up {} containers",
         cleanup_result.containers_removed.len()
     );
     if let Some(network) = cleanup_result.network_removed {
-        println!("Removed network: {}", network);
+        tracing::info!("Removed network: {}", network);
     }
 
     if !all_advancing {
@@ -569,7 +574,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
         );
     }
 
-    println!("=== Test passed! All op-reth nodes are advancing. ===");
+    tracing::info!("=== Test passed! All op-reth nodes are advancing. ===");
     Ok(())
 }
 
@@ -586,7 +591,7 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
     let network_name = format!("kup-conductor-test-{}", l1_chain_id);
     let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
 
-    println!(
+    tracing::info!(
         "=== Starting multi-sequencer conductor test with network: {} (L1 chain ID: {}) ===",
         network_name, l1_chain_id
     );
@@ -605,12 +610,12 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
 
     deployer.save_config()?;
 
-    println!("=== Deploying network with 2 sequencers + conductor... ===");
+    tracing::info!("=== Deploying network with 2 sequencers + conductor... ===");
 
     let deploy_result = timeout(Duration::from_secs(CONDUCTOR_DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false, false)).await;
 
     match deploy_result {
-        Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
+        Ok(Ok(_deployment)) => tracing::info!("=== Deployment completed successfully ==="),
         Ok(Err(e)) => {
             let _ = cleanup_by_prefix(&network_name).await;
             return Err(e).context("Deployment failed");
@@ -622,7 +627,7 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
     }
 
     // Verify conductor containers are running
-    println!("=== Verifying conductor containers... ===");
+    tracing::info!("=== Verifying conductor containers... ===");
     let conductor_containers = vec![
         format!("{}-op-conductor", network_name),
         format!("{}-op-conductor-1", network_name),
@@ -644,11 +649,11 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
             let _ = cleanup_by_prefix(&network_name).await;
             anyhow::bail!("Conductor container {} is not running", conductor_name);
         }
-        println!("Conductor {} is running", conductor_name);
+        tracing::info!("Conductor {} is running", conductor_name);
     }
 
     // Get conductor RPC ports and verify they respond
-    println!("=== Verifying conductor RPC endpoints... ===");
+    tracing::info!("=== Verifying conductor RPC endpoints... ===");
     for conductor_name in &conductor_containers {
         let conductor_port = get_container_host_port(conductor_name, 8547).context(format!(
             "Failed to get conductor port for {}",
@@ -658,9 +663,9 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
 
         // Wait for conductor to be ready
         if let Err(e) = wait_for_conductor_ready(&conductor_url, 60).await {
-            println!("Warning: Conductor {} not ready: {}", conductor_name, e);
+            tracing::info!("Warning: Conductor {} not ready: {}", conductor_name, e);
         } else {
-            println!(
+            tracing::info!(
                 "Conductor {} RPC is responding at {}",
                 conductor_name, conductor_url
             );
@@ -686,20 +691,20 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
     ];
 
     // Wait for sequencers to be ready
-    println!("=== Waiting for sequencer nodes to be ready... ===");
+    tracing::info!("=== Waiting for sequencer nodes to be ready... ===");
     for (label, url) in &sequencer_endpoints {
         if let Err(e) = wait_for_node_ready(url, NODE_READY_TIMEOUT_SECS).await {
-            println!("Warning: {} at {} not ready: {}", label, url, e);
+            tracing::info!("Warning: {} at {} not ready: {}", label, url, e);
         }
     }
 
     // Get initial sync status
-    println!("=== Getting initial sync status from sequencers... ===");
+    tracing::info!("=== Getting initial sync status from sequencers... ===");
     let mut initial_status: Vec<(String, String, SyncStatus)> = Vec::new();
     for (label, url) in &sequencer_endpoints {
         match get_sync_status(url).await {
             Ok(status) => {
-                println!(
+                tracing::info!(
                     "{}: unsafe_l2={}, safe_l2={}, finalized_l2={}",
                     label,
                     status.unsafe_l2.number,
@@ -709,7 +714,7 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
                 initial_status.push((label.to_string(), url.clone(), status));
             }
             Err(e) => {
-                println!("{}: failed to get sync status: {}", label, e);
+                tracing::info!("{}: failed to get sync status: {}", label, e);
             }
         }
     }
@@ -728,17 +733,17 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
     // Block production testing with conductor coordination is a more advanced scenario.
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     let cleanup_result = cleanup_by_prefix(&network_name).await?;
-    println!(
+    tracing::info!(
         "Cleaned up {} containers",
         cleanup_result.containers_removed.len()
     );
     if let Some(network) = cleanup_result.network_removed {
-        println!("Removed network: {}", network);
+        tracing::info!("Removed network: {}", network);
     }
 
-    println!("=== Test passed! Multi-sequencer deployment with conductor is working. ===");
+    tracing::info!("=== Test passed! Multi-sequencer deployment with conductor is working. ===");
     Ok(())
 }
 
@@ -787,7 +792,7 @@ async fn test_op_batcher_health() -> Result<()> {
     let network_name = format!("kup-batcher-test-{}", l1_chain_id);
     let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
 
-    println!(
+    tracing::info!(
         "=== Starting op-batcher test deployment with network: {} (L1 chain ID: {}) ===",
         network_name, l1_chain_id
     );
@@ -807,12 +812,12 @@ async fn test_op_batcher_health() -> Result<()> {
 
     deployer.save_config()?;
 
-    println!("=== Deploying network... ===");
+    tracing::info!("=== Deploying network... ===");
 
     let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false, false)).await;
 
     match deploy_result {
-        Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
+        Ok(Ok(_deployment)) => tracing::info!("=== Deployment completed successfully ==="),
         Ok(Err(e)) => {
             let _ = cleanup_by_prefix(&network_name).await;
             return Err(e).context("Deployment failed");
@@ -830,14 +835,14 @@ async fn test_op_batcher_health() -> Result<()> {
     let batcher_url = format!("http://localhost:{}", batcher_port);
 
     // Wait for op-batcher to be ready
-    println!("=== Waiting for op-batcher to be ready... ===");
+    tracing::info!("=== Waiting for op-batcher to be ready... ===");
     if let Err(e) = wait_for_op_batcher_ready(&batcher_url, NODE_READY_TIMEOUT_SECS).await {
         let _ = cleanup_by_prefix(&network_name).await;
         anyhow::bail!("op-batcher not ready: {}", e);
     }
 
     // Check op-batcher health
-    println!("=== Checking op-batcher health... ===");
+    tracing::info!("=== Checking op-batcher health... ===");
     let status = get_op_batcher_status(&batcher_url).await?;
 
     if !status.is_healthy {
@@ -848,7 +853,7 @@ async fn test_op_batcher_health() -> Result<()> {
         );
     }
 
-    println!(
+    tracing::info!(
         "op-batcher health check passed{}",
         status
             .error
@@ -863,21 +868,21 @@ async fn test_op_batcher_health() -> Result<()> {
         .context("Failed to get kona-node port")?;
     let kona_url = format!("http://localhost:{}", kona_port);
 
-    println!("=== Verifying batcher activity via safe head progression... ===");
+    tracing::info!("=== Verifying batcher activity via safe head progression... ===");
 
     // Get initial safe head
     let initial_status = get_sync_status(&kona_url).await?;
-    println!("Initial safe head: {}", initial_status.safe_l2.number);
+    tracing::info!("Initial safe head: {}", initial_status.safe_l2.number);
 
     // Wait for batches to be submitted and processed
-    println!("=== Waiting 45 seconds for batch submissions... ===");
+    tracing::info!("=== Waiting 45 seconds for batch submissions... ===");
     sleep(Duration::from_secs(45)).await;
 
     // Check if safe head has advanced (indicates batcher is submitting batches)
     let final_status = get_sync_status(&kona_url).await?;
     let safe_advanced = final_status.safe_l2.number > initial_status.safe_l2.number;
 
-    println!(
+    tracing::info!(
         "Safe head: {} -> {} ({})",
         initial_status.safe_l2.number,
         final_status.safe_l2.number,
@@ -889,22 +894,22 @@ async fn test_op_batcher_health() -> Result<()> {
     );
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     let cleanup_result = cleanup_by_prefix(&network_name).await?;
-    println!(
+    tracing::info!(
         "Cleaned up {} containers",
         cleanup_result.containers_removed.len()
     );
     if let Some(network) = cleanup_result.network_removed {
-        println!("Removed network: {}", network);
+        tracing::info!("Removed network: {}", network);
     }
 
     // Note: We don't fail if safe head hasn't advanced yet, as it can take time
     // The main assertion is that the batcher RPC is healthy
     if safe_advanced {
-        println!("=== Test passed! op-batcher is healthy and submitting batches. ===");
+        tracing::info!("=== Test passed! op-batcher is healthy and submitting batches. ===");
     } else {
-        println!(
+        tracing::info!(
             "=== Test passed! op-batcher is healthy (safe head may need more time to advance). ==="
         );
     }
@@ -924,7 +929,7 @@ async fn test_publish_all_ports() -> Result<()> {
     let network_name = format!("kup-publish-test-{}", l1_chain_id);
     let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
 
-    println!(
+    tracing::info!(
         "=== Starting publish-all-ports test with network: {} (L1 chain ID: {}) ===",
         network_name, l1_chain_id
     );
@@ -944,12 +949,12 @@ async fn test_publish_all_ports() -> Result<()> {
 
     deployer.save_config()?;
 
-    println!("=== Deploying network with publish_all_ports enabled... ===");
+    tracing::info!("=== Deploying network with publish_all_ports enabled... ===");
 
     let deploy_result = timeout(Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS), deployer.deploy(false, false)).await;
 
     match deploy_result {
-        Ok(Ok(_deployment)) => println!("=== Deployment completed successfully ==="),
+        Ok(Ok(_deployment)) => tracing::info!("=== Deployment completed successfully ==="),
         Ok(Err(e)) => {
             let _ = cleanup_by_prefix(&network_name).await;
             return Err(e).context("Deployment failed");
@@ -982,14 +987,14 @@ async fn test_publish_all_ports() -> Result<()> {
         (format!("{}-op-proposer", network_name), 7302, false), // Metrics - default None
     ];
 
-    println!("=== Verifying that ports are published to the host... ===");
+    tracing::info!("=== Verifying that ports are published to the host... ===");
     let mut published_ports = Vec::new();
     let mut errors = Vec::new();
 
     for (container_name, container_port, required) in containers_to_check {
         match get_container_host_port(&container_name, container_port) {
             Ok(host_port) => {
-                println!(
+                tracing::info!(
                     "✓ {}:{} -> host:{} {}",
                     container_name,
                     container_port,
@@ -1007,7 +1012,7 @@ async fn test_publish_all_ports() -> Result<()> {
                     "✗ {}:{} - Failed to get host port: {}",
                     container_name, container_port, e
                 );
-                println!("{}", error_msg);
+                tracing::info!("{}", error_msg);
                 // Only treat as error if this port is required
                 if required {
                     errors.push(error_msg);
@@ -1022,10 +1027,10 @@ async fn test_publish_all_ports() -> Result<()> {
         anyhow::bail!("No ports were published to the host");
     }
 
-    println!("=== Found {} published ports ===", published_ports.len());
+    tracing::info!("=== Found {} published ports ===", published_ports.len());
 
     // Verify containers are still on the custom network
-    println!("=== Verifying containers are on custom network... ===");
+    tracing::info!("=== Verifying containers are on custom network... ===");
     let network_name_docker = format!("{}-network", network_name);
     let output = Command::new("docker")
         .args([
@@ -1055,13 +1060,13 @@ async fn test_publish_all_ports() -> Result<()> {
         );
     }
 
-    println!(
+    tracing::info!(
         "✓ Containers are on custom network: {}",
         network_name_docker
     );
 
     // Test accessibility of a few key ports
-    println!("=== Testing accessibility of published ports... ===");
+    tracing::info!("=== Testing accessibility of published ports... ===");
 
     // Test anvil RPC
     if let Some((_, _, host_port)) = published_ports
@@ -1070,9 +1075,9 @@ async fn test_publish_all_ports() -> Result<()> {
     {
         let anvil_url = format!("http://localhost:{}", host_port);
         match test_rpc_endpoint(&anvil_url, "eth_blockNumber").await {
-            Ok(_) => println!("✓ Anvil RPC accessible at {}", anvil_url),
+            Ok(_) => tracing::info!("✓ Anvil RPC accessible at {}", anvil_url),
             Err(e) => {
-                println!("✗ Anvil RPC not accessible: {}", e);
+                tracing::info!("✗ Anvil RPC not accessible: {}", e);
                 errors.push(format!("Anvil RPC not accessible: {}", e));
             }
         }
@@ -1085,9 +1090,9 @@ async fn test_publish_all_ports() -> Result<()> {
     {
         let reth_url = format!("http://localhost:{}", host_port);
         match test_rpc_endpoint(&reth_url, "eth_blockNumber").await {
-            Ok(_) => println!("✓ op-reth RPC accessible at {}", reth_url),
+            Ok(_) => tracing::info!("✓ op-reth RPC accessible at {}", reth_url),
             Err(e) => {
-                println!("✗ op-reth RPC not accessible: {}", e);
+                tracing::info!("✗ op-reth RPC not accessible: {}", e);
                 errors.push(format!("op-reth RPC not accessible: {}", e));
             }
         }
@@ -1100,23 +1105,23 @@ async fn test_publish_all_ports() -> Result<()> {
     {
         let kona_url = format!("http://localhost:{}", host_port);
         match test_rpc_endpoint(&kona_url, "optimism_syncStatus").await {
-            Ok(_) => println!("✓ kona-node RPC accessible at {}", kona_url),
+            Ok(_) => tracing::info!("✓ kona-node RPC accessible at {}", kona_url),
             Err(e) => {
-                println!("Warning: kona-node RPC not accessible yet: {}", e);
+                tracing::info!("Warning: kona-node RPC not accessible yet: {}", e);
                 // Don't treat as error since it may take time to be ready
             }
         }
     }
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     let cleanup_result = cleanup_by_prefix(&network_name).await?;
-    println!(
+    tracing::info!(
         "Cleaned up {} containers",
         cleanup_result.containers_removed.len()
     );
     if let Some(network) = cleanup_result.network_removed {
-        println!("Removed network: {}", network);
+        tracing::info!("Removed network: {}", network);
     }
 
     // Assert after cleanup
@@ -1124,7 +1129,7 @@ async fn test_publish_all_ports() -> Result<()> {
         anyhow::bail!("Test failed with errors:\n{}", errors.join("\n"));
     }
 
-    println!("=== Test passed! All ports are published and accessible. ===");
+    tracing::info!("=== Test passed! All ports are published and accessible. ===");
     Ok(())
 }
 
@@ -1150,7 +1155,7 @@ async fn test_local_kona_binary() -> Result<()> {
     let network_name = format!("kup-local-kona-{}", l1_chain_id);
     let outdata_path = PathBuf::from(format!("/tmp/{}", network_name));
 
-    println!(
+    tracing::info!(
         "=== Starting local kona binary test with network: {} (L1 chain ID: {}) ===",
         network_name, l1_chain_id
     );
@@ -1160,7 +1165,7 @@ async fn test_local_kona_binary() -> Result<()> {
     // Pass the directory — ensure_image_ready will auto-build and cross-compile
     let kona_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/kona");
 
-    println!(
+    tracing::info!(
         "=== Using kona source directory at {} (will auto-build) ===",
         kona_dir.display()
     );
@@ -1181,16 +1186,16 @@ async fn test_local_kona_binary() -> Result<()> {
 
     deployer.save_config()?;
 
-    println!("=== Deploying network with local kona-node binary... ===");
+    tracing::info!("=== Deploying network with local kona-node binary... ===");
     let deployment = deployer
         .deploy(false, false)
         .await
         .context("Failed to deploy network")?;
 
-    println!("=== Network deployed successfully ===");
+    tracing::info!("=== Network deployed successfully ===");
 
     // Verify that kona-node containers were created from local binary images
-    println!("=== Verifying local binary images were used... ===");
+    tracing::info!("=== Verifying local binary images were used... ===");
 
     // List all Docker images with the "kupcake-*-local" pattern
     let output = Command::new("docker")
@@ -1205,9 +1210,9 @@ async fn test_local_kona_binary() -> Result<()> {
         .context("Failed to list Docker images")?;
 
     let images_list = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    println!("Found local binary images:");
+    tracing::info!("Found local binary images:");
     for image in images_list.lines() {
-        println!("  - {}", image);
+        tracing::info!("  - {}", image);
     }
 
     // We expect 2 local images (one for sequencer kona-node, one for validator kona-node)
@@ -1219,13 +1224,13 @@ async fn test_local_kona_binary() -> Result<()> {
         );
     }
 
-    println!(
+    tracing::info!(
         "=== Successfully deployed with {} local binary Docker images! ===",
         image_count
     );
 
     // Verify kona nodes are advancing
-    println!("=== Verifying kona nodes are advancing... ===");
+    tracing::info!("=== Verifying kona nodes are advancing... ===");
 
     // Get RPC URLs directly from the deployment result
     let sequencer_rpc_url = deployment
@@ -1250,20 +1255,20 @@ async fn test_local_kona_binary() -> Result<()> {
     ];
 
     // Wait for nodes to be ready
-    println!("=== Waiting for nodes to be ready... ===");
+    tracing::info!("=== Waiting for nodes to be ready... ===");
     for (label, url) in &node_endpoints {
         if let Err(e) = wait_for_node_ready(url, NODE_READY_TIMEOUT_SECS).await {
-            println!("Warning: {} at {} not ready: {}", label, url, e);
+            tracing::info!("Warning: {} at {} not ready: {}", label, url, e);
         }
     }
 
     // Get initial sync status
-    println!("=== Getting initial sync status... ===");
+    tracing::info!("=== Getting initial sync status... ===");
     let mut initial_status: Vec<(String, String, SyncStatus)> = Vec::new();
     for (label, url) in &node_endpoints {
         match get_sync_status(url).await {
             Ok(status) => {
-                println!(
+                tracing::info!(
                     "{}: unsafe_l2={}, safe_l2={}, finalized_l2={}",
                     label,
                     status.unsafe_l2.number,
@@ -1273,7 +1278,7 @@ async fn test_local_kona_binary() -> Result<()> {
                 initial_status.push((label.to_string(), url.clone(), status));
             }
             Err(e) => {
-                println!("{}: failed to get sync status: {}", label, e);
+                tracing::info!("{}: failed to get sync status: {}", label, e);
             }
         }
     }
@@ -1284,11 +1289,11 @@ async fn test_local_kona_binary() -> Result<()> {
     }
 
     // Wait for blocks to be produced (with 2s block time, wait ~30s for several blocks)
-    println!("=== Waiting 30 seconds for blocks to be produced... ===");
+    tracing::info!("=== Waiting 30 seconds for blocks to be produced... ===");
     sleep(Duration::from_secs(30)).await;
 
     // Check that nodes have advanced
-    println!("=== Checking that nodes have advanced... ===");
+    tracing::info!("=== Checking that nodes have advanced... ===");
     let mut all_advancing = true;
     let mut errors = Vec::new();
 
@@ -1298,7 +1303,7 @@ async fn test_local_kona_binary() -> Result<()> {
                 let unsafe_advanced = current.unsafe_l2.number > initial.unsafe_l2.number;
                 let safe_advanced = current.safe_l2.number > initial.safe_l2.number;
 
-                println!(
+                tracing::info!(
                     "{}: unsafe {} -> {} ({}), safe {} -> {} ({})",
                     label,
                     initial.unsafe_l2.number,
@@ -1330,15 +1335,15 @@ async fn test_local_kona_binary() -> Result<()> {
     }
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     let cleanup_result = cleanup_by_prefix(&network_name).await?;
-    println!(
+    tracing::info!(
         "Cleaned up {} containers",
         cleanup_result.containers_removed.len()
     );
 
     if let Some(network) = cleanup_result.network_removed {
-        println!("Removed network: {}", network);
+        tracing::info!("Removed network: {}", network);
     }
 
     // Assert after cleanup so we always clean up
@@ -1346,7 +1351,7 @@ async fn test_local_kona_binary() -> Result<()> {
         anyhow::bail!("Not all nodes are advancing:\n{}", errors.join("\n"));
     }
 
-    println!("=== Test passed! All kona nodes with local binary are advancing. ===");
+    tracing::info!("=== Test passed! All kona nodes with local binary are advancing. ===");
     Ok(())
 }
 
@@ -1362,37 +1367,37 @@ async fn test_deployment_skipping() -> Result<()> {
     init_test_tracing();
 
     let ctx = TestContext::new("skip-test");
-    println!(
+    tracing::info!(
         "=== Starting deployment skipping test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
 
     // First deployment - should deploy contracts
-    println!("=== First deployment: deploying contracts ===");
+    tracing::info!("=== First deployment: deploying contracts ===");
     let deployer = ctx.build_deployer().await?;
     let config_path = deployer.save_config()?;
-    println!("Configuration saved to: {}", config_path.display());
+    tracing::info!("Configuration saved to: {}", config_path.display());
 
     let _deployment = ctx.deploy(deployer).await?;
-    println!("=== First deployment completed successfully ===");
+    tracing::info!("=== First deployment completed successfully ===");
 
     // Verify deployment version file and get hash
     let first_hash = ctx.get_deployment_hash()
-        .inspect(|hash| println!("First deployment hash: {}", hash))?;
+        .inspect(|hash| tracing::info!("First deployment hash: {}", hash))?;
 
     // Stop and cleanup the network
-    println!("=== Cleaning up first deployment... ===");
+    tracing::info!("=== Cleaning up first deployment... ===");
     ctx.cleanup().await?;
 
     // Second deployment - should skip contract deployment
-    println!("=== Second deployment: should skip contract deployment ===");
+    tracing::info!("=== Second deployment: should skip contract deployment ===");
     let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
         .context("Failed to load deployer from config file")?;
-    println!("Configuration loaded from: {}", config_path.display());
+    tracing::info!("Configuration loaded from: {}", config_path.display());
 
     let start_time = std::time::Instant::now();
     let deployment = ctx.deploy(loaded_deployer).await?;
-    println!("=== Second deployment completed in {:?} ===", start_time.elapsed());
+    tracing::info!("=== Second deployment completed in {:?} ===", start_time.elapsed());
 
     // Verify hash matches (contracts were skipped)
     let second_hash = ctx.get_deployment_hash()?;
@@ -1400,10 +1405,10 @@ async fn test_deployment_skipping() -> Result<()> {
         ctx.cleanup().await?;
         anyhow::bail!("Deployment hash mismatch! First: {}, Second: {}", first_hash, second_hash);
     }
-    println!("✓ Deployment hash matches: {}", second_hash);
+    tracing::info!("✓ Deployment hash matches: {}", second_hash);
 
     // Verify network health
-    println!("=== Verifying network health after redeployment... ===");
+    tracing::info!("=== Verifying network health after redeployment... ===");
     wait_for_all_nodes(&deployment).await;
 
     let statuses = collect_all_sync_status(&deployment).await;
@@ -1411,13 +1416,13 @@ async fn test_deployment_skipping() -> Result<()> {
         ctx.cleanup().await?;
         anyhow::bail!("Failed to get sync status from redeployed network");
     }
-    println!("✓ Network is healthy");
+    tracing::info!("✓ Network is healthy");
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     ctx.cleanup().await?;
 
-    println!("=== Test passed! Deployment skipping works correctly. ===");
+    tracing::info!("=== Test passed! Deployment skipping works correctly. ===");
     Ok(())
 }
 
@@ -1435,30 +1440,30 @@ async fn test_stop_and_restart_from_config() -> Result<()> {
     init_test_tracing();
 
     let ctx = TestContext::new("restart-test");
-    println!(
+    tracing::info!(
         "=== Starting stop/restart test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
 
     // Initial deployment
-    println!("=== Initial deployment ===");
+    tracing::info!("=== Initial deployment ===");
     let deployer = ctx.build_deployer().await?;
     let config_path = deployer.save_config()?;
-    println!("Configuration saved to: {}", config_path.display());
+    tracing::info!("Configuration saved to: {}", config_path.display());
 
     let deployment = ctx.deploy(deployer).await?;
-    println!("=== Initial deployment completed successfully ===");
+    tracing::info!("=== Initial deployment completed successfully ===");
 
     // Wait for nodes and collect initial status
-    println!("=== Waiting for nodes to be ready and collecting initial state... ===");
+    tracing::info!("=== Waiting for nodes to be ready and collecting initial state... ===");
     wait_for_all_nodes(&deployment).await;
 
     // Let network produce blocks
-    println!("=== Letting network run for 30 seconds to produce blocks... ===");
+    tracing::info!("=== Letting network run for 30 seconds to produce blocks... ===");
     sleep(Duration::from_secs(30)).await;
 
     // Collect status before stopping
-    println!("=== Getting sync status before stopping... ===");
+    tracing::info!("=== Getting sync status before stopping... ===");
     let status_before = collect_all_sync_status(&deployment).await;
     if status_before.is_empty() {
         ctx.cleanup().await?;
@@ -1466,32 +1471,32 @@ async fn test_stop_and_restart_from_config() -> Result<()> {
     }
 
     // Stop network (keep data)
-    println!("=== Stopping all containers... ===");
+    tracing::info!("=== Stopping all containers... ===");
     ctx.cleanup().await?;
 
     // Verify data directory still exists
     if !ctx.outdata_path.exists() {
         anyhow::bail!("Data directory disappeared after cleanup: {}", ctx.outdata_path.display());
     }
-    println!("✓ Data directory still exists: {}", ctx.outdata_path.display());
+    tracing::info!("✓ Data directory still exists: {}", ctx.outdata_path.display());
 
     // Wait before restart
     sleep(Duration::from_secs(5)).await;
 
     // Restart from configuration
-    println!("=== Restarting from saved configuration... ===");
+    tracing::info!("=== Restarting from saved configuration... ===");
     let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
         .context("Failed to load deployer from config file")?;
 
     let deployment = ctx.deploy(loaded_deployer).await?;
-    println!("=== Network restarted successfully ===");
+    tracing::info!("=== Network restarted successfully ===");
 
     // Wait for nodes after restart
-    println!("=== Waiting for nodes to be ready after restart... ===");
+    tracing::info!("=== Waiting for nodes to be ready after restart... ===");
     wait_for_all_nodes(&deployment).await;
 
     // Collect status after restart
-    println!("=== Getting sync status after restart... ===");
+    tracing::info!("=== Getting sync status after restart... ===");
     let status_after = collect_all_sync_status(&deployment).await;
     if status_after.is_empty() {
         ctx.cleanup().await?;
@@ -1499,17 +1504,17 @@ async fn test_stop_and_restart_from_config() -> Result<()> {
     }
 
     // Verify sequencer state persisted
-    println!("=== Verifying network resumed from previous state... ===");
+    tracing::info!("=== Verifying network resumed from previous state... ===");
     verify_sequencer_state_persisted(&status_before, &status_after)?;
 
-    println!("✓ Sequencer resumed from previous state");
-    println!("✓ Test objective achieved: sequencer state persisted across restart");
+    tracing::info!("✓ Sequencer resumed from previous state");
+    tracing::info!("✓ Test objective achieved: sequencer state persisted across restart");
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     ctx.cleanup().await?;
 
-    println!("=== Test passed! Sequencer can be stopped and restarted successfully. ===");
+    tracing::info!("=== Test passed! Sequencer can be stopped and restarted successfully. ===");
     Ok(())
 }
 
@@ -1527,7 +1532,7 @@ fn verify_sequencer_state_persisted(
         };
 
         let block_diff = after_status.unsafe_l2.number as i64 - before_status.unsafe_l2.number as i64;
-        println!(
+        tracing::info!(
             "{}: block before={}, after={}, diff={}",
             before_label,
             before_status.unsafe_l2.number,
@@ -1540,7 +1545,7 @@ fn verify_sequencer_state_persisted(
         // Handle validator nodes (they may need time to sync)
         if !is_sequencer {
             if after_status.unsafe_l2.number < 2 {
-                println!("  Note: {} needs to re-sync from sequencer", before_label);
+                tracing::info!("  Note: {} needs to re-sync from sequencer", before_label);
             }
             continue;
         }
@@ -1588,7 +1593,7 @@ async fn test_health_check_reports_healthy() -> Result<()> {
     init_test_tracing();
 
     let ctx = TestContext::new("health-ok");
-    println!(
+    tracing::info!(
         "=== Starting health check (healthy) test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
@@ -1596,26 +1601,26 @@ async fn test_health_check_reports_healthy() -> Result<()> {
     let deployer = ctx.build_deployer().await?;
     deployer.save_config()?;
 
-    println!("=== Deploying network... ===");
+    tracing::info!("=== Deploying network... ===");
     let deployment = ctx.deploy(deployer).await?;
-    println!("=== Deployment completed successfully ===");
+    tracing::info!("=== Deployment completed successfully ===");
 
     // Wait for nodes to be ready
-    println!("=== Waiting for nodes to be ready... ===");
+    tracing::info!("=== Waiting for nodes to be ready... ===");
     wait_for_all_nodes(&deployment).await;
 
     // Wait for blocks to advance on all nodes (validators need extra time to sync)
-    println!("=== Waiting 60 seconds for blocks to be produced... ===");
+    tracing::info!("=== Waiting 60 seconds for blocks to be produced... ===");
     sleep(Duration::from_secs(60)).await;
 
     // Load config and run health check
-    println!("=== Running health check... ===");
+    tracing::info!("=== Running health check... ===");
     let config_path = ctx.outdata_path.join("Kupcake.toml");
     let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
         .context("Failed to load deployer from config file")?;
 
     let report = health::health_check(&loaded_deployer).await?;
-    println!("{}", report);
+    tracing::info!("{}", report);
 
     // Verify the report
     assert!(report.healthy, "Expected healthy report but got unhealthy");
@@ -1673,10 +1678,10 @@ async fn test_health_check_reports_healthy() -> Result<()> {
     }
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     ctx.cleanup().await?;
 
-    println!("=== Test passed! Health check correctly reports healthy network. ===");
+    tracing::info!("=== Test passed! Health check correctly reports healthy network. ===");
     Ok(())
 }
 
@@ -1693,7 +1698,7 @@ async fn test_health_check_reports_unhealthy_on_stopped_container() -> Result<()
     init_test_tracing();
 
     let ctx = TestContext::new("health-fail");
-    println!(
+    tracing::info!(
         "=== Starting health check (unhealthy) test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
@@ -1701,15 +1706,15 @@ async fn test_health_check_reports_unhealthy_on_stopped_container() -> Result<()
     let deployer = ctx.build_deployer().await?;
     deployer.save_config()?;
 
-    println!("=== Deploying network... ===");
+    tracing::info!("=== Deploying network... ===");
     let deployment = ctx.deploy(deployer).await?;
-    println!("=== Deployment completed successfully ===");
+    tracing::info!("=== Deployment completed successfully ===");
 
     // Wait for nodes to be ready and blocks to advance
-    println!("=== Waiting for nodes to be ready... ===");
+    tracing::info!("=== Waiting for nodes to be ready... ===");
     wait_for_all_nodes(&deployment).await;
 
-    println!("=== Waiting 60 seconds for blocks to be produced... ===");
+    tracing::info!("=== Waiting 60 seconds for blocks to be produced... ===");
     sleep(Duration::from_secs(60)).await;
 
     // Load config for health checks
@@ -1718,9 +1723,9 @@ async fn test_health_check_reports_unhealthy_on_stopped_container() -> Result<()
         .context("Failed to load deployer from config file")?;
 
     // Verify network is healthy first
-    println!("=== Verifying network is initially healthy... ===");
+    tracing::info!("=== Verifying network is initially healthy... ===");
     let initial_report = health::health_check(&loaded_deployer).await?;
-    println!("{}", initial_report);
+    tracing::info!("{}", initial_report);
     assert!(
         initial_report.healthy,
         "Network should be healthy before stopping a container"
@@ -1728,7 +1733,7 @@ async fn test_health_check_reports_unhealthy_on_stopped_container() -> Result<()
 
     // Stop the op-batcher container
     let batcher_container = format!("{}-op-batcher", ctx.network_name);
-    println!("=== Stopping container: {} ===", batcher_container);
+    tracing::info!("=== Stopping container: {} ===", batcher_container);
     let output = Command::new("docker")
         .args(["stop", &batcher_container])
         .output()
@@ -1741,12 +1746,12 @@ async fn test_health_check_reports_unhealthy_on_stopped_container() -> Result<()
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    println!("Container stopped successfully");
+    tracing::info!("Container stopped successfully");
 
     // Run health check again - should be unhealthy
-    println!("=== Running health check after stopping op-batcher... ===");
+    tracing::info!("=== Running health check after stopping op-batcher... ===");
     let unhealthy_report = health::health_check(&loaded_deployer).await?;
-    println!("{}", unhealthy_report);
+    tracing::info!("{}", unhealthy_report);
 
     assert!(
         !unhealthy_report.healthy,
@@ -1783,10 +1788,10 @@ async fn test_health_check_reports_unhealthy_on_stopped_container() -> Result<()
     );
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     ctx.cleanup().await?;
 
-    println!("=== Test passed! Health check correctly reports unhealthy network. ===");
+    tracing::info!("=== Test passed! Health check correctly reports unhealthy network. ===");
     Ok(())
 }
 
@@ -1819,7 +1824,7 @@ async fn test_faucet_deposit_with_wait() -> Result<()> {
     init_test_tracing();
 
     let ctx = TestContext::new("faucet-wait");
-    println!(
+    tracing::info!(
         "=== Starting faucet deposit (with wait) test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
@@ -1827,16 +1832,16 @@ async fn test_faucet_deposit_with_wait() -> Result<()> {
     let deployer = ctx.build_deployer().await?;
     deployer.save_config()?;
 
-    println!("=== Deploying network... ===");
+    tracing::info!("=== Deploying network... ===");
     let deployment = ctx.deploy(deployer).await?;
-    println!("=== Deployment completed successfully ===");
+    tracing::info!("=== Deployment completed successfully ===");
 
     // Wait for nodes to be ready
-    println!("=== Waiting for nodes to be ready... ===");
+    tracing::info!("=== Waiting for nodes to be ready... ===");
     wait_for_all_nodes(&deployment).await;
 
     // Let the network stabilize for a few blocks
-    println!("=== Waiting 15 seconds for network to stabilize... ===");
+    tracing::info!("=== Waiting 15 seconds for network to stabilize... ===");
     sleep(Duration::from_secs(15)).await;
 
     // Load the deployer from config for faucet_deposit
@@ -1857,11 +1862,11 @@ async fn test_faucet_deposit_with_wait() -> Result<()> {
 
     // Verify initial balance is zero
     let initial_balance = get_l2_balance(&l2_rpc_url, test_address).await?;
-    println!("Initial L2 balance: {} wei", initial_balance);
+    tracing::info!("Initial L2 balance: {} wei", initial_balance);
     assert_eq!(initial_balance, 0, "Test address should start with zero balance");
 
     // Send 1 ETH via faucet with wait=true
-    println!("=== Sending 1 ETH via faucet (wait=true)... ===");
+    tracing::info!("=== Sending 1 ETH via faucet (wait=true)... ===");
     let result = faucet::faucet_deposit(&loaded_deployer, test_address, 1.0, true).await?;
 
     // Verify tx hash is returned
@@ -1870,7 +1875,7 @@ async fn test_faucet_deposit_with_wait() -> Result<()> {
         "L1 tx hash should be a hex string, got: {}",
         result.l1_tx_hash
     );
-    println!("L1 tx hash: {}", result.l1_tx_hash);
+    tracing::info!("L1 tx hash: {}", result.l1_tx_hash);
 
     // Verify L2 balance was returned (wait=true)
     assert!(
@@ -1878,11 +1883,11 @@ async fn test_faucet_deposit_with_wait() -> Result<()> {
         "L2 balance should be returned when wait=true"
     );
     let l2_balance_hex = result.l2_balance.as_ref().unwrap();
-    println!("L2 balance after deposit: {}", l2_balance_hex);
+    tracing::info!("L2 balance after deposit: {}", l2_balance_hex);
 
     // Verify balance is now ~1 ETH (1e18 wei)
     let final_balance = get_l2_balance(&l2_rpc_url, test_address).await?;
-    println!("Final L2 balance: {} wei", final_balance);
+    tracing::info!("Final L2 balance: {} wei", final_balance);
 
     let one_eth_wei: u128 = 1_000_000_000_000_000_000;
     assert_eq!(
@@ -1891,10 +1896,10 @@ async fn test_faucet_deposit_with_wait() -> Result<()> {
     );
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     ctx.cleanup().await?;
 
-    println!("=== Test passed! Faucet deposit with wait works correctly. ===");
+    tracing::info!("=== Test passed! Faucet deposit with wait works correctly. ===");
     Ok(())
 }
 
@@ -1911,7 +1916,7 @@ async fn test_faucet_deposit_no_wait() -> Result<()> {
     init_test_tracing();
 
     let ctx = TestContext::new("faucet-nowait");
-    println!(
+    tracing::info!(
         "=== Starting faucet deposit (no wait) test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
@@ -1919,14 +1924,14 @@ async fn test_faucet_deposit_no_wait() -> Result<()> {
     let deployer = ctx.build_deployer().await?;
     deployer.save_config()?;
 
-    println!("=== Deploying network... ===");
+    tracing::info!("=== Deploying network... ===");
     let deployment = ctx.deploy(deployer).await?;
-    println!("=== Deployment completed successfully ===");
+    tracing::info!("=== Deployment completed successfully ===");
 
-    println!("=== Waiting for nodes to be ready... ===");
+    tracing::info!("=== Waiting for nodes to be ready... ===");
     wait_for_all_nodes(&deployment).await;
 
-    println!("=== Waiting 15 seconds for network to stabilize... ===");
+    tracing::info!("=== Waiting 15 seconds for network to stabilize... ===");
     sleep(Duration::from_secs(15)).await;
 
     let config_path = ctx.outdata_path.join("Kupcake.toml");
@@ -1936,7 +1941,7 @@ async fn test_faucet_deposit_no_wait() -> Result<()> {
     let test_address = "0x0000000000000000000000000000000000001234";
 
     // Send 2 ETH via faucet with wait=false
-    println!("=== Sending 2 ETH via faucet (wait=false)... ===");
+    tracing::info!("=== Sending 2 ETH via faucet (wait=false)... ===");
     let result = faucet::faucet_deposit(&loaded_deployer, test_address, 2.0, false).await?;
 
     // Verify tx hash is returned
@@ -1945,7 +1950,7 @@ async fn test_faucet_deposit_no_wait() -> Result<()> {
         "L1 tx hash should be a hex string, got: {}",
         result.l1_tx_hash
     );
-    println!("L1 tx hash: {}", result.l1_tx_hash);
+    tracing::info!("L1 tx hash: {}", result.l1_tx_hash);
 
     // Verify L2 balance is None (wait=false)
     assert!(
@@ -1961,7 +1966,7 @@ async fn test_faucet_deposit_no_wait() -> Result<()> {
     .context("Failed to get sequencer op-reth port")?;
     let l2_rpc_url = format!("http://localhost:{}", seq_reth_port);
 
-    println!("=== Polling for L2 deposit to arrive (up to 120s)... ===");
+    tracing::info!("=== Polling for L2 deposit to arrive (up to 120s)... ===");
     let two_eth_wei: u128 = 2_000_000_000_000_000_000;
 
     rpc::wait_until_ready("L2 faucet deposit", 120, || {
@@ -1980,14 +1985,14 @@ async fn test_faucet_deposit_no_wait() -> Result<()> {
     .context("Deposit did not arrive on L2 within timeout")?;
 
     let final_balance = get_l2_balance(&l2_rpc_url, test_address).await?;
-    println!("Final L2 balance: {} wei", final_balance);
+    tracing::info!("Final L2 balance: {} wei", final_balance);
     assert_eq!(final_balance, two_eth_wei, "L2 balance should be exactly 2 ETH");
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     ctx.cleanup().await?;
 
-    println!("=== Test passed! Faucet deposit without wait works correctly. ===");
+    tracing::info!("=== Test passed! Faucet deposit without wait works correctly. ===");
     Ok(())
 }
 
@@ -2003,7 +2008,7 @@ async fn test_faucet_multiple_deposits() -> Result<()> {
     init_test_tracing();
 
     let ctx = TestContext::new("faucet-multi");
-    println!(
+    tracing::info!(
         "=== Starting faucet multiple deposits test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
@@ -2011,14 +2016,14 @@ async fn test_faucet_multiple_deposits() -> Result<()> {
     let deployer = ctx.build_deployer().await?;
     deployer.save_config()?;
 
-    println!("=== Deploying network... ===");
+    tracing::info!("=== Deploying network... ===");
     let deployment = ctx.deploy(deployer).await?;
-    println!("=== Deployment completed successfully ===");
+    tracing::info!("=== Deployment completed successfully ===");
 
-    println!("=== Waiting for nodes to be ready... ===");
+    tracing::info!("=== Waiting for nodes to be ready... ===");
     wait_for_all_nodes(&deployment).await;
 
-    println!("=== Waiting 15 seconds for network to stabilize... ===");
+    tracing::info!("=== Waiting 15 seconds for network to stabilize... ===");
     sleep(Duration::from_secs(15)).await;
 
     let config_path = ctx.outdata_path.join("Kupcake.toml");
@@ -2035,19 +2040,19 @@ async fn test_faucet_multiple_deposits() -> Result<()> {
     let l2_rpc_url = format!("http://localhost:{}", seq_reth_port);
 
     // First deposit: 1 ETH
-    println!("=== Sending first deposit: 1 ETH... ===");
+    tracing::info!("=== Sending first deposit: 1 ETH... ===");
     let result1 = faucet::faucet_deposit(&loaded_deployer, test_address, 1.0, true).await?;
-    println!("First deposit L1 tx: {}", result1.l1_tx_hash);
+    tracing::info!("First deposit L1 tx: {}", result1.l1_tx_hash);
 
     let balance_after_first = get_l2_balance(&l2_rpc_url, test_address).await?;
     let one_eth: u128 = 1_000_000_000_000_000_000;
-    println!("Balance after first deposit: {} wei", balance_after_first);
+    tracing::info!("Balance after first deposit: {} wei", balance_after_first);
     assert_eq!(balance_after_first, one_eth, "Balance should be 1 ETH after first deposit");
 
     // Second deposit: 0.5 ETH
-    println!("=== Sending second deposit: 0.5 ETH... ===");
+    tracing::info!("=== Sending second deposit: 0.5 ETH... ===");
     let result2 = faucet::faucet_deposit(&loaded_deployer, test_address, 0.5, true).await?;
-    println!("Second deposit L1 tx: {}", result2.l1_tx_hash);
+    tracing::info!("Second deposit L1 tx: {}", result2.l1_tx_hash);
 
     // Verify tx hashes are different
     assert_ne!(
@@ -2057,17 +2062,17 @@ async fn test_faucet_multiple_deposits() -> Result<()> {
 
     let balance_after_second = get_l2_balance(&l2_rpc_url, test_address).await?;
     let one_and_half_eth: u128 = 1_500_000_000_000_000_000;
-    println!("Balance after second deposit: {} wei", balance_after_second);
+    tracing::info!("Balance after second deposit: {} wei", balance_after_second);
     assert_eq!(
         balance_after_second, one_and_half_eth,
         "Balance should be 1.5 ETH after both deposits"
     );
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     ctx.cleanup().await?;
 
-    println!("=== Test passed! Multiple faucet deposits accumulate correctly. ===");
+    tracing::info!("=== Test passed! Multiple faucet deposits accumulate correctly. ===");
     Ok(())
 }
 
@@ -2119,18 +2124,18 @@ async fn test_faucet_rejects_invalid_address() -> Result<()> {
     .await;
     assert!(result.is_err(), "Should reject non-hex address");
 
-    println!("=== Test passed! Faucet correctly rejects invalid addresses. ===");
+    tracing::info!("=== Test passed! Faucet correctly rejects invalid addresses. ===");
     Ok(())
 }
 
 // ==================== Spam tests ====================
 
-/// Test that spam rejects an out-of-range target node index without deploying.
+/// Test that spam rejects an empty rpc_url.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_spam_rejects_invalid_target_node() -> Result<()> {
-    println!("=== Test: spam rejects invalid target node ===");
+async fn test_spam_rejects_empty_rpc_url() -> Result<()> {
+    tracing::info!("=== Test: spam rejects empty rpc_url ===");
 
-    let ctx = TestContext::new("spam-invalid-node");
+    let ctx = TestContext::new("spam-empty-url");
     let deployer = ctx.build_deployer().await?;
     deployer.save_config()?;
 
@@ -2138,7 +2143,6 @@ async fn test_spam_rejects_invalid_target_node() -> Result<()> {
     let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
         .context("Failed to load deployer from config file")?;
 
-    // The deployer has 1 sequencer (index 0), so targeting index 5 should fail
     let spam_config = kupcake_deploy::spam::SpamConfig {
         scenario: "transfers".to_string(),
         tps: 10,
@@ -2151,23 +2155,20 @@ async fn test_spam_rejects_invalid_target_node() -> Result<()> {
         report: false,
         contender_image: kupcake_deploy::spam::CONTENDER_DEFAULT_IMAGE.to_string(),
         contender_tag: kupcake_deploy::spam::CONTENDER_DEFAULT_TAG.to_string(),
-        target_node: 5,
+        rpc_url: String::new(),
         extra_args: vec![],
     };
 
     let result = kupcake_deploy::spam::run_spam(&loaded_deployer, &spam_config).await;
-    assert!(
-        result.is_err(),
-        "Should reject out-of-range target node index"
-    );
+    assert!(result.is_err(), "Should reject empty rpc_url");
     let err_msg = result.unwrap_err().to_string();
     assert!(
-        err_msg.contains("out of range"),
-        "Error should mention out of range, got: {}",
+        err_msg.contains("rpc_url"),
+        "Error should mention rpc_url, got: {}",
         err_msg
     );
 
-    println!("=== Test passed! Spam correctly rejects invalid target node. ===");
+    tracing::info!("=== Test passed! Spam correctly rejects empty rpc_url. ===");
     Ok(())
 }
 
@@ -2176,7 +2177,7 @@ async fn test_spam_rejects_invalid_target_node() -> Result<()> {
 /// This test deploys a full network, funds the spammer, and runs contender briefly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_spam_transfers() -> Result<()> {
-    println!("=== Test: spam transfers ===");
+    tracing::info!("=== Test: spam transfers ===");
 
     let ctx = TestContext::new("spam-transfers");
     let deployer = ctx.build_deployer().await?;
@@ -2202,7 +2203,7 @@ async fn test_spam_transfers() -> Result<()> {
         report: false,
         contender_image: kupcake_deploy::spam::CONTENDER_DEFAULT_IMAGE.to_string(),
         contender_tag: kupcake_deploy::spam::CONTENDER_DEFAULT_TAG.to_string(),
-        target_node: 0,
+        rpc_url: sequencer_rpc_url(&loaded_deployer),
         extra_args: vec![],
     };
 
@@ -2218,11 +2219,11 @@ async fn test_spam_transfers() -> Result<()> {
 
     match spam_result {
         Ok(Ok(())) => {
-            println!("=== Test passed! Spam transfers completed successfully. ===");
+            tracing::info!("=== Test passed! Spam transfers completed successfully. ===");
         }
         Ok(Err(e)) => {
             // Contender may exit non-zero if the scenario has issues, but the infrastructure worked
-            println!("Spam completed with error (may be expected): {}", e);
+            tracing::info!("Spam completed with error (may be expected): {}", e);
         }
         Err(_) => {
             anyhow::bail!("Spam timed out after 300 seconds");
@@ -2275,7 +2276,7 @@ async fn test_faucet_deposit_various_amounts() -> Result<()> {
     init_test_tracing();
 
     let ctx = TestContext::new("faucet-amounts");
-    println!(
+    tracing::info!(
         "=== Starting faucet various amounts test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
@@ -2283,14 +2284,14 @@ async fn test_faucet_deposit_various_amounts() -> Result<()> {
     let deployer = ctx.build_deployer().await?;
     deployer.save_config()?;
 
-    println!("=== Deploying network... ===");
+    tracing::info!("=== Deploying network... ===");
     let deployment = ctx.deploy(deployer).await?;
-    println!("=== Deployment completed successfully ===");
+    tracing::info!("=== Deployment completed successfully ===");
 
-    println!("=== Waiting for nodes to be ready... ===");
+    tracing::info!("=== Waiting for nodes to be ready... ===");
     wait_for_all_nodes(&deployment).await;
 
-    println!("=== Waiting 15 seconds for network to stabilize... ===");
+    tracing::info!("=== Waiting 15 seconds for network to stabilize... ===");
     sleep(Duration::from_secs(15)).await;
 
     let config_path = ctx.outdata_path.join("Kupcake.toml");
@@ -2309,24 +2310,24 @@ async fn test_faucet_deposit_various_amounts() -> Result<()> {
 
     // Test 1: Small amount (0.001 ETH)
     let addr1 = "0x000000000000000000000000000000000000Aa01";
-    println!("=== Test 1: Depositing 0.001 ETH... ===");
+    tracing::info!("=== Test 1: Depositing 0.001 ETH... ===");
     let initial1 = get_l2_balance(&l2_rpc_url, addr1).await?;
     assert_eq!(initial1, 0, "Test address 1 should start with zero balance");
     faucet::faucet_deposit(&loaded_deployer, addr1, 0.001, true).await?;
     let balance1 = get_l2_balance(&l2_rpc_url, addr1).await?;
     let expected1: u128 = 1_000_000_000_000_000; // 0.001 ETH
-    println!("Balance: {} wei (expected: {} wei)", balance1, expected1);
+    tracing::info!("Balance: {} wei (expected: {} wei)", balance1, expected1);
     assert_eq!(balance1, expected1, "0.001 ETH deposit should be exact");
 
     // Test 2: Fractional amount (0.123456789 ETH) — test gwei precision boundary
     let addr2 = "0x000000000000000000000000000000000000Aa02";
-    println!("=== Test 2: Depositing 0.123456789 ETH... ===");
+    tracing::info!("=== Test 2: Depositing 0.123456789 ETH... ===");
     let initial2 = get_l2_balance(&l2_rpc_url, addr2).await?;
     assert_eq!(initial2, 0, "Test address 2 should start with zero balance");
     faucet::faucet_deposit(&loaded_deployer, addr2, 0.123456789, true).await?;
     let balance2 = get_l2_balance(&l2_rpc_url, addr2).await?;
     let expected2: u128 = 123_456_789_000_000_000; // 0.123456789 ETH (gwei precision)
-    println!("Balance: {} wei (expected: {} wei)", balance2, expected2);
+    tracing::info!("Balance: {} wei (expected: {} wei)", balance2, expected2);
     assert_eq!(
         balance2, expected2,
         "0.123456789 ETH deposit should match gwei precision"
@@ -2334,28 +2335,28 @@ async fn test_faucet_deposit_various_amounts() -> Result<()> {
 
     // Test 3: Large amount (10 ETH)
     let addr3 = "0x000000000000000000000000000000000000Aa03";
-    println!("=== Test 3: Depositing 10 ETH... ===");
+    tracing::info!("=== Test 3: Depositing 10 ETH... ===");
     faucet::faucet_deposit(&loaded_deployer, addr3, 10.0, true).await?;
     let balance3 = get_l2_balance(&l2_rpc_url, addr3).await?;
     let expected3: u128 = 10_000_000_000_000_000_000; // 10 ETH
-    println!("Balance: {} wei (expected: {} wei)", balance3, expected3);
+    tracing::info!("Balance: {} wei (expected: {} wei)", balance3, expected3);
     assert_eq!(balance3, expected3, "10 ETH deposit should be exact");
 
     // Verify all three addresses still have correct independent balances
-    println!("=== Verifying all balances remain independent... ===");
+    tracing::info!("=== Verifying all balances remain independent... ===");
     let final1 = get_l2_balance(&l2_rpc_url, addr1).await?;
     let final2 = get_l2_balance(&l2_rpc_url, addr2).await?;
     let final3 = get_l2_balance(&l2_rpc_url, addr3).await?;
     assert_eq!(final1, expected1, "Address 1 balance should be unchanged");
     assert_eq!(final2, expected2, "Address 2 balance should be unchanged");
     assert_eq!(final3, expected3, "Address 3 balance should be unchanged");
-    println!("All three addresses have correct independent balances");
+    tracing::info!("All three addresses have correct independent balances");
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     ctx.cleanup().await?;
 
-    println!("=== Test passed! Faucet handles various amounts correctly. ===");
+    tracing::info!("=== Test passed! Faucet handles various amounts correctly. ===");
     Ok(())
 }
 
@@ -2369,7 +2370,7 @@ async fn test_faucet_deposit_visible_on_validator() -> Result<()> {
     init_test_tracing();
 
     let ctx = TestContext::new("faucet-validator");
-    println!(
+    tracing::info!(
         "=== Starting faucet validator visibility test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
@@ -2377,14 +2378,14 @@ async fn test_faucet_deposit_visible_on_validator() -> Result<()> {
     let deployer = ctx.build_deployer().await?;
     deployer.save_config()?;
 
-    println!("=== Deploying network... ===");
+    tracing::info!("=== Deploying network... ===");
     let deployment = ctx.deploy(deployer).await?;
-    println!("=== Deployment completed successfully ===");
+    tracing::info!("=== Deployment completed successfully ===");
 
-    println!("=== Waiting for nodes to be ready... ===");
+    tracing::info!("=== Waiting for nodes to be ready... ===");
     wait_for_all_nodes(&deployment).await;
 
-    println!("=== Waiting 15 seconds for network to stabilize... ===");
+    tracing::info!("=== Waiting 15 seconds for network to stabilize... ===");
     sleep(Duration::from_secs(15)).await;
 
     let config_path = ctx.outdata_path.join("Kupcake.toml");
@@ -2404,23 +2405,23 @@ async fn test_faucet_deposit_visible_on_validator() -> Result<()> {
         .context("Failed to get validator op-reth port")?;
     let val_rpc_url = format!("http://localhost:{}", val_host_port);
 
-    println!("Sequencer RPC: {}", seq_rpc_url);
-    println!("Validator RPC: {}", val_rpc_url);
+    tracing::info!("Sequencer RPC: {}", seq_rpc_url);
+    tracing::info!("Validator RPC: {}", val_rpc_url);
 
     let test_address = "0x000000000000000000000000000000000000CaFE";
 
     // Deposit 1 ETH
-    println!("=== Depositing 1 ETH via faucet... ===");
+    tracing::info!("=== Depositing 1 ETH via faucet... ===");
     faucet::faucet_deposit(&loaded_deployer, test_address, 1.0, true).await?;
 
     // Verify on sequencer
     let seq_balance = get_l2_balance(&seq_rpc_url, test_address).await?;
     let one_eth: u128 = 1_000_000_000_000_000_000;
-    println!("Sequencer balance: {} wei", seq_balance);
+    tracing::info!("Sequencer balance: {} wei", seq_balance);
     assert_eq!(seq_balance, one_eth, "Sequencer should show 1 ETH");
 
     // Verify on validator (may need to wait for derivation to catch up)
-    println!("=== Waiting for validator to sync deposit (up to 60s)... ===");
+    tracing::info!("=== Waiting for validator to sync deposit (up to 60s)... ===");
     let val_url = val_rpc_url.clone();
     let addr = test_address.to_string();
     rpc::wait_until_ready("validator sync", 60, || {
@@ -2439,14 +2440,14 @@ async fn test_faucet_deposit_visible_on_validator() -> Result<()> {
     .context("Validator did not sync deposit within timeout")?;
 
     let val_balance = get_l2_balance(&val_rpc_url, test_address).await?;
-    println!("Validator balance: {} wei", val_balance);
+    tracing::info!("Validator balance: {} wei", val_balance);
     assert_eq!(val_balance, one_eth, "Validator should also show 1 ETH");
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     ctx.cleanup().await?;
 
-    println!("=== Test passed! Faucet deposit visible on both sequencer and validator. ===");
+    tracing::info!("=== Test passed! Faucet deposit visible on both sequencer and validator. ===");
     Ok(())
 }
 
@@ -2468,7 +2469,7 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
     init_test_tracing();
 
     let ctx = TestContext::new("spam-traffic");
-    println!(
+    tracing::info!(
         "=== Starting spam traffic test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
@@ -2476,14 +2477,14 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
     let deployer = ctx.build_deployer().await?;
     deployer.save_config()?;
 
-    println!("=== Deploying network... ===");
+    tracing::info!("=== Deploying network... ===");
     let deployment = ctx.deploy(deployer).await?;
-    println!("=== Deployment completed successfully ===");
+    tracing::info!("=== Deployment completed successfully ===");
 
-    println!("=== Waiting for nodes to be ready... ===");
+    tracing::info!("=== Waiting for nodes to be ready... ===");
     wait_for_all_nodes(&deployment).await;
 
-    println!("=== Waiting 15 seconds for network to stabilize... ===");
+    tracing::info!("=== Waiting 15 seconds for network to stabilize... ===");
     sleep(Duration::from_secs(15)).await;
 
     let config_path = ctx.outdata_path.join("Kupcake.toml");
@@ -2505,11 +2506,11 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
     let funder_address = anvil_data["available_accounts"][10]
         .as_str()
         .context("Funder account (index 10) not found in anvil.json")?;
-    println!("Funder address: {}", funder_address);
+    tracing::info!("Funder address: {}", funder_address);
 
     // Verify funder has no L2 balance before spam
     let funder_balance_before = get_l2_balance(&l2_rpc_url, funder_address).await?;
-    println!(
+    tracing::info!(
         "Funder L2 balance before spam: {} wei",
         funder_balance_before
     );
@@ -2520,12 +2521,12 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
 
     // Record initial block number
     let initial_block = get_block_number(&l2_rpc_url).await?;
-    println!("Initial block number: {}", initial_block);
+    tracing::info!("Initial block number: {}", initial_block);
 
     // Verify contender data directory doesn't exist yet
     let contender_dir = ctx.outdata_path.join("contender");
     let dir_existed_before = contender_dir.exists();
-    println!(
+    tracing::info!(
         "Contender dir exists before spam: {}",
         dir_existed_before
     );
@@ -2543,11 +2544,11 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
         report: false,
         contender_image: kupcake_deploy::spam::CONTENDER_DEFAULT_IMAGE.to_string(),
         contender_tag: kupcake_deploy::spam::CONTENDER_DEFAULT_TAG.to_string(),
-        target_node: 0,
+        rpc_url: sequencer_rpc_url(&loaded_deployer),
         extra_args: vec![],
     };
 
-    println!("=== Running spam (tps=2, duration=10s, accounts=2)... ===");
+    tracing::info!("=== Running spam (tps=2, duration=10s, accounts=2)... ===");
     let spam_result = timeout(
         Duration::from_secs(300),
         kupcake_deploy::spam::run_spam(&loaded_deployer, &spam_config),
@@ -2556,8 +2557,8 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
 
     // Check spam result (don't fail test for non-zero exit since contender may have issues)
     match &spam_result {
-        Ok(Ok(())) => println!("Spam completed successfully"),
-        Ok(Err(e)) => println!("Spam completed with error (may be expected): {}", e),
+        Ok(Ok(())) => tracing::info!("Spam completed successfully"),
+        Ok(Err(e)) => tracing::info!("Spam completed with error (may be expected): {}", e),
         Err(_) => {
             let _ = cleanup_by_prefix(&ctx.network_name).await;
             anyhow::bail!("Spam timed out after 300 seconds");
@@ -2569,14 +2570,14 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
         contender_dir.exists(),
         "Contender data directory should exist after spam"
     );
-    println!(
+    tracing::info!(
         "Contender data directory created at: {}",
         contender_dir.display()
     );
 
     // Verify funder was funded on L2 (run_spam does this via faucet_deposit)
     let funder_balance_after = get_l2_balance(&l2_rpc_url, funder_address).await?;
-    println!(
+    tracing::info!(
         "Funder L2 balance after spam: {} wei",
         funder_balance_after
     );
@@ -2590,7 +2591,7 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
 
     // Record final block number
     let final_block = get_block_number(&l2_rpc_url).await?;
-    println!(
+    tracing::info!(
         "Final block number: {} (advanced {} blocks)",
         final_block,
         final_block - initial_block
@@ -2605,7 +2606,7 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
     );
 
     // Query blocks for transactions
-    println!("=== Checking blocks for transactions... ===");
+    tracing::info!("=== Checking blocks for transactions... ===");
     let mut total_txs = 0;
     let mut blocks_with_txs = 0;
     let blocks_to_check = std::cmp::min(final_block - initial_block, 20);
@@ -2617,16 +2618,16 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
                 if tx_count > 0 {
                     blocks_with_txs += 1;
                     total_txs += tx_count;
-                    println!("  Block {}: {} transaction(s)", block_num, tx_count);
+                    tracing::info!("  Block {}: {} transaction(s)", block_num, tx_count);
                 }
             }
             Err(e) => {
-                println!("  Block {}: failed to query ({})", block_num, e);
+                tracing::info!("  Block {}: failed to query ({})", block_num, e);
             }
         }
     }
 
-    println!(
+    tracing::info!(
         "Summary: {} blocks with transactions, {} total transactions in {} blocks checked",
         blocks_with_txs, total_txs, blocks_to_check
     );
@@ -2639,10 +2640,10 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
     );
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     ctx.cleanup().await?;
 
-    println!(
+    tracing::info!(
         "=== Test passed! Spam generated L2 traffic: {} transactions across {} blocks. ===",
         total_txs, blocks_with_txs
     );
@@ -2660,7 +2661,7 @@ async fn test_spam_container_on_correct_network() -> Result<()> {
     init_test_tracing();
 
     let ctx = TestContext::new("spam-network");
-    println!(
+    tracing::info!(
         "=== Starting spam Docker network test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
@@ -2668,20 +2669,24 @@ async fn test_spam_container_on_correct_network() -> Result<()> {
     let deployer = ctx.build_deployer().await?;
     deployer.save_config()?;
 
-    println!("=== Deploying network... ===");
+    tracing::info!("=== Deploying network... ===");
     let deployment = ctx.deploy(deployer).await?;
-    println!("=== Deployment completed successfully ===");
+    tracing::info!("=== Deployment completed successfully ===");
 
-    println!("=== Waiting for nodes to be ready... ===");
+    tracing::info!("=== Waiting for nodes to be ready... ===");
     wait_for_all_nodes(&deployment).await;
 
-    println!("=== Waiting 15 seconds for network to stabilize... ===");
+    tracing::info!("=== Waiting 15 seconds for network to stabilize... ===");
     sleep(Duration::from_secs(15)).await;
 
     let config_path = ctx.outdata_path.join("Kupcake.toml");
 
     let expected_network = format!("{}-network", ctx.network_name);
     let contender_container = format!("{}-contender", ctx.network_name);
+
+    // Spawn spam in a background task so we can inspect the container while it's running
+    tracing::info!("=== Spawning spam task... ===");
+    let loaded_deployer_clone = kupcake_deploy::Deployer::load_from_file(&config_path)?;
 
     // Run spam with very short duration — we just need the container to start
     let spam_config = kupcake_deploy::spam::SpamConfig {
@@ -2696,19 +2701,15 @@ async fn test_spam_container_on_correct_network() -> Result<()> {
         report: false,
         contender_image: kupcake_deploy::spam::CONTENDER_DEFAULT_IMAGE.to_string(),
         contender_tag: kupcake_deploy::spam::CONTENDER_DEFAULT_TAG.to_string(),
-        target_node: 0,
+        rpc_url: sequencer_rpc_url(&loaded_deployer_clone),
         extra_args: vec![],
     };
-
-    // Spawn spam in a background task so we can inspect the container while it's running
-    println!("=== Spawning spam task... ===");
-    let loaded_deployer_clone = kupcake_deploy::Deployer::load_from_file(&config_path)?;
     let spam_handle = tokio::spawn(async move {
         kupcake_deploy::spam::run_spam(&loaded_deployer_clone, &spam_config).await
     });
 
     // Wait for the contender container to appear (faucet deposit + image pull + start)
-    println!("=== Waiting for contender container to start (up to 120s)... ===");
+    tracing::info!("=== Waiting for contender container to start (up to 120s)... ===");
     let container_appeared = rpc::wait_until_ready("contender container", 120, || {
         let name = contender_container.clone();
         async move {
@@ -2732,11 +2733,11 @@ async fn test_spam_container_on_correct_network() -> Result<()> {
     .await;
 
     if let Err(e) = container_appeared {
-        println!("Warning: Could not detect contender container: {}", e);
+        tracing::info!("Warning: Could not detect contender container: {}", e);
         let _ = spam_handle.await;
     } else {
         // Inspect the container's network membership
-        println!("=== Inspecting contender container network... ===");
+        tracing::info!("=== Inspecting contender container network... ===");
         let output = Command::new("docker")
             .args([
                 "inspect",
@@ -2749,7 +2750,7 @@ async fn test_spam_container_on_correct_network() -> Result<()> {
 
         if output.status.success() {
             let networks_json = String::from_utf8_lossy(&output.stdout);
-            println!("Container networks: {}", networks_json.trim());
+            tracing::info!("Container networks: {}", networks_json.trim());
 
             assert!(
                 networks_json.contains(&expected_network),
@@ -2757,12 +2758,12 @@ async fn test_spam_container_on_correct_network() -> Result<()> {
                 expected_network,
                 networks_json.trim()
             );
-            println!(
+            tracing::info!(
                 "Contender container is on correct network: {}",
                 expected_network
             );
         } else {
-            println!(
+            tracing::info!(
                 "Warning: Could not inspect container networks: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
@@ -2773,10 +2774,10 @@ async fn test_spam_container_on_correct_network() -> Result<()> {
     }
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     ctx.cleanup().await?;
 
-    println!("=== Test passed! Contender container runs on correct Docker network. ===");
+    tracing::info!("=== Test passed! Contender container runs on correct Docker network. ===");
     Ok(())
 }
 
@@ -2794,7 +2795,7 @@ async fn run_preset_and_verify_traffic(
     spam_duration_secs: u64,
 ) -> Result<(usize, u64)> {
     let ctx = TestContext::new(test_prefix);
-    println!(
+    tracing::info!(
         "=== [{}] Starting preset test with network: {} (L1 chain ID: {}) ===",
         preset, ctx.network_name, ctx.l1_chain_id
     );
@@ -2812,10 +2813,10 @@ async fn run_preset_and_verify_traffic(
 
     deployer.save_config()?;
 
-    println!("=== [{}] Deploying network... ===", preset);
+    tracing::info!("=== [{}] Deploying network... ===", preset);
     let deployment = ctx.deploy(deployer).await?;
 
-    println!("=== [{}] Waiting for nodes to be ready... ===", preset);
+    tracing::info!("=== [{}] Waiting for nodes to be ready... ===", preset);
     wait_for_all_nodes(&deployment).await;
     sleep(Duration::from_secs(10)).await;
 
@@ -2831,14 +2832,14 @@ async fn run_preset_and_verify_traffic(
 
     // Record initial block number
     let initial_block = get_block_number(&l2_rpc_url).await?;
-    println!("=== [{}] Initial block number: {} ===", preset, initial_block);
+    tracing::info!("=== [{}] Initial block number: {} ===", preset, initial_block);
 
     // Generate config from the preset, override forever → bounded duration
-    let mut spam_config = preset.to_config();
+    let mut spam_config = preset.to_config(&sequencer_rpc_url(&loaded_deployer));
     spam_config.forever = false;
     spam_config.duration = spam_duration_secs;
 
-    println!(
+    tracing::info!(
         "=== [{}] Running spam (scenario={}, tps={}, accounts={}, duration={}s)... ===",
         preset, spam_config.scenario, spam_config.tps, spam_config.accounts, spam_config.duration
     );
@@ -2850,8 +2851,8 @@ async fn run_preset_and_verify_traffic(
     .await;
 
     match &spam_result {
-        Ok(Ok(())) => println!("[{}] Spam completed successfully", preset),
-        Ok(Err(e)) => println!("[{}] Spam completed with error (may be expected): {}", preset, e),
+        Ok(Ok(())) => tracing::info!("[{}] Spam completed successfully", preset),
+        Ok(Err(e)) => tracing::info!("[{}] Spam completed with error (may be expected): {}", preset, e),
         Err(_) => {
             ctx.cleanup().await?;
             anyhow::bail!("[{}] Spam timed out after 300 seconds", preset);
@@ -2863,7 +2864,7 @@ async fn run_preset_and_verify_traffic(
 
     let final_block = get_block_number(&l2_rpc_url).await?;
     let blocks_advanced = final_block - initial_block;
-    println!(
+    tracing::info!(
         "[{}] Final block: {} (advanced {} blocks)",
         preset, final_block, blocks_advanced
     );
@@ -2881,13 +2882,13 @@ async fn run_preset_and_verify_traffic(
         let block_num = initial_block + 1 + i;
         if let Ok(tx_count) = get_block_tx_count(&l2_rpc_url, block_num).await {
             if tx_count > 0 {
-                println!("  [{}] Block {}: {} tx(s)", preset, block_num, tx_count);
+                tracing::info!("  [{}] Block {}: {} tx(s)", preset, block_num, tx_count);
             }
             total_txs += tx_count;
         }
     }
 
-    println!(
+    tracing::info!(
         "[{}] Total txs: {}, blocks checked: {}, blocks advanced: {}",
         preset, total_txs, blocks_to_check, blocks_advanced
     );
@@ -2910,7 +2911,7 @@ async fn run_preset_and_verify_traffic(
     );
 
     ctx.cleanup().await?;
-    println!(
+    tracing::info!(
         "=== [{}] PASSED — {} txs across {} blocks (ratio: {:.1}x) ===",
         preset,
         total_txs,
@@ -2974,7 +2975,7 @@ async fn test_spam_preset_heavy_more_traffic_than_light() -> Result<()> {
     )
     .await?;
 
-    println!(
+    tracing::info!(
         "Light txs: {}, Heavy txs: {} (ratio: {:.1}x)",
         light_txs,
         heavy_txs,
@@ -3005,7 +3006,7 @@ async fn test_spam_deploy_no_wait_then_reload_and_spam() -> Result<()> {
     init_test_tracing();
 
     let ctx = TestContext::new("spam-nowait");
-    println!(
+    tracing::info!(
         "=== Starting spam no-wait deploy test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
@@ -3013,7 +3014,7 @@ async fn test_spam_deploy_no_wait_then_reload_and_spam() -> Result<()> {
     let deployer = ctx.build_deployer().await?;
     let config_path = deployer.save_config()?;
 
-    println!("=== Deploying with wait_for_exit=false... ===");
+    tracing::info!("=== Deploying with wait_for_exit=false... ===");
 
     // Deploy with wait_for_exit=false — exactly what --spam does
     let deployment_result = timeout(
@@ -3034,7 +3035,7 @@ async fn test_spam_deploy_no_wait_then_reload_and_spam() -> Result<()> {
         }
     };
 
-    println!("=== Deploy returned immediately (no wait). Waiting for nodes... ===");
+    tracing::info!("=== Deploy returned immediately (no wait). Waiting for nodes... ===");
     wait_for_all_nodes(&deployment).await;
     sleep(Duration::from_secs(10)).await;
 
@@ -3055,11 +3056,11 @@ async fn test_spam_deploy_no_wait_then_reload_and_spam() -> Result<()> {
     let initial_block = get_block_number(&l2_rpc_url).await?;
 
     // Use SpamPreset::Light with short duration
-    let mut spam_config = kupcake_deploy::spam::SpamPreset::Light.to_config();
+    let mut spam_config = kupcake_deploy::spam::SpamPreset::Light.to_config(&sequencer_rpc_url(&reloaded));
     spam_config.forever = false;
     spam_config.duration = 10;
 
-    println!("=== Running spam from reloaded deployer... ===");
+    tracing::info!("=== Running spam from reloaded deployer... ===");
     let spam_result = timeout(
         Duration::from_secs(300),
         kupcake_deploy::spam::run_spam(&reloaded, &spam_config),
@@ -3067,8 +3068,8 @@ async fn test_spam_deploy_no_wait_then_reload_and_spam() -> Result<()> {
     .await;
 
     match &spam_result {
-        Ok(Ok(())) => println!("Spam completed successfully from reloaded deployer"),
-        Ok(Err(e)) => println!("Spam completed with error (may be expected): {}", e),
+        Ok(Ok(())) => tracing::info!("Spam completed successfully from reloaded deployer"),
+        Ok(Err(e)) => tracing::info!("Spam completed with error (may be expected): {}", e),
         Err(_) => {
             let _ = cleanup_by_prefix(&ctx.network_name).await;
             anyhow::bail!("Spam timed out after 300 seconds");
@@ -3089,7 +3090,7 @@ async fn test_spam_deploy_no_wait_then_reload_and_spam() -> Result<()> {
         }
     }
 
-    println!(
+    tracing::info!(
         "No-wait flow: {} txs across {} blocks (ratio: {:.1}x)",
         total_txs,
         blocks_to_check,
@@ -3104,18 +3105,18 @@ async fn test_spam_deploy_no_wait_then_reload_and_spam() -> Result<()> {
     );
 
     // Cleanup (simulates what --spam does when user didn't set --no-cleanup)
-    println!("=== Cleaning up via prefix (simulating --spam cleanup)... ===");
+    tracing::info!("=== Cleaning up via prefix (simulating --spam cleanup)... ===");
     let cleanup_result = cleanup_by_prefix(&ctx.network_name).await?;
     assert!(
         !cleanup_result.containers_removed.is_empty(),
         "Should have cleaned up deployment containers"
     );
-    println!(
+    tracing::info!(
         "Cleaned up {} containers",
         cleanup_result.containers_removed.len()
     );
 
-    println!("=== Test passed! Full --spam flow: deploy(no-wait) → reload → spam → cleanup ===");
+    tracing::info!("=== Test passed! Full --spam flow: deploy(no-wait) → reload → spam → cleanup ===");
     Ok(())
 }
 
@@ -3177,7 +3178,7 @@ async fn test_flashblocks_deployment() -> Result<()> {
     init_test_tracing();
 
     let ctx = TestContext::new("flashblocks");
-    println!(
+    tracing::info!(
         "=== Starting flashblocks test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name, ctx.l1_chain_id
     );
@@ -3197,15 +3198,15 @@ async fn test_flashblocks_deployment() -> Result<()> {
 
     deployer.save_config()?;
 
-    println!("=== Deploying network with flashblocks enabled... ===");
+    tracing::info!("=== Deploying network with flashblocks enabled... ===");
     let deployment = ctx.deploy(deployer).await?;
-    println!("=== Deployment completed successfully ===");
+    tracing::info!("=== Deployment completed successfully ===");
 
     // Verify sequencer op-reth container uses op-rbuilder image
-    println!("=== Verifying sequencer uses op-rbuilder image... ===");
+    tracing::info!("=== Verifying sequencer uses op-rbuilder image... ===");
     let sequencer_reth_name = format!("{}-op-reth", ctx.network_name);
     let sequencer_image = get_container_image(&sequencer_reth_name)?;
-    println!("Sequencer execution client image: {}", sequencer_image);
+    tracing::info!("Sequencer execution client image: {}", sequencer_image);
 
     if !sequencer_image.contains("op-rbuilder") {
         ctx.cleanup().await?;
@@ -3216,10 +3217,10 @@ async fn test_flashblocks_deployment() -> Result<()> {
     }
 
     // Verify validator op-reth container still uses op-reth image (not op-rbuilder)
-    println!("=== Verifying validator uses op-reth image (not op-rbuilder)... ===");
+    tracing::info!("=== Verifying validator uses op-reth image (not op-rbuilder)... ===");
     let validator_reth_name = format!("{}-op-reth-validator-1", ctx.network_name);
     let validator_image = get_container_image(&validator_reth_name)?;
-    println!("Validator execution client image: {}", validator_image);
+    tracing::info!("Validator execution client image: {}", validator_image);
 
     if validator_image.contains("op-rbuilder") {
         ctx.cleanup().await?;
@@ -3230,9 +3231,9 @@ async fn test_flashblocks_deployment() -> Result<()> {
     }
 
     // Verify flashblocks port (1111) is exposed on sequencer's execution client
-    println!("=== Verifying flashblocks port is exposed on sequencer... ===");
+    tracing::info!("=== Verifying flashblocks port is exposed on sequencer... ===");
     let exposed_ports = get_container_exposed_ports(&sequencer_reth_name)?;
-    println!("Sequencer exposed ports: {}", exposed_ports);
+    tracing::info!("Sequencer exposed ports: {}", exposed_ports);
 
     if !exposed_ports.contains("1111/tcp") {
         ctx.cleanup().await?;
@@ -3253,18 +3254,18 @@ async fn test_flashblocks_deployment() -> Result<()> {
     }
 
     // Wait for both sequencer and validator op-reth to be ready
-    println!("=== Waiting for op-reth nodes to be ready... ===");
+    tracing::info!("=== Waiting for op-reth nodes to be ready... ===");
     for node in deployment.l2_stack.all_nodes() {
         let label = if node.is_sequencer() { "sequencer" } else { "validator" };
         if let Err(e) = node.op_reth.wait_until_ready(NODE_READY_TIMEOUT_SECS).await {
             ctx.cleanup().await?;
             anyhow::bail!("{} op-reth not ready: {}", label, e);
         }
-        println!("{} op-reth is ready", label);
+        tracing::info!("{} op-reth is ready", label);
     }
 
     // Wait for both kona-nodes to be ready (validator may need extra time with flashblocks)
-    println!("=== Waiting for kona-node consensus clients to be ready... ===");
+    tracing::info!("=== Waiting for kona-node consensus clients to be ready... ===");
     for node in deployment.l2_stack.all_nodes() {
         let label = if node.is_sequencer() { "sequencer" } else { "validator" };
         // Give kona-nodes extra time (180s) since flashblocks relay adds startup latency
@@ -3272,11 +3273,11 @@ async fn test_flashblocks_deployment() -> Result<()> {
             ctx.cleanup().await?;
             anyhow::bail!("{} kona-node not ready: {}", label, e);
         }
-        println!("{} kona-node is ready", label);
+        tracing::info!("{} kona-node is ready", label);
     }
 
     // Get initial block numbers from op-reth (both sequencer and validator)
-    println!("=== Getting initial op-reth block numbers... ===");
+    tracing::info!("=== Getting initial op-reth block numbers... ===");
     let mut initial_blocks = Vec::new();
     for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
         let label = if node.is_sequencer() {
@@ -3286,16 +3287,16 @@ async fn test_flashblocks_deployment() -> Result<()> {
         };
         let status = node.op_reth.sync_status().await
             .with_context(|| format!("Failed to get {} op-reth status", label))?;
-        println!("{}: block={}", label, status.block_number);
+        tracing::info!("{}: block={}", label, status.block_number);
         initial_blocks.push((label, status.block_number));
     }
 
     // Wait for blocks to be produced
-    println!("=== Waiting 30 seconds for blocks to be produced... ===");
+    tracing::info!("=== Waiting 30 seconds for blocks to be produced... ===");
     sleep(Duration::from_secs(30)).await;
 
     // Check that both sequencer and validator have advanced
-    println!("=== Checking that all nodes have advanced... ===");
+    tracing::info!("=== Checking that all nodes have advanced... ===");
     let mut errors = Vec::new();
 
     for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
@@ -3309,7 +3310,7 @@ async fn test_flashblocks_deployment() -> Result<()> {
             let status = node.op_reth.sync_status().await
                 .with_context(|| format!("Failed to get {} op-reth status", label))?;
             let advanced = status.block_number > *initial_block;
-            println!(
+            tracing::info!(
                 "{}: block {} -> {} ({})",
                 label,
                 initial_block,
@@ -3324,7 +3325,7 @@ async fn test_flashblocks_deployment() -> Result<()> {
     }
 
     // Cleanup
-    println!("=== Cleaning up network... ===");
+    tracing::info!("=== Cleaning up network... ===");
     ctx.cleanup().await?;
 
     if !errors.is_empty() {
@@ -3334,6 +3335,6 @@ async fn test_flashblocks_deployment() -> Result<()> {
         );
     }
 
-    println!("=== Test passed! Flashblocks deployment with op-rbuilder is working. ===");
+    tracing::info!("=== Test passed! Flashblocks deployment with op-rbuilder is working. ===");
     Ok(())
 }
