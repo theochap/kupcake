@@ -319,7 +319,7 @@ pub struct DeployArgs {
     /// Deploy and immediately start spamming with a named preset.
     ///
     /// Accepts an optional preset name: light, medium, heavy, erc20, uniswap, stress.
-    /// If no preset is specified, defaults to "light".
+    /// If no preset is specified, defaults to "medium".
     /// Cannot be combined with --detach.
     #[arg(
         long,
@@ -632,9 +632,9 @@ mod tests {
     }
 
     #[test]
-    fn test_spam_flag_no_value_defaults_to_light() {
+    fn test_spam_flag_no_value_defaults_to_medium() {
         let cli = parse_cli(&["deploy", "--spam"]).unwrap();
-        assert_eq!(deploy_args(&cli).spam.as_deref(), Some("light"));
+        assert_eq!(deploy_args(&cli).spam.as_deref(), Some("medium"));
     }
 
     #[test]

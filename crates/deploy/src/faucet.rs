@@ -3,10 +3,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use bollard::Docker;
 use serde_json::Value;
 
-use crate::{Deployer, health::build_host_rpc_url, rpc};
+use crate::{Deployer, KupDocker, KupDockerConfig, health::build_host_rpc_url, rpc};
 
 /// Result of a faucet deposit operation.
 #[derive(Debug)]
@@ -30,16 +29,20 @@ pub async fn faucet_deposit(
 ) -> Result<FaucetResult> {
     validate_address(to_address)?;
 
-    let docker = Docker::connect_with_local_defaults()
-        .context("Failed to connect to Docker daemon")?;
+    let kup_docker = KupDocker::new(KupDockerConfig {
+        ..deployer.docker.clone()
+    })
+    .await
+    .context("Failed to initialize Docker client")?;
     let client = rpc::create_client()?;
 
     let deployer_address = load_deployer_address(&deployer.outdata)?;
     let portal_address = load_optimism_portal_address(&deployer.outdata)?;
 
-    let l1_url = build_host_rpc_url(&docker, &deployer.anvil.container_name, deployer.anvil.port)
-        .await
-        .context("Failed to build L1 RPC URL - is Anvil running?")?;
+    let l1_url =
+        build_host_rpc_url(&kup_docker, &deployer.anvil.container_name, deployer.anvil.port)
+            .await
+            .context("Failed to build L1 RPC URL - is Anvil running?")?;
 
     let amount_wei = eth_to_wei(amount_eth);
     let calldata = encode_deposit_transaction(to_address, amount_wei, 100_000);
@@ -63,7 +66,7 @@ pub async fn faucet_deposit(
     tracing::info!(tx_hash = %tx_hash, "Deposit transaction sent on L1");
 
     let l2_balance = if wait {
-        Some(wait_for_l2_deposit(&docker, &client, deployer, to_address, 120).await?)
+        Some(wait_for_l2_deposit(&kup_docker, &client, deployer, to_address, 120).await?)
     } else {
         None
     };
@@ -76,7 +79,7 @@ pub async fn faucet_deposit(
 
 /// Wait for an L2 deposit by polling `eth_getBalance` until the balance changes.
 async fn wait_for_l2_deposit(
-    docker: &Docker,
+    kup_docker: &KupDocker,
     client: &reqwest::Client,
     deployer: &Deployer,
     to_address: &str,
@@ -84,7 +87,7 @@ async fn wait_for_l2_deposit(
 ) -> Result<String> {
     let seq = &deployer.l2_stack.sequencers[0];
     let l2_url = build_host_rpc_url(
-        docker,
+        kup_docker,
         &seq.op_reth.container_name,
         seq.op_reth.http_port,
     )

@@ -18,7 +18,13 @@ use kupcake_deploy::{
 };
 use rand::Rng;
 use serde_json::Value;
+use tokio::sync::Semaphore;
 use tokio::time::{sleep, timeout};
+
+/// Global semaphore to limit concurrent integration tests.
+/// Each test deploys Docker containers which consume significant resources,
+/// so we limit concurrency to avoid OOM kills and resource exhaustion.
+static TEST_SEMAPHORE: Semaphore = Semaphore::const_new(5);
 
 // Timeout constants
 const DEPLOYMENT_TIMEOUT_SECS: u64 = 600;
@@ -302,6 +308,7 @@ async fn wait_for_op_batcher_ready(rpc_url: &str, timeout_secs: u64) -> Result<(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_network_deployment_and_sync_status() -> Result<()> {
     // Initialize tracing for test output
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let l1_chain_id = generate_random_l1_chain_id();
@@ -416,6 +423,7 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
 /// - eth_syncing returns expected values
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let l1_chain_id = generate_random_l1_chain_id();
@@ -585,6 +593,7 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
 /// - All sequencers produce blocks
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_multi_sequencer_with_conductor() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let l1_chain_id = generate_random_l1_chain_id();
@@ -786,6 +795,7 @@ async fn wait_for_conductor_ready(rpc_url: &str, timeout_secs: u64) -> Result<()
 /// - The batcher is responding to RPC calls
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_op_batcher_health() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let l1_chain_id = generate_random_l1_chain_id();
@@ -923,6 +933,7 @@ async fn test_op_batcher_health() -> Result<()> {
 /// - Containers are still on the custom Docker network
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_publish_all_ports() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let l1_chain_id = generate_random_l1_chain_id();
@@ -1149,6 +1160,7 @@ async fn test_rpc_endpoint(rpc_url: &str, method: &str) -> Result<()> {
 /// - Verifies sync status can be queried
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_local_kona_binary() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let l1_chain_id = generate_random_l1_chain_id();
@@ -1364,6 +1376,7 @@ async fn test_local_kona_binary() -> Result<()> {
 /// - Network is healthy and advances
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_deployment_skipping() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("skip-test");
@@ -1437,6 +1450,7 @@ async fn test_deployment_skipping() -> Result<()> {
 /// - Verify network is still healthy and advancing
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_stop_and_restart_from_config() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("restart-test");
@@ -1590,6 +1604,7 @@ fn verify_sequencer_state_persisted(
 /// - Verifies chain IDs, block numbers, and container states in the report
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_health_check_reports_healthy() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("health-ok");
@@ -1695,6 +1710,7 @@ async fn test_health_check_reports_healthy() -> Result<()> {
 /// - Verifies the stopped service is correctly identified
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_health_check_reports_unhealthy_on_stopped_container() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("health-fail");
@@ -1821,6 +1837,7 @@ async fn get_l2_balance(rpc_url: &str, address: &str) -> Result<u128> {
 /// - Verifies the L2 balance increased
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_faucet_deposit_with_wait() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("faucet-wait");
@@ -1913,6 +1930,7 @@ async fn test_faucet_deposit_with_wait() -> Result<()> {
 /// - Then manually polls to confirm the deposit eventually arrives
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_faucet_deposit_no_wait() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("faucet-nowait");
@@ -2005,6 +2023,7 @@ async fn test_faucet_deposit_no_wait() -> Result<()> {
 /// - Confirms deposits are additive
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_faucet_multiple_deposits() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("faucet-multi");
@@ -2082,6 +2101,7 @@ async fn test_faucet_multiple_deposits() -> Result<()> {
 /// since validation happens before any RPC calls.
 #[tokio::test]
 async fn test_faucet_rejects_invalid_address() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("faucet-invalid");
@@ -2273,6 +2293,7 @@ async fn get_block_tx_count(rpc_url: &str, block_number: u64) -> Result<usize> {
 /// - All deposits to different addresses have correct independent balances
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_faucet_deposit_various_amounts() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("faucet-amounts");
@@ -2367,6 +2388,7 @@ async fn test_faucet_deposit_various_amounts() -> Result<()> {
 /// - Deposit is also visible on the validator op-reth (synced via L1 derivation)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_faucet_deposit_visible_on_validator() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("faucet-validator");
@@ -2466,6 +2488,7 @@ async fn test_faucet_deposit_visible_on_validator() -> Result<()> {
 /// - Verifies contender data directory was created
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_spam_generates_l2_traffic() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("spam-traffic");
@@ -2658,6 +2681,7 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
 /// - Inspects the contender container to verify it's on the kupcake Docker network
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_spam_container_on_correct_network() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("spam-network");
@@ -2926,6 +2950,7 @@ async fn run_preset_and_verify_traffic(
 /// Verifies total transactions > blocks produced (proving spam beyond system txs).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_spam_preset_light_generates_traffic() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
     let (total_txs, _) = run_preset_and_verify_traffic(
         kupcake_deploy::spam::SpamPreset::Light,
@@ -2942,6 +2967,7 @@ async fn test_spam_preset_light_generates_traffic() -> Result<()> {
 /// Verifies total transactions > blocks produced (proving spam beyond system txs).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_spam_preset_erc20_generates_traffic() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
     let (total_txs, _) = run_preset_and_verify_traffic(
         kupcake_deploy::spam::SpamPreset::Erc20,
@@ -2959,6 +2985,7 @@ async fn test_spam_preset_erc20_generates_traffic() -> Result<()> {
 /// so it should produce noticeably more transactions in the same duration.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_spam_preset_heavy_more_traffic_than_light() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let (light_txs, _) = run_preset_and_verify_traffic(
@@ -3003,6 +3030,7 @@ async fn test_spam_preset_heavy_more_traffic_than_light() -> Result<()> {
 /// Verifies the spam generated more txs than blocks (real traffic).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_spam_deploy_no_wait_then_reload_and_spam() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("spam-nowait");
@@ -3175,6 +3203,7 @@ fn get_container_exposed_ports(container_name: &str) -> Result<String> {
 /// - Blocks are advancing on both sequencer and validator
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_flashblocks_deployment() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
     let ctx = TestContext::new("flashblocks");

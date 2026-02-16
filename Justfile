@@ -6,9 +6,9 @@ run-dev *args:
 test:
     cargo test --lib --bins
 
-# Run integration tests (max 5 concurrent to avoid overwhelming Docker)
+# Run integration tests (concurrency limited by in-code semaphore)
 test-integration *args:
-    cargo test --test integration_test -- --test-threads=5 {{args}}
+    cargo test --test integration_test -- {{args}}
 
 # Run health check against a deployed network
 health config:
