@@ -3367,3 +3367,175 @@ async fn test_flashblocks_deployment() -> Result<()> {
     tracing::info!("=== Test passed! Flashblocks deployment with op-rbuilder is working. ===");
     Ok(())
 }
+
+/// Test flashblocks deployment with spam traffic.
+///
+/// This test verifies that spam works correctly against a flashblocks-enabled network:
+/// - Deploys with flashblocks enabled (sequencer uses op-rbuilder)
+/// - Verifies sequencer uses op-rbuilder image
+/// - Funds the spammer account via faucet deposit
+/// - Runs contender spam against the flashblocks sequencer
+/// - Verifies blocks advanced and contain user transactions
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_flashblocks_with_spam() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
+    init_test_tracing();
+
+    let ctx = TestContext::new("fb-spam");
+    tracing::info!(
+        "=== Starting flashblocks+spam test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name, ctx.l1_chain_id
+    );
+
+    // Deploy with flashblocks enabled
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(2) // 1 sequencer + 1 validator
+        .sequencer_count(1)
+        .block_time(2)
+        .flashblocks(true)
+        .detach(true)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
+
+    deployer.save_config()?;
+
+    tracing::info!("=== Deploying network with flashblocks enabled... ===");
+    let deployment = ctx.deploy(deployer).await?;
+    tracing::info!("=== Deployment completed successfully ===");
+
+    // Verify sequencer uses op-rbuilder image
+    let sequencer_reth_name = format!("{}-op-reth", ctx.network_name);
+    let sequencer_image = get_container_image(&sequencer_reth_name)?;
+    tracing::info!("Sequencer execution client image: {}", sequencer_image);
+
+    if !sequencer_image.contains("op-rbuilder") {
+        ctx.cleanup().await?;
+        anyhow::bail!(
+            "Expected sequencer to use op-rbuilder image, got: {}",
+            sequencer_image
+        );
+    }
+
+    // Wait for nodes to be ready (flashblocks needs extra time)
+    tracing::info!("=== Waiting for nodes to be ready... ===");
+    for node in deployment.l2_stack.all_nodes() {
+        let label = if node.is_sequencer() { "sequencer" } else { "validator" };
+        if let Err(e) = node.kona_node.wait_until_ready(180).await {
+            ctx.cleanup().await?;
+            anyhow::bail!("{} kona-node not ready: {}", label, e);
+        }
+        tracing::info!("{} is ready", label);
+    }
+
+    tracing::info!("=== Waiting 15 seconds for network to stabilize... ===");
+    sleep(Duration::from_secs(15)).await;
+
+    // Load deployer from config for spam
+    let config_path = ctx.outdata_path.join("Kupcake.toml");
+    let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
+        .context("Failed to load deployer from config file")?;
+
+    // Get host RPC URL for verification queries
+    let seq_reth_port = get_container_host_port(
+        &sequencer_reth_name,
+        loaded_deployer.l2_stack.sequencers[0].op_reth.http_port,
+    )
+    .context("Failed to get sequencer op-reth port")?;
+    let l2_rpc_url = format!("http://localhost:{}", seq_reth_port);
+
+    // Record initial block number
+    let initial_block = get_block_number(&l2_rpc_url).await?;
+    tracing::info!("Initial block number: {}", initial_block);
+
+    // Run spam with moderate TPS and short duration
+    let spam_config = kupcake_deploy::spam::SpamConfig {
+        scenario: "transfers".to_string(),
+        tps: 20,
+        duration: 10,
+        forever: false,
+        accounts: 2,
+        min_balance: "0.1".to_string(),
+        fund_amount: 50.0,
+        funder_account_index: 10,
+        report: false,
+        contender_image: kupcake_deploy::spam::CONTENDER_DEFAULT_IMAGE.to_string(),
+        contender_tag: kupcake_deploy::spam::CONTENDER_DEFAULT_TAG.to_string(),
+        rpc_url: sequencer_rpc_url(&loaded_deployer),
+        extra_args: vec![],
+    };
+
+    tracing::info!("=== Running spam against flashblocks sequencer (tps=20, duration=10s)... ===");
+    let spam_result = timeout(
+        Duration::from_secs(300),
+        kupcake_deploy::spam::run_spam(&loaded_deployer, &spam_config),
+    )
+    .await;
+
+    match &spam_result {
+        Ok(Ok(())) => tracing::info!("Spam completed successfully"),
+        Ok(Err(e)) => {
+            ctx.cleanup().await?;
+            anyhow::bail!("Spam failed: {}", e);
+        }
+        Err(_) => {
+            ctx.cleanup().await?;
+            anyhow::bail!("Spam timed out after 300 seconds");
+        }
+    }
+
+    // Wait for remaining blocks
+    sleep(Duration::from_secs(5)).await;
+
+    // Verify blocks advanced
+    let final_block = get_block_number(&l2_rpc_url).await?;
+    tracing::info!(
+        "Block numbers: {} -> {} (advanced {} blocks)",
+        initial_block, final_block, final_block - initial_block
+    );
+
+    assert!(
+        final_block > initial_block,
+        "Block number should advance during spam ({} -> {})",
+        initial_block, final_block
+    );
+
+    // Check blocks for transactions
+    tracing::info!("=== Checking blocks for transactions... ===");
+    let mut total_txs = 0;
+    let mut blocks_with_txs = 0;
+    let blocks_to_check = std::cmp::min(final_block - initial_block, 20);
+
+    for i in 0..blocks_to_check {
+        let block_num = initial_block + 1 + i;
+        if let Ok(tx_count) = get_block_tx_count(&l2_rpc_url, block_num).await {
+            if tx_count > 0 {
+                blocks_with_txs += 1;
+                total_txs += tx_count;
+                tracing::info!("  Block {}: {} transaction(s)", block_num, tx_count);
+            }
+        }
+    }
+
+    tracing::info!(
+        "Summary: {} total transactions across {} blocks with txs ({} blocks checked)",
+        total_txs, blocks_with_txs, blocks_to_check
+    );
+
+    assert!(
+        total_txs > 0,
+        "Expected at least some transactions during spam, found 0"
+    );
+
+    // Cleanup
+    tracing::info!("=== Cleaning up network... ===");
+    ctx.cleanup().await?;
+
+    tracing::info!(
+        "=== Test passed! Flashblocks + spam working: {} transactions across {} blocks. ===",
+        total_txs, blocks_with_txs
+    );
+    Ok(())
+}
