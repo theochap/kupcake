@@ -86,9 +86,10 @@ pub struct OpRethBuilder {
 }
 
 /// Default Docker image for op-reth.
-pub const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/paradigmxyz/op-reth";
+pub const DEFAULT_DOCKER_IMAGE: &str =
+    "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-reth";
 /// Default Docker tag for op-reth.
-pub const DEFAULT_DOCKER_TAG: &str = "v1.10.2";
+pub const DEFAULT_DOCKER_TAG: &str = "develop";
 
 /// Default Docker image for op-rbuilder (flashblocks-enabled execution client).
 pub const DEFAULT_RBUILDER_DOCKER_IMAGE: &str = "ghcr.io/flashbots/op-rbuilder";

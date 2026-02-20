@@ -304,6 +304,60 @@ kupcake --l2-chain 42069
 kupcake --l2-chain 12345
 ```
 
+#### `--snapshot <PATH>`
+
+Restore the L2 network from an existing op-reth database snapshot instead of deploying contracts from scratch.
+
+**Environment Variable**: `KUP_SNAPSHOT`
+
+**Cannot be combined with**: `--redeploy`
+
+**Requires**: `--l1` (fork mode must be set)
+
+**Snapshot Directory Structure**:
+```
+snapshot-dir/
+  rollup.json       # Required - rollup config for kona-node
+  intent.toml       # Optional - generated via op-deployer if missing
+  <reth-db-dir>/    # Required - the op-reth database (first subdirectory)
+```
+
+**Behavior**:
+- Starts Anvil in fork mode against the specified L1
+- Skips contract deployment (contracts already exist on the forked L1)
+- Generates `genesis.json` via `op-deployer inspect genesis`
+- Copies `rollup.json` from the snapshot directory
+- Symlinks the reth database for the primary sequencer (use `--copy-snapshot` for a full copy)
+- Only the primary sequencer is restored from the snapshot; validators sync via P2P
+- `op-proposer` and `op-challenger` are skipped (no `state.json` available)
+
+**Examples**:
+```bash
+# Restore from a snapshot directory
+kupcake --l1 sepolia --snapshot /path/to/snapshot
+
+# Restore with a full copy of the reth database
+kupcake --l1 sepolia --snapshot /path/to/snapshot --copy-snapshot
+
+# Combine with other options
+kupcake --l1 sepolia --snapshot ./my-snapshot --no-cleanup --detach
+```
+
+#### `--copy-snapshot`
+
+Copy the snapshot reth database instead of symlinking it.
+
+**Default**: `false` (symlink)
+**Environment Variable**: `KUP_COPY_SNAPSHOT`
+**Requires**: `--snapshot`
+
+By default, `--snapshot` creates a symlink to the original reth database to avoid duplicating potentially large databases (many GB). Use `--copy-snapshot` when you need an independent copy.
+
+**Example**:
+```bash
+kupcake --l1 sepolia --snapshot /path/to/snapshot --copy-snapshot
+```
+
 #### `--outdata <PATH>`
 
 Path to output data directory.
@@ -588,8 +642,8 @@ Override default Docker images for any service.
 ### op-reth (L2 Execution)
 
 ```bash
---op-reth-image <IMAGE> # Default: ghcr.io/op-rs/op-reth
---op-reth-tag <TAG>     # Default: latest
+--op-reth-image <IMAGE> # Default: us-docker.pkg.dev/oplabs-tools-artifacts/images/op-reth
+--op-reth-tag <TAG>     # Default: develop
 ```
 
 **Environment Variables**: `KUP_OP_RETH_IMAGE`, `KUP_OP_RETH_TAG`
@@ -597,8 +651,8 @@ Override default Docker images for any service.
 ### kona-node (L2 Consensus)
 
 ```bash
---kona-node-image <IMAGE> # Default: ghcr.io/op-rs/kona
---kona-node-tag <TAG>     # Default: latest
+--kona-node-image <IMAGE> # Default: us-docker.pkg.dev/oplabs-tools-artifacts/images/kona-node
+--kona-node-tag <TAG>     # Default: develop
 ```
 
 **Environment Variables**: `KUP_KONA_NODE_IMAGE`, `KUP_KONA_NODE_TAG`
@@ -940,6 +994,16 @@ kupcake \
   --op-reth-tag dev \
   --kona-node-image localhost:5000/kona \
   --kona-node-tag dev
+```
+
+### Restore from Snapshot
+
+```bash
+# Symlink reth database (fast, default)
+kupcake --l1 sepolia --snapshot /path/to/snapshot
+
+# Copy reth database (independent copy)
+kupcake --l1 sepolia --snapshot /path/to/snapshot --copy-snapshot
 ```
 
 ### Load and Modify Existing Config

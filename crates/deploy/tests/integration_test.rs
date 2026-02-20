@@ -14,6 +14,8 @@ use kupcake_deploy::{
     DeployerBuilder, DeploymentResult, OutDataPath, cleanup_by_prefix,
     faucet,
     health,
+    KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG,
+    OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG,
     rpc, services::SyncStatus,
 };
 use rand::Rng;
@@ -3245,18 +3247,41 @@ async fn test_flashblocks_deployment() -> Result<()> {
         );
     }
 
-    // Verify validator op-reth container still uses op-reth image (not op-rbuilder)
-    tracing::info!("=== Verifying validator uses op-reth image (not op-rbuilder)... ===");
+    // Verify validator op-reth container uses the default op-reth image (not op-rbuilder)
+    tracing::info!("=== Verifying validator uses default op-reth image... ===");
     let validator_reth_name = format!("{}-op-reth-validator-1", ctx.network_name);
     let validator_image = get_container_image(&validator_reth_name)?;
     tracing::info!("Validator execution client image: {}", validator_image);
 
-    if validator_image.contains("op-rbuilder") {
+    let expected_reth_image = format!("{}:{}", OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG);
+    if validator_image != expected_reth_image {
         ctx.cleanup().await?;
         anyhow::bail!(
-            "Expected validator to use op-reth image (not op-rbuilder), got: {}",
+            "Expected validator to use default op-reth image '{}', got: {}",
+            expected_reth_image,
             validator_image
         );
+    }
+
+    // Verify both sequencer and validator kona-node containers use the default kona-node image
+    tracing::info!("=== Verifying kona-node containers use default image... ===");
+    let expected_kona_image = format!("{}:{}", KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG);
+    let kona_containers = [
+        format!("{}-kona-node", ctx.network_name),
+        format!("{}-kona-node-validator-1", ctx.network_name),
+    ];
+    for kona_name in &kona_containers {
+        let kona_image = get_container_image(kona_name)?;
+        tracing::info!("{} image: {}", kona_name, kona_image);
+        if kona_image != expected_kona_image {
+            ctx.cleanup().await?;
+            anyhow::bail!(
+                "Expected {} to use default kona-node image '{}', got: {}",
+                kona_name,
+                expected_kona_image,
+                kona_image
+            );
+        }
     }
 
     // Verify flashblocks port (1111) is exposed on sequencer's execution client

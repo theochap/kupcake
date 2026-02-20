@@ -258,9 +258,10 @@ pub struct KonaNodeBuilder {
 }
 
 /// Default Docker image for kona-node.
-pub const DEFAULT_DOCKER_IMAGE: &str = "kona-node";
+pub const DEFAULT_DOCKER_IMAGE: &str =
+    "us-docker.pkg.dev/oplabs-tools-artifacts/images/kona-node";
 /// Default Docker tag for kona-node.
-pub const DEFAULT_DOCKER_TAG: &str = "local";
+pub const DEFAULT_DOCKER_TAG: &str = "develop";
 
 impl Default for KonaNodeBuilder {
     fn default() -> Self {
