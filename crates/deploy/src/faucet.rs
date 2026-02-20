@@ -39,10 +39,13 @@ pub async fn faucet_deposit(
     let deployer_address = load_deployer_address(&deployer.outdata)?;
     let portal_address = load_optimism_portal_address(&deployer.outdata)?;
 
-    let l1_url =
-        build_host_rpc_url(&kup_docker, &deployer.anvil.container_name, deployer.anvil.port)
-            .await
-            .context("Failed to build L1 RPC URL - is Anvil running?")?;
+    let l1_url = build_host_rpc_url(
+        &kup_docker,
+        &deployer.anvil.container_name,
+        deployer.anvil.port,
+    )
+    .await
+    .context("Failed to build L1 RPC URL - is Anvil running?")?;
 
     let amount_wei = eth_to_wei(amount_eth);
     let calldata = encode_deposit_transaction(to_address, amount_wei, 100_000);
@@ -98,10 +101,7 @@ async fn wait_for_l2_deposit(
         client,
         &l2_url,
         "eth_getBalance",
-        vec![
-            serde_json::json!(to_address),
-            serde_json::json!("latest"),
-        ],
+        vec![serde_json::json!(to_address), serde_json::json!("latest")],
     )
     .await
     .context("Failed to get initial L2 balance")?;
@@ -140,10 +140,7 @@ async fn wait_for_l2_deposit(
         client,
         &l2_url,
         "eth_getBalance",
-        vec![
-            serde_json::json!(to_address),
-            serde_json::json!("latest"),
-        ],
+        vec![serde_json::json!(to_address), serde_json::json!("latest")],
     )
     .await
     .context("Failed to get final L2 balance")?;
@@ -156,8 +153,7 @@ fn load_deployer_address(outdata: &Path) -> Result<String> {
     let anvil_path = outdata.join("anvil/anvil.json");
     let content = std::fs::read_to_string(&anvil_path)
         .with_context(|| format!("Failed to read {}", anvil_path.display()))?;
-    let data: Value =
-        serde_json::from_str(&content).context("Failed to parse anvil.json")?;
+    let data: Value = serde_json::from_str(&content).context("Failed to parse anvil.json")?;
 
     data["available_accounts"][0]
         .as_str()
@@ -170,8 +166,7 @@ fn load_optimism_portal_address(outdata: &Path) -> Result<String> {
     let state_path = outdata.join("l2-stack/state.json");
     let content = std::fs::read_to_string(&state_path)
         .with_context(|| format!("Failed to read {}", state_path.display()))?;
-    let data: Value =
-        serde_json::from_str(&content).context("Failed to parse state.json")?;
+    let data: Value = serde_json::from_str(&content).context("Failed to parse state.json")?;
 
     data["opChainDeployments"][0]["OptimismPortalProxy"]
         .as_str()
@@ -189,10 +184,7 @@ fn validate_address(addr: &str) -> Result<()> {
     }
 
     if !addr[2..].chars().all(|c| c.is_ascii_hexdigit()) {
-        anyhow::bail!(
-            "Invalid address: contains non-hex characters: '{}'",
-            addr
-        );
+        anyhow::bail!("Invalid address: contains non-hex characters: '{}'", addr);
     }
 
     Ok(())
@@ -268,11 +260,8 @@ mod tests {
 
     #[test]
     fn test_encode_deposit_transaction() {
-        let calldata = encode_deposit_transaction(
-            "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
-            0,
-            100_000,
-        );
+        let calldata =
+            encode_deposit_transaction("0x70997970C51812dc3A010C7d01b50e0d17dc79C8", 0, 100_000);
 
         // Should start with selector
         assert!(calldata.starts_with("0xe9e05c42"));
@@ -281,8 +270,9 @@ mod tests {
         assert_eq!(calldata.len(), 394);
 
         // Address should be lowercase and left-padded in the first word after selector
-        assert!(calldata[10..74]
-            .eq("00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8"));
+        assert!(
+            calldata[10..74].eq("00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8")
+        );
     }
 
     #[test]

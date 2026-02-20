@@ -5,7 +5,7 @@
 
 mod cmd;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -107,7 +107,7 @@ impl OpConductorBuilder {
     pub async fn start_leader(
         &self,
         docker: &mut KupDocker,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
         server_id: &str,
         op_reth_handler: &OpRethHandler,
         kona_node_rpc_url: &str,
@@ -129,7 +129,7 @@ impl OpConductorBuilder {
     pub async fn start_follower(
         &self,
         docker: &mut KupDocker,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
         server_id: &str,
         op_reth_handler: &OpRethHandler,
         kona_node_rpc_url: &str,
@@ -149,7 +149,7 @@ impl OpConductorBuilder {
     async fn start_internal(
         &self,
         docker: &mut KupDocker,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
         server_id: &str,
         op_reth_handler: &OpRethHandler,
         kona_node_rpc_url: &str,

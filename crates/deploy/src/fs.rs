@@ -1,6 +1,6 @@
 //! File system utils.
 
-use std::{path::PathBuf, time::Duration};
+use std::{path::Path, path::PathBuf, time::Duration};
 
 use anyhow::Context;
 use notify::{Event, RecursiveMode, Watcher};
@@ -9,16 +9,56 @@ use tokio::sync::watch;
 pub struct FsHandler;
 
 impl FsHandler {
-    pub fn set_writable(path: &PathBuf) -> anyhow::Result<()> {
-        let metadata = std::fs::metadata(path).context("Failed to get metadata for file")?;
+    /// Recursively copy a directory tree from `src` to `dst`.
+    ///
+    /// Creates `dst` and all intermediate directories. Preserves the directory
+    /// structure under `src`.
+    pub async fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
+        tokio::fs::create_dir_all(dst).await.context(format!(
+            "Failed to create destination directory: {}",
+            dst.display()
+        ))?;
 
-        let mut perms = metadata.permissions();
+        let mut entries = tokio::fs::read_dir(src).await.context(format!(
+            "Failed to read source directory: {}",
+            src.display()
+        ))?;
 
-        perms.set_readonly(false);
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .context("Failed to read directory entry")?
+        {
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+            let file_type = entry.file_type().await.context("Failed to get file type")?;
 
-        std::fs::set_permissions(path, perms)
-            .context("Failed to set permissions on intent file")?;
+            if file_type.is_dir() {
+                Box::pin(Self::copy_dir_recursive(&src_path, &dst_path)).await?;
+            } else {
+                tokio::fs::copy(&src_path, &dst_path)
+                    .await
+                    .context(format!(
+                        "Failed to copy {} -> {}",
+                        src_path.display(),
+                        dst_path.display()
+                    ))?;
+            }
+        }
 
+        Ok(())
+    }
+
+    pub fn set_writable(path: &Path) -> anyhow::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(path)
+                .context("Failed to get metadata for file")?
+                .permissions();
+            perms.set_mode(0o777);
+            std::fs::set_permissions(path, perms).context("Failed to set permissions on file")?;
+        }
         Ok(())
     }
 

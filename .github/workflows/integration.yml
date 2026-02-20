@@ -11,19 +11,45 @@ env:
   RUST_LOG: info
 
 jobs:
-  integration:
-    name: Integration Tests
+  build:
+    name: Build Test Binary
     runs-on: ubuntu-latest
-    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: Archive integration test binary
+        run: cargo nextest archive --test integration_test --archive-file nextest-archive.tar.zst
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nextest-archive
+          path: nextest-archive.tar.zst
+          retention-days: 1
 
-      - name: Build integration test binary
-        run: cargo test --test integration_test --no-run
+  integration:
+    name: Integration Tests (${{ matrix.partition }}/6)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3, 4, 5, 6]
 
-      - name: Run integration tests
-        run: cargo test --test integration_test -- --nocapture
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@nextest
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nextest-archive
+
+      - name: Run integration tests (shard ${{ matrix.partition }}/6)
+        env:
+          KUPCAKE_TEST_TMPDIR: ${{ github.workspace }}
+        run: |
+          cargo nextest run \
+            --archive-file nextest-archive.tar.zst \
+            --no-capture \
+            --partition count:${{ matrix.partition }}/6

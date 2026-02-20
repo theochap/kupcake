@@ -2,7 +2,7 @@
 
 mod cmd;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -74,7 +74,7 @@ impl OpChallengerBuilder {
     pub async fn start(
         &self,
         docker: &mut KupDocker,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
         anvil_handler: &AnvilHandler,
         kona_node_handler: &KonaNodeHandler,
         op_reth_config: &OpRethBuilder,
@@ -125,11 +125,13 @@ impl OpChallengerBuilder {
 
         // Build port mappings only for ports that should be published to host
         // op-challenger doesn't have an RPC server, only metrics
-        let port_mappings: Vec<PortMapping> =
-            [PortMapping::tcp_optional(self.metrics_port, self.metrics_host_port)]
-                .into_iter()
-                .flatten()
-                .collect();
+        let port_mappings: Vec<PortMapping> = [PortMapping::tcp_optional(
+            self.metrics_port,
+            self.metrics_host_port,
+        )]
+        .into_iter()
+        .flatten()
+        .collect();
 
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)

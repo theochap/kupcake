@@ -681,6 +681,8 @@ mod tests {
             monitoring: Default::default(),
             dashboards_path: None,
             detach: false,
+            snapshot: None,
+            copy_snapshot: false,
         };
 
         assert_eq!(container_name(&deployer), "kup-test-contender");

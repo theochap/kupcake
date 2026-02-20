@@ -125,7 +125,7 @@ impl L2StackBuilder {
             L2NodeBuilder::sequencer().with_name_suffix(&format!("sequencer-{}", sequencer_index));
 
         // If we're adding a second sequencer, we need conductors for all
-        let needs_conductor = self.sequencers.len() >= 1; // Will have 2+ after adding
+        let needs_conductor = !self.sequencers.is_empty(); // Will have 2+ after adding
 
         if needs_conductor {
             // Add conductor to existing first sequencer if it doesn't have one
@@ -214,8 +214,7 @@ impl L2StackBuilder {
 
     /// Set the binary path or source directory for op-conductor for all sequencers that have conductor config.
     pub fn set_op_conductor_binary(mut self, path: impl Into<PathBuf>) -> Self {
-        let docker_image =
-            crate::docker::DockerImage::from_binary_with_name(path, "op-conductor");
+        let docker_image = crate::docker::DockerImage::from_binary_with_name(path, "op-conductor");
         for sequencer in &mut self.sequencers {
             if let Some(conductor) = &mut sequencer.op_conductor {
                 conductor.docker_image = docker_image.clone();
@@ -236,12 +235,15 @@ impl L2StackBuilder {
     /// * `host_config_path` - Path on host for config files
     /// * `anvil_handler` - Handler for the L1 Anvil instance
     /// * `l1_chain_id` - L1 chain ID (used to determine if we need a custom L1 config for kona-node)
+    /// * `skip_proposer_challenger` - When true, op-proposer and op-challenger are not started
+    ///   (used in snapshot mode where state.json is unavailable)
     pub async fn start(
         &self,
         docker: &mut KupDocker,
         host_config_path: PathBuf,
         anvil_handler: &AnvilHandler,
         l1_chain_id: u64,
+        skip_proposer_challenger: bool,
     ) -> Result<L2StackHandler, anyhow::Error> {
         if !host_config_path.exists() {
             fs::FsHandler::create_host_config_directory(&host_config_path)?;
@@ -337,7 +339,10 @@ impl L2StackBuilder {
             op_reth_peer_count = op_reth_enodes.len(),
             sequencer_count = self.sequencers.len(),
             validator_count = self.validators.len(),
-            conductors_started = sequencer_handlers.iter().filter(|s| s.op_conductor.is_some()).count(),
+            conductors_started = sequencer_handlers
+                .iter()
+                .filter(|s| s.op_conductor.is_some())
+                .count(),
             "All L2 nodes started with P2P peer discovery"
         );
 
@@ -358,32 +363,37 @@ impl L2StackBuilder {
             )
             .await?;
 
-        tracing::info!("Starting op-proposer...");
+        let (op_proposer_handler, op_challenger_handler) = if skip_proposer_challenger {
+            tracing::info!("Skipping op-proposer and op-challenger (snapshot mode, no state.json)");
+            (None, None)
+        } else {
+            tracing::info!("Starting op-proposer...");
 
-        // Start op-proposer (connects to primary sequencer)
-        let op_proposer_handler = self
-            .op_proposer
-            .start(
-                docker,
-                &host_config_path,
-                anvil_handler,
-                &primary_sequencer.kona_node,
-            )
-            .await?;
+            let proposer = self
+                .op_proposer
+                .start(
+                    docker,
+                    &host_config_path,
+                    anvil_handler,
+                    &primary_sequencer.kona_node,
+                )
+                .await?;
 
-        tracing::info!("Starting op-challenger...");
+            tracing::info!("Starting op-challenger...");
 
-        // Start op-challenger (connects to primary sequencer)
-        let op_challenger_handler = self
-            .op_challenger
-            .start(
-                docker,
-                &host_config_path,
-                anvil_handler,
-                &primary_sequencer.kona_node,
-                &self.sequencers[0].op_reth,
-            )
-            .await?;
+            let challenger = self
+                .op_challenger
+                .start(
+                    docker,
+                    &host_config_path,
+                    anvil_handler,
+                    &primary_sequencer.kona_node,
+                    &self.sequencers[0].op_reth,
+                )
+                .await?;
+
+            (Some(proposer), Some(challenger))
+        };
 
         // Log all sequencer endpoints
         for (i, sequencer) in sequencer_handlers.iter().enumerate() {
@@ -409,10 +419,14 @@ impl L2StackBuilder {
             );
         }
 
+        if let Some(ref proposer) = op_proposer_handler {
+            tracing::info!(op_proposer_rpc = %proposer.rpc_url, "op-proposer started");
+        }
+        if let Some(ref challenger) = op_challenger_handler {
+            tracing::info!(op_challenger_rpc = %challenger.rpc_url, "op-challenger started");
+        }
         tracing::info!(
             op_batcher_rpc = %op_batcher_handler.rpc_url,
-            op_proposer_rpc = %op_proposer_handler.rpc_url,
-            op_challenger_rpc = %op_challenger_handler.rpc_url,
             "L2 stack started successfully"
         );
 
@@ -560,17 +574,24 @@ mod tests {
         let stack = L2StackBuilder::with_counts(3, 0);
 
         // First sequencer has no suffix
-        assert_eq!(stack.sequencers[0].op_reth.container_name, "kupcake-op-reth");
+        assert_eq!(
+            stack.sequencers[0].op_reth.container_name,
+            "kupcake-op-reth"
+        );
 
         // Subsequent sequencers have suffixes
-        assert!(stack.sequencers[1]
-            .op_reth
-            .container_name
-            .contains("sequencer-1"));
-        assert!(stack.sequencers[2]
-            .op_reth
-            .container_name
-            .contains("sequencer-2"));
+        assert!(
+            stack.sequencers[1]
+                .op_reth
+                .container_name
+                .contains("sequencer-1")
+        );
+        assert!(
+            stack.sequencers[2]
+                .op_reth
+                .container_name
+                .contains("sequencer-2")
+        );
     }
 
     #[test]
@@ -578,17 +599,23 @@ mod tests {
         let stack = L2StackBuilder::with_counts(1, 3);
 
         // All validators have numbered suffixes
-        assert!(stack.validators[0]
-            .op_reth
-            .container_name
-            .contains("validator-1"));
-        assert!(stack.validators[1]
-            .op_reth
-            .container_name
-            .contains("validator-2"));
-        assert!(stack.validators[2]
-            .op_reth
-            .container_name
-            .contains("validator-3"));
+        assert!(
+            stack.validators[0]
+                .op_reth
+                .container_name
+                .contains("validator-1")
+        );
+        assert!(
+            stack.validators[1]
+                .op_reth
+                .container_name
+                .contains("validator-2")
+        );
+        assert!(
+            stack.validators[2]
+                .op_reth
+                .container_name
+                .contains("validator-3")
+        );
     }
 }

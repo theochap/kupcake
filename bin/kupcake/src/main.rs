@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
-use cli::{Cli, CleanupArgs, Commands, DeployArgs, FaucetArgs, HealthArgs, L1Source, OutData, SpamArgs};
+use cli::{
+    CleanupArgs, Cli, Commands, DeployArgs, FaucetArgs, HealthArgs, L1Source, OutData, SpamArgs,
+};
 use kupcake_deploy::{Deployer, DeployerBuilder, OutDataPath, SpamPreset, cleanup_by_prefix};
 
 #[tokio::main]
@@ -39,10 +41,7 @@ async fn run_cleanup(args: CleanupArgs) -> Result<()> {
         tracing::info!("Nothing to clean up");
     } else {
         if !result.containers_removed.is_empty() {
-            tracing::info!(
-                "Removed {} container(s):",
-                result.containers_removed.len()
-            );
+            tracing::info!("Removed {} container(s):", result.containers_removed.len());
             for name in &result.containers_removed {
                 tracing::info!("  - {}", name);
             }
@@ -105,8 +104,7 @@ async fn run_faucet(args: FaucetArgs) -> Result<()> {
     );
 
     let result =
-        kupcake_deploy::faucet::faucet_deposit(&deployer, &args.to, args.amount, args.wait)
-            .await?;
+        kupcake_deploy::faucet::faucet_deposit(&deployer, &args.to, args.amount, args.wait).await?;
 
     tracing::info!(tx_hash = %result.l1_tx_hash, "Deposit sent on L1");
     if let Some(balance) = result.l2_balance {
@@ -138,12 +136,17 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         .spam
         .as_deref()
         .map(|s| {
-            s.parse::<SpamPreset>()
-                .map_err(|_| anyhow::anyhow!(
+            s.parse::<SpamPreset>().map_err(|_| {
+                anyhow::anyhow!(
                     "Unknown spam preset '{}'. Available presets: {}",
                     s,
-                    SpamPreset::all().iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
-                ))
+                    SpamPreset::all()
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
         })
         .transpose()?;
 
@@ -172,6 +175,13 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         return Ok(());
     }
 
+    // Validate: --snapshot requires --l1 (fork mode)
+    if args.snapshot.is_some() && args.l1.is_none() {
+        anyhow::bail!(
+            "--snapshot requires --l1 to be set (fork mode is required to restore from a snapshot)"
+        );
+    }
+
     // Determine L1 chain ID and RPC URL based on provided arguments
     // - None: local mode with random L1 chain ID
     // - Known chain (sepolia/mainnet): use known chain ID and public RPC
@@ -183,7 +193,7 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
 
     // Create a new deployment from CLI arguments
     let mut deployer_builder = DeployerBuilder::new(l1_chain_id)
-        .maybe_l2_chain_id(args.l2_chain.map(|c| c.to_chain_id()))
+        .maybe_l2_chain_id(args.l2_chain.map(|c| c.chain_id()))
         .maybe_network_name(args.network)
         .maybe_outdata(args.outdata.map(|o| match o {
             OutData::TempDir => OutDataPath::TempDir,
@@ -213,6 +223,8 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         .op_conductor_image(args.docker_images.op_conductor_image)
         .op_conductor_tag(args.docker_images.op_conductor_tag)
         .flashblocks(args.flashblocks)
+        .maybe_snapshot(args.snapshot.map(PathBuf::from))
+        .copy_snapshot(args.copy_snapshot)
         .op_rbuilder_image(args.docker_images.op_rbuilder_image)
         .op_rbuilder_tag(args.docker_images.op_rbuilder_tag)
         .op_deployer_image(args.docker_images.op_deployer_image)
@@ -275,7 +287,7 @@ async fn run_spam_after_deploy(
 ) -> Result<()> {
     // Reload from disk since deploy() consumes the Deployer.
     // This also picks up any state written during deployment.
-    let deployer = Deployer::load_from_file(&config_path.to_path_buf())?;
+    let deployer = Deployer::load_from_file(config_path)?;
 
     // Resolve RPC URL from the primary sequencer
     let rpc_url = deployer.l2_stack.sequencers[0].op_reth.docker_rpc_url();
@@ -315,7 +327,10 @@ async fn resolve_l1_config(l1_source: Option<L1Source>) -> Result<(u64, Option<S
     let Some(source) = l1_source else {
         // Local mode: no forking, random L1 chain ID
         let chain_id = rand::rng().random_range(10000..=99999);
-        tracing::info!(l1_chain_id = chain_id, "Running in local mode without L1 forking");
+        tracing::info!(
+            l1_chain_id = chain_id,
+            "Running in local mode without L1 forking"
+        );
         return Ok((chain_id, None));
     };
 
@@ -332,7 +347,7 @@ async fn resolve_l1_config(l1_source: Option<L1Source>) -> Result<(u64, Option<S
 /// Fetch the chain ID from an Ethereum RPC endpoint using eth_chainId.
 async fn fetch_chain_id(rpc_url: &str) -> Result<u64> {
     use anyhow::Context;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     let client = reqwest::Client::new();
     let response = client

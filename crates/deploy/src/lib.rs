@@ -15,8 +15,8 @@ mod deployment_hash;
 pub use deployment_hash::{DeploymentConfigHash, DeploymentVersion};
 
 mod docker;
-mod fs;
 pub mod faucet;
+mod fs;
 pub mod health;
 pub mod rpc;
 pub mod services;
@@ -34,6 +34,8 @@ pub use services::{
     AnvilAccounts,
     AnvilConfig,
     AnvilHandler,
+    // L2 Node types
+    ConductorContext,
     GRAFANA_DEFAULT_IMAGE,
     GRAFANA_DEFAULT_TAG,
     GrafanaConfig,
@@ -41,8 +43,6 @@ pub use services::{
     KONA_NODE_DEFAULT_TAG,
     KonaNodeBuilder,
     KonaNodeHandler,
-    // L2 Node types
-    ConductorContext,
     L2NodeBuilder,
     L2NodeHandler,
     L2NodeRole,

@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{
     AnvilConfig, AnvilHandler, DeploymentConfigHash, DeploymentVersion, KupDocker, KupDockerConfig,
     L2StackBuilder, MetricsTarget, MonitoringConfig, OpBatcherHandler, OpChallengerHandler,
-    OpDeployerConfig, OpProposerHandler, services, services::l2_node::L2NodeHandler,
-    services::MonitoringHandler,
+    OpDeployerConfig, OpProposerHandler, fs, services, services::MonitoringHandler,
+    services::l2_node::L2NodeHandler,
 };
 
 /// The default name for the kupcake configuration file.
@@ -19,8 +19,10 @@ pub struct L2StackHandler {
     /// Handlers for validator nodes.
     pub validators: Vec<L2NodeHandler>,
     pub op_batcher: OpBatcherHandler,
-    pub op_proposer: OpProposerHandler,
-    pub op_challenger: OpChallengerHandler,
+    /// None when restored from snapshot (no state.json available).
+    pub op_proposer: Option<OpProposerHandler>,
+    /// None when restored from snapshot (no state.json available).
+    pub op_challenger: Option<OpChallengerHandler>,
 }
 
 /// Deployment result containing all service handlers.
@@ -85,6 +87,14 @@ pub struct Deployer {
     /// Whether to run in detached mode (exit after deployment).
     #[serde(default)]
     pub detach: bool,
+
+    /// Path to a snapshot directory for restoring from an existing op-reth database.
+    #[serde(skip)]
+    pub snapshot: Option<PathBuf>,
+
+    /// When true, copy the snapshot reth database instead of symlinking it.
+    #[serde(skip)]
+    pub copy_snapshot: bool,
 }
 
 impl Deployer {
@@ -99,7 +109,7 @@ impl Deployer {
     }
 
     /// Load the configuration from a TOML file.
-    pub fn load_from_file(path: &PathBuf) -> Result<Self> {
+    pub fn load_from_file(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Err(anyhow::anyhow!(
                 "Configuration file or directory not found: {}",
@@ -139,8 +149,8 @@ impl Deployer {
     /// - Configuration hash has changed
     fn needs_contract_deployment(
         force_deploy: bool,
-        l2_nodes_data_path: &PathBuf,
-        version_file_path: &PathBuf,
+        l2_nodes_data_path: &Path,
+        version_file_path: &Path,
         current_hash: &str,
     ) -> bool {
         if force_deploy {
@@ -252,28 +262,32 @@ impl Deployer {
             layer_label: "batcher".to_string(),
         });
 
-        targets.push(MetricsTarget {
-            job_name: "op-proposer".to_string(),
-            container_name: l2_stack.op_proposer.container_name.clone(),
-            port: PROPOSER_METRICS_PORT,
-            service_label: "op-proposer".to_string(),
-            layer_label: "proposer".to_string(),
-        });
+        if let Some(ref proposer) = l2_stack.op_proposer {
+            targets.push(MetricsTarget {
+                job_name: "op-proposer".to_string(),
+                container_name: proposer.container_name.clone(),
+                port: PROPOSER_METRICS_PORT,
+                service_label: "op-proposer".to_string(),
+                layer_label: "proposer".to_string(),
+            });
+        }
 
-        targets.push(MetricsTarget {
-            job_name: "op-challenger".to_string(),
-            container_name: l2_stack.op_challenger.container_name.clone(),
-            port: CHALLENGER_METRICS_PORT,
-            service_label: "op-challenger".to_string(),
-            layer_label: "challenger".to_string(),
-        });
+        if let Some(ref challenger) = l2_stack.op_challenger {
+            targets.push(MetricsTarget {
+                job_name: "op-challenger".to_string(),
+                container_name: challenger.container_name.clone(),
+                port: CHALLENGER_METRICS_PORT,
+                service_label: "op-challenger".to_string(),
+                layer_label: "challenger".to_string(),
+            });
+        }
 
         targets
     }
 
     /// Print detached mode information including container names and stop command.
     fn print_detached_info(
-        outdata: &PathBuf,
+        outdata: &Path,
         anvil: &AnvilHandler,
         l2_stack: &L2StackHandler,
         monitoring: &Option<MonitoringHandler>,
@@ -297,8 +311,12 @@ impl Deployer {
 
         // Add L2 stack service containers
         container_names.push(l2_stack.op_batcher.container_name.clone());
-        container_names.push(l2_stack.op_proposer.container_name.clone());
-        container_names.push(l2_stack.op_challenger.container_name.clone());
+        if let Some(ref proposer) = l2_stack.op_proposer {
+            container_names.push(proposer.container_name.clone());
+        }
+        if let Some(ref challenger) = l2_stack.op_challenger {
+            container_names.push(challenger.container_name.clone());
+        }
 
         // Add monitoring containers if present
         if let Some(mon) = monitoring {
@@ -316,7 +334,10 @@ impl Deployer {
         // Print the detached mode information
         tracing::info!("✓ Detached mode enabled. Containers are running in the background.");
         tracing::info!("");
-        tracing::info!("Configuration saved to: {}", outdata.join(KUPCONF_FILENAME).display());
+        tracing::info!(
+            "Configuration saved to: {}",
+            outdata.join(KUPCONF_FILENAME).display()
+        );
         tracing::info!("");
         tracing::info!("Running containers:");
         for name in &container_names {
@@ -330,6 +351,142 @@ impl Deployer {
         tracing::info!("");
         tracing::info!("To view logs:");
         tracing::info!("  docker logs <container-name>");
+    }
+
+    /// Restore L2 config files from an existing op-reth snapshot.
+    ///
+    /// Steps:
+    /// 1. Validate snapshot dir has `rollup.json` and a reth-data subdirectory
+    /// 2. Create l2-stack directory
+    /// 3. Obtain intent.toml (from snapshot or via `op-deployer init --intent-type standard-overrides`)
+    /// 4. Generate genesis.json via `op-deployer inspect genesis`
+    /// 5. Copy rollup.json from snapshot
+    /// 6. Symlink (or copy) the reth database for the primary sequencer
+    #[allow(clippy::too_many_arguments)]
+    async fn restore_from_snapshot(
+        docker: &mut KupDocker,
+        op_deployer: &OpDeployerConfig,
+        l2_nodes_data_path: &PathBuf,
+        snapshot_path: &PathBuf,
+        l1_chain_id: u64,
+        l2_chain_id: u64,
+        sequencer_container_name: &str,
+        copy_snapshot: bool,
+    ) -> Result<()> {
+        // Validate required files
+        let rollup_src = snapshot_path.join("rollup.json");
+        if !rollup_src.exists() {
+            anyhow::bail!(
+                "Snapshot directory is missing rollup.json: {}",
+                snapshot_path.display()
+            );
+        }
+
+        // Find the reth database subdirectory (expect exactly one)
+        let subdirs: Vec<_> = std::fs::read_dir(snapshot_path)
+            .context("Failed to read snapshot directory")?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+            .collect();
+
+        let reth_db_dir = match subdirs.len() {
+            0 => anyhow::bail!(
+                "Snapshot directory has no subdirectory (expected reth database): {}",
+                snapshot_path.display()
+            ),
+            1 => subdirs
+                .into_iter()
+                .next()
+                .map(|e| e.path())
+                .context("unreachable")?,
+            n => anyhow::bail!(
+                "Snapshot directory has {} subdirectories, expected exactly one reth database directory. Found: {}",
+                n,
+                subdirs
+                    .iter()
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+
+        tracing::info!(
+            snapshot = %snapshot_path.display(),
+            reth_db = %reth_db_dir.display(),
+            "Restoring from snapshot"
+        );
+
+        // Create l2-stack directory
+        fs::FsHandler::create_host_config_directory(l2_nodes_data_path)?;
+
+        // Handle intent.toml: copy from snapshot if present, otherwise generate
+        let intent_src = snapshot_path.join("intent.toml");
+        if intent_src.exists() {
+            tracing::info!("Copying intent.toml from snapshot");
+            std::fs::copy(&intent_src, l2_nodes_data_path.join("intent.toml"))
+                .context("Failed to copy intent.toml from snapshot")?;
+        } else {
+            tracing::info!("Generating intent.toml via op-deployer init (standard-overrides)");
+            op_deployer
+                .generate_intent_file_with_type(
+                    docker,
+                    l2_nodes_data_path,
+                    l1_chain_id,
+                    l2_chain_id,
+                    "standard-overrides",
+                )
+                .await
+                .context("Failed to generate intent.toml for snapshot restore")?;
+        }
+
+        // Generate genesis.json from intent
+        tracing::info!("Generating genesis.json via op-deployer inspect genesis");
+        op_deployer
+            .generate_genesis_from_intent(docker, l2_nodes_data_path, l2_chain_id)
+            .await
+            .context("Failed to generate genesis.json for snapshot restore")?;
+
+        // Copy rollup.json from snapshot
+        tracing::info!("Copying rollup.json from snapshot");
+        std::fs::copy(&rollup_src, l2_nodes_data_path.join("rollup.json"))
+            .context("Failed to copy rollup.json from snapshot")?;
+
+        // Link or copy the reth database for the primary sequencer
+        let reth_data_dst =
+            l2_nodes_data_path.join(format!("reth-data-{}", sequencer_container_name));
+
+        if copy_snapshot {
+            tracing::info!(
+                src = %reth_db_dir.display(),
+                dst = %reth_data_dst.display(),
+                "Copying reth database from snapshot (this may take a while)"
+            );
+            fs::FsHandler::copy_dir_recursive(&reth_db_dir, &reth_data_dst)
+                .await
+                .context("Failed to copy reth database from snapshot")?;
+        } else {
+            let canonical_src = reth_db_dir
+                .canonicalize()
+                .context("Failed to canonicalize snapshot reth-data path")?;
+
+            tracing::info!(
+                src = %canonical_src.display(),
+                dst = %reth_data_dst.display(),
+                "Symlinking reth database from snapshot"
+            );
+
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&canonical_src, &reth_data_dst)
+                .context("Failed to create symlink for reth database")?;
+
+            #[cfg(not(unix))]
+            anyhow::bail!(
+                "Snapshot symlinks are only supported on Unix systems. Use --copy-snapshot instead."
+            );
+        }
+
+        tracing::info!("Snapshot restore complete");
+        Ok(())
     }
 
     pub async fn deploy(self, force_deploy: bool, wait_for_exit: bool) -> Result<DeploymentResult> {
@@ -361,48 +518,74 @@ impl Deployer {
         // Deploy L1 contracts - the deployer output goes to the same directory
         // that will be used for L2 nodes config (genesis.json, rollup.json)
         let l2_nodes_data_path = self.outdata.join("l2-stack");
-        let version_file_path = l2_nodes_data_path.join(".deployment-version.json");
 
-        // Determine if we need to deploy contracts
-        let needs_deployment = Self::needs_contract_deployment(
-            force_deploy,
-            &l2_nodes_data_path,
-            &version_file_path,
-            &current_hash,
-        );
+        if let Some(ref snapshot_path) = self.snapshot {
+            // Snapshot mode: restore from existing reth database, skip contract deployment
+            let sequencer_name = self.l2_stack.sequencers[0].op_reth.container_name.clone();
+            Self::restore_from_snapshot(
+                &mut docker,
+                &self.op_deployer,
+                &l2_nodes_data_path,
+                snapshot_path,
+                self.l1_chain_id,
+                self.l2_chain_id,
+                &sequencer_name,
+                self.copy_snapshot,
+            )
+            .await
+            .context("Failed to restore from snapshot")?;
+        } else {
+            // Normal mode: deploy contracts if needed
+            let version_file_path = l2_nodes_data_path.join(".deployment-version.json");
 
-        if needs_deployment {
-            tracing::info!("Deploying L1 contracts...");
-
-            self.op_deployer
-                .deploy_contracts(
-                    &mut docker,
-                    l2_nodes_data_path.clone(),
-                    &anvil,
-                    self.l1_chain_id,
-                    self.l2_chain_id,
-                )
-                .await?;
-
-            // Save version file after successful deployment
-            let version = DeploymentVersion::new(current_hash.clone());
-            version
-                .save_to_file(&version_file_path)
-                .context("Failed to save deployment version")?;
-
-            tracing::info!(
-                config_hash = %current_hash,
-                "Deployment version saved"
+            let needs_deployment = Self::needs_contract_deployment(
+                force_deploy,
+                &l2_nodes_data_path,
+                &version_file_path,
+                &current_hash,
             );
+
+            if needs_deployment {
+                tracing::info!("Deploying L1 contracts...");
+
+                self.op_deployer
+                    .deploy_contracts(
+                        &mut docker,
+                        l2_nodes_data_path.clone(),
+                        &anvil,
+                        self.l1_chain_id,
+                        self.l2_chain_id,
+                    )
+                    .await?;
+
+                // Save version file after successful deployment
+                let version = DeploymentVersion::new(current_hash.clone());
+                version
+                    .save_to_file(&version_file_path)
+                    .context("Failed to save deployment version")?;
+
+                tracing::info!(
+                    config_hash = %current_hash,
+                    "Deployment version saved"
+                );
+            }
         }
 
+        let skip_proposer_challenger = self.snapshot.is_some();
+
         let node_count = self.l2_stack.node_count();
+        let services_label = if skip_proposer_challenger {
+            "op-batcher"
+        } else {
+            "op-batcher + op-proposer + op-challenger"
+        };
         tracing::info!(
             node_count,
             sequencer_count = self.l2_stack.sequencers.len(),
             validator_count = self.l2_stack.validators.len(),
-            "Starting L2 stack ({} node(s) + op-batcher + op-proposer + op-challenger)...",
-            node_count
+            "Starting L2 stack ({} node(s) + {})...",
+            node_count,
+            services_label,
         );
 
         let l2_stack = self
@@ -412,6 +595,7 @@ impl Deployer {
                 l2_nodes_data_path.clone(),
                 &anvil,
                 self.l1_chain_id,
+                skip_proposer_challenger,
             )
             .await
             .context("Failed to start L2 stack")?;
@@ -463,10 +647,10 @@ impl Deployer {
             }
 
             // Log op-conductor endpoints if present
-            if let Some(ref conductor) = node.op_conductor {
-                if let Some(ref url) = conductor.rpc_host_url {
-                    tracing::info!("L2 {} (op-conductor) RPC:     {}", label, url);
-                }
+            if let Some(ref conductor) = node.op_conductor
+                && let Some(ref url) = conductor.rpc_host_url
+            {
+                tracing::info!("L2 {} (op-conductor) RPC:     {}", label, url);
             }
         }
 
@@ -541,8 +725,12 @@ impl Deployer {
         }
 
         tracing::info!("Op Batcher RPC:       {}", l2_stack.op_batcher.rpc_url);
-        tracing::info!("Op Proposer RPC:      {}", l2_stack.op_proposer.rpc_url);
-        tracing::info!("Op Challenger RPC:    {}", l2_stack.op_challenger.rpc_url);
+        if let Some(ref proposer) = l2_stack.op_proposer {
+            tracing::info!("Op Proposer RPC:      {}", proposer.rpc_url);
+        }
+        if let Some(ref challenger) = l2_stack.op_challenger {
+            tracing::info!("Op Challenger RPC:    {}", challenger.rpc_url);
+        }
 
         tracing::info!("");
 
@@ -563,6 +751,10 @@ impl Deployer {
             }
         }
 
-        Ok(DeploymentResult { anvil, l2_stack, _docker: docker })
+        Ok(DeploymentResult {
+            anvil,
+            l2_stack,
+            _docker: docker,
+        })
     }
 }

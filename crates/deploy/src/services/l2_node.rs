@@ -1,6 +1,6 @@
 //! L2 Node combining op-reth execution client and kona-node consensus client.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -23,7 +23,10 @@ async fn wait_for_execution_rpc_ready(rpc_url: &str, timeout_secs: u64) -> anyho
 
     loop {
         if start.elapsed() > max_duration {
-            anyhow::bail!("Timeout waiting for execution RPC at {} to be ready", rpc_url);
+            anyhow::bail!(
+                "Timeout waiting for execution RPC at {} to be ready",
+                rpc_url
+            );
         }
 
         let response = client
@@ -37,16 +40,12 @@ async fn wait_for_execution_rpc_ready(rpc_url: &str, timeout_secs: u64) -> anyho
             .send()
             .await;
 
-        match response {
-            Ok(resp) => {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    if body.get("result").is_some() {
-                        tracing::debug!(rpc_url = %rpc_url, "Execution RPC is ready");
-                        return Ok(());
-                    }
-                }
-            }
-            Err(_) => {}
+        if let Ok(resp) = response
+            && let Ok(body) = resp.json::<serde_json::Value>().await
+            && body.get("result").is_some()
+        {
+            tracing::debug!(rpc_url = %rpc_url, "Execution RPC is ready");
+            return Ok(());
         }
 
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -83,17 +82,14 @@ async fn wait_for_consensus_rpc_ready(rpc_url: &str, timeout_secs: u64) -> anyho
             .send()
             .await;
 
-        match response {
-            Ok(resp) => {
-                if let Ok(body) = resp.json::<serde_json::Value>().await {
-                    // Accept either a result or even an error - as long as we get a JSON-RPC response
-                    if body.get("result").is_some() || body.get("error").is_some() {
-                        tracing::debug!(rpc_url = %rpc_url, "Consensus RPC is ready");
-                        return Ok(());
-                    }
-                }
+        if let Ok(resp) = response
+            && let Ok(body) = resp.json::<serde_json::Value>().await
+        {
+            // Accept either a result or even an error - as long as we get a JSON-RPC response
+            if body.get("result").is_some() || body.get("error").is_some() {
+                tracing::debug!(rpc_url = %rpc_url, "Consensus RPC is ready");
+                return Ok(());
             }
-            Err(_) => {}
         }
 
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -215,7 +211,7 @@ impl L2NodeBuilder {
 
     /// Write a JWT secret to a file for this node pair.
     async fn write_jwt_secret(
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
         node_id: &str,
     ) -> Result<String, anyhow::Error> {
         let jwt_secret = Self::generate_jwt_secret();
@@ -252,10 +248,11 @@ impl L2NodeBuilder {
     /// * `conductor_context` - Context for op-conductor startup (leader, follower, or none).
     /// * `sequencer_flashblocks_relay_url` - Optional flashblocks relay URL from the sequencer's kona-node.
     ///   For validators, this provides the sequencer's relay WS URL so the validator's kona-node can subscribe.
+    #[allow(clippy::too_many_arguments)]
     pub async fn start(
         &self,
         docker: &mut KupDocker,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
         anvil_handler: &AnvilHandler,
         sequencer_rpc: Option<&Url>,
         kona_node_enodes: &mut Vec<String>,
@@ -293,9 +290,10 @@ impl L2NodeBuilder {
         // Pre-compute conductor RPC URL if conductor is configured
         // kona-node needs this at startup to enable conductor control mode
         // The conductor will be started after kona-node, but kona-node needs the URL now
-        let conductor_rpc_url = self.op_conductor.as_ref().map(|c| {
-            format!("http://{}:{}/", c.container_name, c.rpc_port)
-        });
+        let conductor_rpc_url = self
+            .op_conductor
+            .as_ref()
+            .map(|c| format!("http://{}:{}/", c.container_name, c.rpc_port));
 
         // Determine if this sequencer is the Raft leader (first sequencer starts active)
         let is_conductor_leader = matches!(conductor_context, ConductorContext::Leader { .. });

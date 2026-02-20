@@ -3,7 +3,7 @@
 mod cmd;
 pub mod rpc;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -86,8 +86,7 @@ pub struct OpRethBuilder {
 }
 
 /// Default Docker image for op-reth.
-pub const DEFAULT_DOCKER_IMAGE: &str =
-    "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-reth";
+pub const DEFAULT_DOCKER_IMAGE: &str = "us-docker.pkg.dev/oplabs-tools-artifacts/images/op-reth";
 /// Default Docker tag for op-reth.
 pub const DEFAULT_DOCKER_TAG: &str = "develop";
 
@@ -183,7 +182,7 @@ impl OpRethBuilder {
     pub async fn start(
         &self,
         docker: &mut KupDocker,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
         sequencer_rpc: Option<&Url>,
         jwt_filename: &str,
         bootnodes: &[String],

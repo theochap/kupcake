@@ -5,8 +5,8 @@ use kupcake_deploy::{
     OP_BATCHER_DEFAULT_TAG, OP_CHALLENGER_DEFAULT_IMAGE, OP_CHALLENGER_DEFAULT_TAG,
     OP_CONDUCTOR_DEFAULT_IMAGE, OP_CONDUCTOR_DEFAULT_TAG, OP_DEPLOYER_DEFAULT_IMAGE,
     OP_DEPLOYER_DEFAULT_TAG, OP_PROPOSER_DEFAULT_IMAGE, OP_PROPOSER_DEFAULT_TAG,
-    OP_RBUILDER_DEFAULT_IMAGE, OP_RBUILDER_DEFAULT_TAG, OP_RETH_DEFAULT_IMAGE,
-    OP_RETH_DEFAULT_TAG, PROMETHEUS_DEFAULT_IMAGE, PROMETHEUS_DEFAULT_TAG,
+    OP_RBUILDER_DEFAULT_IMAGE, OP_RBUILDER_DEFAULT_TAG, OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG,
+    PROMETHEUS_DEFAULT_IMAGE, PROMETHEUS_DEFAULT_TAG,
 };
 use tracing::level_filters::LevelFilter;
 
@@ -60,13 +60,13 @@ pub enum L2Chain {
 }
 
 impl L2Chain {
-    pub fn to_chain_id(&self) -> u64 {
+    pub fn chain_id(self) -> u64 {
         match self {
             L2Chain::OpSepolia => 11155420,
             L2Chain::OpMainnet => 10,
             L2Chain::BaseSepolia => 84532,
             L2Chain::BaseMainnet => 8453,
-            L2Chain::Custom(id) => *id,
+            L2Chain::Custom(id) => id,
         }
     }
 }
@@ -96,6 +96,7 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub enum Commands {
     /// Deploy a new OP Stack network (default command).
     Deploy(DeployArgs),
@@ -297,6 +298,25 @@ pub struct DeployArgs {
     #[arg(long, alias = "l2", env = "KUP_L2_CHAIN")]
     pub l2_chain: Option<L2Chain>,
 
+    /// Restore the L2 network from an existing op-reth database snapshot.
+    ///
+    /// The snapshot directory must contain:
+    /// - `rollup.json` — rollup config for kona-node
+    /// - A subdirectory with the op-reth database
+    /// - Optionally `intent.toml` (generated if missing)
+    ///
+    /// Requires `--l1` to be set (fork mode). Only the primary sequencer is
+    /// restored from the snapshot; validators sync via P2P.
+    #[arg(long, env = "KUP_SNAPSHOT", conflicts_with = "redeploy")]
+    pub snapshot: Option<String>,
+
+    /// Copy the snapshot reth database instead of symlinking it.
+    ///
+    /// By default, a symlink is created to avoid duplicating large databases.
+    /// Use this flag when you need an independent copy of the data.
+    #[arg(long, env = "KUP_COPY_SNAPSHOT", requires = "snapshot")]
+    pub copy_snapshot: bool,
+
     /// Redeploy all contracts.
     /// If not provided and the deployer data directory exists, the contracts will not be redeployed.
     #[arg(long, env = "KUP_REDEPLOY", default_value_t = false)]
@@ -402,6 +422,8 @@ impl Default for DeployArgs {
             network: None,
             l1: None, // Local mode by default (random chain ID)
             l2_chain: None,
+            snapshot: None,
+            copy_snapshot: false,
             redeploy: false,
             outdata: None,
             no_cleanup: false,
