@@ -2,7 +2,7 @@
 
 mod cmd;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -11,8 +11,7 @@ use url::Url;
 pub use cmd::OpBatcherCmdBuilder;
 
 use crate::docker::{
-    CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping,
-    ServiceConfig,
+    CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig,
 };
 
 use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethHandler};
@@ -96,7 +95,7 @@ impl OpBatcherBuilder {
     pub async fn start(
         &self,
         docker: &mut KupDocker,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
         anvil_handler: &AnvilHandler,
         op_reth_handler: &OpRethHandler,
         kona_node_handler: &KonaNodeHandler,

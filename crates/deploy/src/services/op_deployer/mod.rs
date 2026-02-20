@@ -1,6 +1,6 @@
 //! OP Deployer service for deploying L1 contracts.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -106,8 +106,8 @@ impl OpDeployerConfig {
         docker: &mut KupDocker,
         image: &DockerImage,
         container_name: &str,
-        host_config_path: &PathBuf,
-        container_config_path: &PathBuf,
+        host_config_path: &Path,
+        container_config_path: &Path,
         cmd: Vec<String>,
     ) -> Result<(), anyhow::Error> {
         let mut service_config = ServiceConfig::new(image.clone()).cmd(cmd).bind(
@@ -156,9 +156,9 @@ impl OpDeployerConfig {
     async fn generate_intent_file(
         &self,
         docker: &mut KupDocker,
-        image: &DockerImage,
-        host_config_path: &PathBuf,
-        container_config_path: &PathBuf,
+        _image: &DockerImage,
+        host_config_path: &Path,
+        _container_config_path: &Path,
         l1_chain_id: u64,
         l2_chain_id: u64,
     ) -> Result<PathBuf, anyhow::Error> {
@@ -170,50 +170,22 @@ impl OpDeployerConfig {
             "custom"
         };
 
-        let cmd = vec![
-            "op-deployer".to_string(),
-            "--cache-dir".to_string(),
-            container_config_path.join(".cache").display().to_string(),
-            "init".to_string(),
-            "--l1-chain-id".to_string(),
-            l1_chain_id.to_string(),
-            "--l2-chain-ids".to_string(),
-            l2_chain_id.to_string(),
-            "--workdir".to_string(),
-            container_config_path.display().to_string(),
-            "--intent-type".to_string(),
-            intent_type.to_string(),
-        ];
-
-        tracing::debug!(l2_chain_id, "Deploying contracts");
-
-        self.run_docker_container(
+        self.generate_intent_file_with_type(
             docker,
-            image,
-            &format!("{}-init", self.container_name),
             host_config_path,
-            container_config_path,
-            cmd,
+            l1_chain_id,
+            l2_chain_id,
+            intent_type,
         )
-        .await?;
-
-        // Wait for the intent file to be created
-        let config_file_path = host_config_path.join("intent.toml");
-        FsHandler::wait_for_file(&config_file_path, std::time::Duration::from_secs(30))
-            .await
-            .context("Op Deployer config file was not created in time")?;
-
-        tracing::debug!(?config_file_path, "Op Deployer intent file created");
-
-        Ok(config_file_path)
+        .await
     }
 
     async fn apply_contract_deployments(
         &self,
         docker: &mut KupDocker,
         image: &DockerImage,
-        host_config_path: &PathBuf,
-        container_config_path: &PathBuf,
+        host_config_path: &Path,
+        container_config_path: &Path,
         anvil_handler: &AnvilHandler,
     ) -> Result<(), anyhow::Error> {
         let cmd = vec![
@@ -240,14 +212,54 @@ impl OpDeployerConfig {
         Ok(())
     }
 
+    /// Run `op-deployer inspect <config_type>` to generate a single config file.
+    async fn inspect_config(
+        &self,
+        docker: &mut KupDocker,
+        host_config_path: &Path,
+        l2_chain_id: u64,
+        config_type: &str,
+    ) -> Result<PathBuf, anyhow::Error> {
+        let container_config_path = PathBuf::from("/data");
+        let container_config_path_str = container_config_path.display().to_string();
+
+        let cmd = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            format!(
+                "op-deployer --cache-dir {container_config_path_str}/.cache inspect {config_type} --workdir {container_config_path_str} {l2_chain_id} > {container_config_path_str}/{config_type}.json",
+            ),
+        ];
+
+        self.run_docker_container(
+            docker,
+            &self.docker_image,
+            &format!("{}-inspect-{}", self.container_name, config_type),
+            host_config_path,
+            &container_config_path,
+            cmd,
+        )
+        .await?;
+
+        let file_path = host_config_path.join(format!("{}.json", config_type));
+        FsHandler::wait_for_file(&file_path, std::time::Duration::from_secs(120))
+            .await
+            .with_context(|| format!("{}.json was not created in time", config_type))?;
+
+        tracing::debug!(?file_path, "{}.json generated", config_type);
+        Ok(file_path)
+    }
+
     async fn generate_config_files(
         &self,
         docker: &mut KupDocker,
         image: &DockerImage,
-        host_config_path: &PathBuf,
-        container_config_path: &PathBuf,
+        host_config_path: &Path,
+        container_config_path: &Path,
         l2_chain_id: u64,
     ) -> Result<(), anyhow::Error> {
+        // Note: we can't use inspect_config here because this method takes
+        // explicit image/container_config_path params from deploy_contracts.
         let container_config_path_str = container_config_path.display().to_string();
         let config_cmd = |config_type: &str| -> Vec<String> {
             vec![
@@ -279,13 +291,12 @@ impl OpDeployerConfig {
         )
         .await?;
 
-        // Wait for the rollup config file to be created
         let genesis_file_path = host_config_path.join("genesis.json");
         let rollup_file_path = host_config_path.join("rollup.json");
 
         let (genesis_result, rollup_result) = tokio::join!(
-            FsHandler::wait_for_file(&genesis_file_path, std::time::Duration::from_secs(30)),
-            FsHandler::wait_for_file(&rollup_file_path, std::time::Duration::from_secs(30)),
+            FsHandler::wait_for_file(&genesis_file_path, std::time::Duration::from_secs(120)),
+            FsHandler::wait_for_file(&rollup_file_path, std::time::Duration::from_secs(120)),
         );
 
         genesis_result.context("Op Deployer genesis config file was not created in time")?;
@@ -356,6 +367,69 @@ impl OpDeployerConfig {
         .context("Failed to generate config files")?;
 
         Ok(())
+    }
+
+    /// Generate only the genesis.json file from an existing intent.toml.
+    ///
+    /// Used in snapshot mode where contracts are already deployed on L1 and we only
+    /// need the genesis config (not rollup.json or state.json).
+    pub async fn generate_genesis_from_intent(
+        &self,
+        docker: &mut KupDocker,
+        host_config_path: &Path,
+        l2_chain_id: u64,
+    ) -> Result<(), anyhow::Error> {
+        self.inspect_config(docker, host_config_path, l2_chain_id, "genesis")
+            .await?;
+        Ok(())
+    }
+
+    /// Generate an intent.toml using op-deployer init with a specific intent type.
+    ///
+    /// Used in snapshot mode to generate a standard-overrides intent file.
+    pub async fn generate_intent_file_with_type(
+        &self,
+        docker: &mut KupDocker,
+        host_config_path: &Path,
+        l1_chain_id: u64,
+        l2_chain_id: u64,
+        intent_type: &str,
+    ) -> Result<PathBuf, anyhow::Error> {
+        let container_config_path = PathBuf::from("/data");
+
+        let cmd = vec![
+            "op-deployer".to_string(),
+            "--cache-dir".to_string(),
+            container_config_path.join(".cache").display().to_string(),
+            "init".to_string(),
+            "--l1-chain-id".to_string(),
+            l1_chain_id.to_string(),
+            "--l2-chain-ids".to_string(),
+            l2_chain_id.to_string(),
+            "--workdir".to_string(),
+            container_config_path.display().to_string(),
+            "--intent-type".to_string(),
+            intent_type.to_string(),
+        ];
+
+        self.run_docker_container(
+            docker,
+            &self.docker_image,
+            &format!("{}-init", self.container_name),
+            host_config_path,
+            &container_config_path,
+            cmd,
+        )
+        .await?;
+
+        let config_file_path = host_config_path.join("intent.toml");
+        FsHandler::wait_for_file(&config_file_path, std::time::Duration::from_secs(120))
+            .await
+            .context("intent.toml was not created in time")?;
+
+        tracing::debug!(?config_file_path, "intent.toml generated");
+
+        Ok(config_file_path)
     }
 
     /// Updates the intent.toml file with account addresses from Anvil.

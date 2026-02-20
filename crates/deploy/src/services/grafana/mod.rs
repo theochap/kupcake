@@ -1,13 +1,16 @@
 //! Grafana and Prometheus deployment for metrics collection and visualization.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{
-    docker::{CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig},
+    docker::{
+        CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping,
+        ServiceConfig,
+    },
     fs::FsHandler,
 };
 
@@ -187,7 +190,7 @@ impl MonitoringConfig {
     /// Generate the Prometheus configuration file based on running services.
     async fn generate_prometheus_config(
         &self,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
         targets: &[MetricsTarget],
     ) -> Result<PathBuf, anyhow::Error> {
         let mut scrape_configs = String::new();
@@ -253,7 +256,7 @@ scrape_configs:{}"#,
     /// Generate the Grafana datasource configuration.
     async fn generate_grafana_datasource(
         &self,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
     ) -> Result<PathBuf, anyhow::Error> {
         let datasource_content = format!(
             r#"apiVersion: 1
@@ -288,7 +291,7 @@ datasources:
     /// Generate the Grafana dashboard provisioning configuration.
     async fn generate_grafana_dashboard_provisioning(
         &self,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
     ) -> Result<PathBuf, anyhow::Error> {
         let dashboard_provisioning = r#"apiVersion: 1
 
@@ -319,8 +322,8 @@ providers:
     /// Copy dashboard files to the Grafana provisioning directory.
     async fn copy_dashboards(
         &self,
-        host_config_path: &PathBuf,
-        dashboards_source: &PathBuf,
+        host_config_path: &Path,
+        dashboards_source: &Path,
     ) -> Result<(), anyhow::Error> {
         let dashboards_dest = host_config_path.join("grafana/provisioning/dashboards");
 
@@ -348,7 +351,7 @@ providers:
     async fn start_prometheus(
         &self,
         docker: &mut KupDocker,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
     ) -> Result<PrometheusHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/etc/prometheus");
 
@@ -416,7 +419,7 @@ providers:
     async fn start_grafana(
         &self,
         docker: &mut KupDocker,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
     ) -> Result<GrafanaHandler, anyhow::Error> {
         // Grafana listens on port 3000 inside the container by default
         const GRAFANA_INTERNAL_PORT: u16 = 3000;
@@ -509,10 +512,11 @@ providers:
 
         // Copy dashboards if source is provided
         if let Some(dashboards_path) = dashboards_source
-            && dashboards_path.exists() {
-                self.copy_dashboards(&host_config_path, &dashboards_path)
-                    .await?;
-            }
+            && dashboards_path.exists()
+        {
+            self.copy_dashboards(&host_config_path, &dashboards_path)
+                .await?;
+        }
 
         tracing::info!("Starting Prometheus...");
         let prometheus_handler = self.start_prometheus(docker, &host_config_path).await?;

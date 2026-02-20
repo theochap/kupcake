@@ -213,7 +213,7 @@ impl ServiceConfig {
     }
 
     /// Add a volume bind.
-    pub fn bind(mut self, host_path: &PathBuf, container_path: &PathBuf, mode: &str) -> Self {
+    pub fn bind(mut self, host_path: &Path, container_path: &Path, mode: &str) -> Self {
         self.binds.push(format!(
             "{}:{}:{}",
             host_path.display(),
@@ -310,10 +310,7 @@ impl DockerImage {
     /// Create a DockerImage from a local binary/source path with an explicit cargo bin name.
     ///
     /// When `binary` points to a directory, `bin_name` is passed to `cargo build --bin`.
-    pub fn from_binary_with_name(
-        path: impl Into<PathBuf>,
-        bin_name: impl Into<String>,
-    ) -> Self {
+    pub fn from_binary_with_name(path: impl Into<PathBuf>, bin_name: impl Into<String>) -> Self {
         Self {
             image: None,
             tag: None,
@@ -431,18 +428,32 @@ impl Drop for KupDocker {
                 .into_iter()
                 .collect::<Result<Vec<_>>>()?;
 
-            // Remove network if it exists
+            // Remove network if it exists (ignore if already removed)
             tracing::trace!(self.network_id, "Removing network");
-            docker
-                .remove_network(&self.network_id)
-                .await
-                .context("Failed to remove network")?;
-            tracing::trace!(self.network_id, "Network removed");
+            match docker.remove_network(&self.network_id).await {
+                Ok(_) => tracing::trace!(self.network_id, "Network removed"),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("No such network") || msg.contains("not found") {
+                        tracing::debug!(self.network_id, "Network already removed");
+                    } else {
+                        anyhow::bail!("Failed to remove network: {}", e);
+                    }
+                }
+            }
 
             Ok::<_, anyhow::Error>(())
         };
 
-        if let Err(e) = block_on(cleanup) {
+        // Prefer tokio's runtime when available so that bollard's I/O futures
+        // and tokio::time::timeout are properly driven. Fall back to the
+        // futures executor when no tokio runtime is present.
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(cleanup)),
+            Err(_) => block_on(cleanup),
+        };
+
+        if let Err(e) = result {
             tracing::error!(error = ?e, "Failed to cleanup containers and networks");
             return;
         }
@@ -548,8 +559,12 @@ impl KupDocker {
         self.pull_image("debian", "trixie-slim").await?;
 
         // Create tar archive with Dockerfile and binary
-        let tar_bytes = Self::create_build_context(&binary_path)
-            .with_context(|| format!("Failed to create build context for {}", binary_path.display()))?;
+        let tar_bytes = Self::create_build_context(&binary_path).with_context(|| {
+            format!(
+                "Failed to create build context for {}",
+                binary_path.display()
+            )
+        })?;
 
         // Build the image
         let build_options = BuildImageOptions {
@@ -560,16 +575,13 @@ impl KupDocker {
             ..Default::default()
         };
 
-        let mut build_stream = self.docker.build_image(
-            build_options,
-            None,
-            Some(tar_bytes.into()),
-        );
+        let mut build_stream = self
+            .docker
+            .build_image(build_options, None, Some(tar_bytes.into()));
 
         // Process build stream and check for errors
         while let Some(result) = build_stream.next().await {
-            let build_info = result
-                .map_err(|e| anyhow::anyhow!("Docker build error: {}", e))?;
+            let build_info = result.map_err(|e| anyhow::anyhow!("Docker build error: {}", e))?;
 
             // Log build progress
             if let Some(stream) = &build_info.stream {
@@ -602,7 +614,8 @@ impl KupDocker {
         let mut buffer = [0u8; 8192];
 
         loop {
-            let bytes_read = file.read(&mut buffer)
+            let bytes_read = file
+                .read(&mut buffer)
                 .with_context(|| format!("Failed to read file: {}", path.display()))?;
 
             if bytes_read == 0 {
@@ -686,13 +699,8 @@ ENTRYPOINT [\"/binary\"]
         }
 
         // Build from source — bin_name field holds the cargo binary name
-        let bin_name = docker_image
-            .bin_name
-            .as_deref()
-            .unwrap_or(service_name);
-        let built = self
-            .build_binary_from_source(binary_path, bin_name)
-            .await?;
+        let bin_name = docker_image.bin_name.as_deref().unwrap_or(service_name);
+        let built = self.build_binary_from_source(binary_path, bin_name).await?;
         self.build_local_image(&built, service_name).await
     }
 
@@ -732,11 +740,7 @@ ENTRYPOINT [\"/binary\"]
     ///
     /// # Returns
     /// Path to the built binary.
-    async fn build_binary_from_source(
-        &self,
-        source_dir: &Path,
-        bin_name: &str,
-    ) -> Result<PathBuf> {
+    async fn build_binary_from_source(&self, source_dir: &Path, bin_name: &str) -> Result<PathBuf> {
         let cargo_toml = source_dir.join("Cargo.toml");
         if !cargo_toml.exists() {
             anyhow::bail!(
@@ -795,10 +799,7 @@ ENTRYPOINT [\"/binary\"]
             cmd.env(&env_key, &linker);
         }
 
-        let output = cmd
-            .output()
-            .await
-            .context("Failed to run cargo build")?;
+        let output = cmd.output().await.context("Failed to run cargo build")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -854,7 +855,7 @@ ENTRYPOINT [\"/binary\"]
             [0xfe, 0xed, 0xfa, 0xce]  // MH_MAGIC
             | [0xce, 0xfa, 0xed, 0xfe]  // MH_CIGAM
             | [0xfe, 0xed, 0xfa, 0xcf]  // MH_MAGIC_64
-            | [0xcf, 0xfa, 0xed, 0xfe]  // MH_CIGAM_64
+            | [0xcf, 0xfa, 0xed, 0xfe] // MH_CIGAM_64
         );
 
         if is_macho {
@@ -925,9 +926,11 @@ ENTRYPOINT [\"/binary\"]
             .context("Failed to create Docker network")?;
 
         // Use the network ID from the response, or fall back to the network name
-        let network_id = (!response.id.is_empty())
-            .then_some(response.id)
-            .unwrap_or(network_name.to_string());
+        let network_id = if !response.id.is_empty() {
+            response.id
+        } else {
+            network_name.to_string()
+        };
 
         tracing::trace!(network_id, "Docker network created");
 
@@ -1076,7 +1079,11 @@ ENTRYPOINT [\"/binary\"]
         let exit_code = inspect.state.and_then(|s| s.exit_code).unwrap_or(-1);
 
         if exit_code != 0 {
-            anyhow::bail!("Container {} exited with code {}", container_name, exit_code);
+            anyhow::bail!(
+                "Container {} exited with code {}",
+                container_name,
+                exit_code
+            );
         }
 
         tracing::info!(container_name, "Container completed successfully");
@@ -1312,7 +1319,9 @@ ENTRYPOINT [\"/binary\"]
         config: ServiceConfig,
         options: CreateAndStartContainerOptions,
     ) -> Result<ServiceHandler> {
-        let image = self.ensure_image_ready(&config.image, container_name).await?;
+        let image = self
+            .ensure_image_ready(&config.image, container_name)
+            .await?;
 
         let container_config =
             self.build_container_config(config, image, ContainerConfigOptions::default());
@@ -1376,7 +1385,9 @@ ENTRYPOINT [\"/binary\"]
             names::Generator::default().next().unwrap_or_default()
         );
 
-        let image = self.ensure_image_ready(&config.image, &container_name).await?;
+        let image = self
+            .ensure_image_ready(&config.image, &container_name)
+            .await?;
 
         let container_config = self.build_container_config(
             config,
@@ -1436,7 +1447,6 @@ ENTRYPOINT [\"/binary\"]
 
         output
     }
-
 }
 
 #[derive(Default)]
@@ -1446,7 +1456,6 @@ pub struct CreateAndStartContainerOptions {
     pub stream_logs: bool,
     pub collect_logs: bool,
 }
-
 
 /// Options for building a container configuration.
 #[derive(Default)]
@@ -1461,8 +1470,8 @@ struct ContainerConfigOptions {
 /// It finds all containers whose names start with the given prefix, stops and removes them,
 /// then removes the associated network.
 pub async fn cleanup_by_prefix(prefix: &str) -> Result<CleanupResult> {
-    let docker = Docker::connect_with_local_defaults()
-        .context("Failed to connect to Docker daemon")?;
+    let docker =
+        Docker::connect_with_local_defaults().context("Failed to connect to Docker daemon")?;
 
     let mut result = CleanupResult::default();
 

@@ -3,7 +3,7 @@
 mod cmd;
 pub mod rpc;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use k256::ecdsa::SigningKey;
@@ -40,7 +40,7 @@ pub fn is_known_l1_chain(chain_id: u64) -> bool {
 /// This is needed because kona-node doesn't have custom chain IDs in its registry.
 /// The config specifies that all hardforks are activated from genesis.
 async fn generate_local_l1_config_from_rpc(
-    host_config_path: &PathBuf,
+    host_config_path: &Path,
     l1_rpc_url: &str,
     block_time: u64,
 ) -> Result<PathBuf, anyhow::Error> {
@@ -258,8 +258,7 @@ pub struct KonaNodeBuilder {
 }
 
 /// Default Docker image for kona-node.
-pub const DEFAULT_DOCKER_IMAGE: &str =
-    "us-docker.pkg.dev/oplabs-tools-artifacts/images/kona-node";
+pub const DEFAULT_DOCKER_IMAGE: &str = "us-docker.pkg.dev/oplabs-tools-artifacts/images/kona-node";
 /// Default Docker tag for kona-node.
 pub const DEFAULT_DOCKER_TAG: &str = "develop";
 
@@ -336,10 +335,11 @@ impl KonaNodeBuilder {
     ///   active, while followers start in stopped state waiting for conductor to activate them.
     /// * `flashblocks_builder_url` - Optional flashblocks builder WebSocket URL. For sequencers,
     ///   this is the op-rbuilder WS URL. For validators, this is the sequencer's kona-node relay URL.
+    #[allow(clippy::too_many_arguments)]
     pub async fn start(
         &self,
         docker: &mut KupDocker,
-        host_config_path: &PathBuf,
+        host_config_path: &Path,
         anvil_handler: &AnvilHandler,
         op_reth_handler: &OpRethHandler,
         role: L2NodeRole,

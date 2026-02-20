@@ -696,8 +696,8 @@ Override default Docker images for any service.
 ### op-rbuilder (Flashblocks Execution)
 
 ```bash
---op-rbuilder-image <IMAGE> # Default: ghcr.io/flashbots/op-rbuilder
---op-rbuilder-tag <TAG>     # Default: v0.3.2-rc3
+--op-rbuilder-image <IMAGE> # Default: ghcr.io/theochap/op-rbuilder
+--op-rbuilder-tag <TAG>     # Default: v0.3.2-rc4
 ```
 
 **Environment Variables**: `KUP_OP_RBUILDER_IMAGE`, `KUP_OP_RBUILDER_TAG`

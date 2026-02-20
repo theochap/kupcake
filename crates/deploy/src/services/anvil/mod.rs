@@ -13,7 +13,10 @@ pub use cmd::AnvilCmdBuilder;
 
 use crate::{
     AccountInfo,
-    docker::{CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig},
+    docker::{
+        CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping,
+        ServiceConfig,
+    },
     fs::FsHandler,
 };
 
@@ -246,7 +249,7 @@ impl AnvilConfig {
         // Wait for the Anvil config file to be created
         let config_file_path = host_config_path.join("anvil.json");
 
-        FsHandler::wait_for_file(&config_file_path, std::time::Duration::from_secs(30))
+        FsHandler::wait_for_file(&config_file_path, std::time::Duration::from_secs(120))
             .await
             .context("Anvil config file was not created in time")?;
 

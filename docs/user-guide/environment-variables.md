@@ -229,8 +229,8 @@ export KUP_OP_CONDUCTOR_TAG=latest
 ### op-rbuilder (Flashblocks Execution)
 
 ```bash
-export KUP_OP_RBUILDER_IMAGE=ghcr.io/flashbots/op-rbuilder
-export KUP_OP_RBUILDER_TAG=v0.3.2-rc3
+export KUP_OP_RBUILDER_IMAGE=ghcr.io/theochap/op-rbuilder
+export KUP_OP_RBUILDER_TAG=v0.3.2-rc4
 ```
 
 Used when `KUP_FLASHBLOCKS=true`. Replaces op-reth for sequencer nodes only.

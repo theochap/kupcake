@@ -288,7 +288,9 @@ impl KonaNodeCmdBuilder {
             cmd.push("--flashblocks".to_string());
             // kona-node defaults --flashblocks-host to "localhost" which is not a valid
             // IpAddr and causes a parse error. Always provide 0.0.0.0 as a safe default.
-            let host = self.flashblocks_host.unwrap_or_else(|| "0.0.0.0".to_string());
+            let host = self
+                .flashblocks_host
+                .unwrap_or_else(|| "0.0.0.0".to_string());
             cmd.push("--flashblocks-host".to_string());
             cmd.push(host);
         }

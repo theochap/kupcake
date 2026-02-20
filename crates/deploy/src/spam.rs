@@ -9,8 +9,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use crate::{
-    Deployer, DockerImage, KupDocker, KupDockerConfig, ServiceConfig,
-    docker::CreateAndStartContainerOptions, faucet,
+    Deployer, DockerImage, KupDocker, ServiceConfig, docker::CreateAndStartContainerOptions, faucet,
 };
 
 /// Default Docker image for Contender.
@@ -109,7 +108,11 @@ pub struct SpamConfig {
 ///
 /// The caller is responsible for resolving the target node's RPC URL and
 /// setting it on `config.rpc_url` before calling this function.
-pub async fn run_spam(deployer: &Deployer, config: &SpamConfig) -> Result<()> {
+pub async fn run_spam(
+    docker: &mut KupDocker,
+    deployer: &Deployer,
+    config: &SpamConfig,
+) -> Result<()> {
     if config.rpc_url.is_empty() {
         anyhow::bail!("rpc_url must be set on SpamConfig before calling run_spam");
     }
@@ -126,7 +129,7 @@ pub async fn run_spam(deployer: &Deployer, config: &SpamConfig) -> Result<()> {
     );
 
     // Fund the funder on L2 via faucet deposit (wait for confirmation)
-    faucet::faucet_deposit(deployer, &funder_address, config.fund_amount, true)
+    faucet::faucet_deposit(docker, deployer, &funder_address, config.fund_amount, true)
         .await
         .context("Failed to fund spammer account on L2")?;
 
@@ -134,14 +137,6 @@ pub async fn run_spam(deployer: &Deployer, config: &SpamConfig) -> Result<()> {
 
     // Resolve scenario (built-in name vs custom file path)
     let (scenario_arg, scenario_file) = resolve_scenario(&config.scenario)?;
-
-    // Create KupDocker instance — this resolves the network by ID so the
-    // Contender container joins the same network as the other services.
-    let mut kup_docker = KupDocker::new(KupDockerConfig {
-        ..deployer.docker.clone()
-    })
-    .await
-    .context("Failed to initialize Docker client")?;
 
     tracing::info!(rpc_url = %config.rpc_url, "Targeting sequencer RPC");
 
@@ -184,7 +179,7 @@ pub async fn run_spam(deployer: &Deployer, config: &SpamConfig) -> Result<()> {
 
     tracing::info!(container = %container_name, "Starting Contender container...");
 
-    kup_docker
+    docker
         .start_service(
             &container_name,
             service_config,
@@ -195,8 +190,10 @@ pub async fn run_spam(deployer: &Deployer, config: &SpamConfig) -> Result<()> {
 
     tracing::info!("Contender is running, streaming logs...");
 
-    // Stream logs until container exits or Ctrl+C
-    kup_docker.stream_logs(&container_name).await
+    // Stream logs until container exits
+    docker.stream_logs(&container_name).await?;
+
+    Ok(())
 }
 
 /// Load a funder account (address + private key) from `anvil.json` at the given index.
@@ -681,6 +678,8 @@ mod tests {
             monitoring: Default::default(),
             dashboards_path: None,
             detach: false,
+            snapshot: None,
+            copy_snapshot: false,
         };
 
         assert_eq!(container_name(&deployer), "kup-test-contender");

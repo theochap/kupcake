@@ -137,4 +137,3 @@ mod tests {
         assert!(cmd.contains(&"--game-factory-address".to_string()));
     }
 }
-

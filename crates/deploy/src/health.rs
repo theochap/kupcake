@@ -82,8 +82,8 @@ struct EvmNodeRpc {
 
 /// Run a full health check against a deployed network.
 pub async fn health_check(deployer: &Deployer) -> Result<HealthReport> {
-    let docker = Docker::connect_with_local_defaults()
-        .context("Failed to connect to Docker daemon")?;
+    let docker =
+        Docker::connect_with_local_defaults().context("Failed to connect to Docker daemon")?;
 
     let client = rpc::create_client()?;
 
@@ -144,8 +144,18 @@ pub async fn health_check(deployer: &Deployer) -> Result<HealthReport> {
 
     // Check infrastructure services
     let services = vec![
-        check_service(&docker, "op-batcher", &deployer.l2_stack.op_batcher.container_name).await,
-        check_service(&docker, "op-proposer", &deployer.l2_stack.op_proposer.container_name).await,
+        check_service(
+            &docker,
+            "op-batcher",
+            &deployer.l2_stack.op_batcher.container_name,
+        )
+        .await,
+        check_service(
+            &docker,
+            "op-proposer",
+            &deployer.l2_stack.op_proposer.container_name,
+        )
+        .await,
         check_service(
             &docker,
             "op-challenger",
@@ -333,7 +343,11 @@ async fn query_sync_status(
             .and_then(|v| v.as_u64())
     };
 
-    (block_num("unsafe_l2"), block_num("safe_l2"), block_num("finalized_l2"))
+    (
+        block_num("unsafe_l2"),
+        block_num("safe_l2"),
+        block_num("finalized_l2"),
+    )
 }
 
 // -- Display implementations for printing health reports --
@@ -367,7 +381,11 @@ impl fmt::Display for L1Health {
         write!(f, "  {} {} ", status, self.container_name)?;
 
         if let Some(chain_id) = self.chain_id {
-            let cid_status = if self.chain_id_match() { "ok" } else { "MISMATCH" };
+            let cid_status = if self.chain_id_match() {
+                "ok"
+            } else {
+                "MISMATCH"
+            };
             write!(f, "chain_id={} ({}) ", chain_id, cid_status)?;
         }
 
@@ -388,7 +406,11 @@ impl fmt::Display for NodeHealth {
         let status = status_icon(ex.running);
         write!(f, "    {} {} ", status, ex.container_name)?;
         if let Some(chain_id) = ex.chain_id {
-            let cid_status = if ex.chain_id_match() { "ok" } else { "MISMATCH" };
+            let cid_status = if ex.chain_id_match() {
+                "ok"
+            } else {
+                "MISMATCH"
+            };
             write!(f, "chain_id={} ({}) ", chain_id, cid_status)?;
         }
         if let Some(bn) = ex.block_number {
@@ -426,11 +448,7 @@ impl fmt::Display for ServiceHealth {
 }
 
 fn status_icon(running: bool) -> &'static str {
-    if running {
-        "[ok]"
-    } else {
-        "[DOWN]"
-    }
+    if running { "[ok]" } else { "[DOWN]" }
 }
 
 #[cfg(test)]
@@ -502,7 +520,11 @@ mod tests {
         let mut services = healthy_services();
         // Stop op-batcher (critical service)
         services[0].running = false;
-        assert!(!compute_healthy(&healthy_l1(), &[healthy_node()], &services));
+        assert!(!compute_healthy(
+            &healthy_l1(),
+            &[healthy_node()],
+            &services
+        ));
     }
 
     #[test]

@@ -21,8 +21,8 @@ use crate::{
     OP_RBUILDER_DEFAULT_TAG, OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG, OpBatcherBuilder,
     OpChallengerBuilder, OpConductorBuilder, OpDeployerConfig, OpProposerBuilder, OpRethBuilder,
     PROMETHEUS_DEFAULT_IMAGE, PROMETHEUS_DEFAULT_TAG, PrometheusConfig,
-    services::op_reth::DEFAULT_FLASHBLOCKS_PORT,
     services::kona_node::DEFAULT_FLASHBLOCKS_RELAY_PORT,
+    services::op_reth::DEFAULT_FLASHBLOCKS_PORT,
 };
 
 /// Block header information from an RPC response.
@@ -138,6 +138,11 @@ pub struct DeployerBuilder {
     /// Whether flashblocks support is enabled.
     flashblocks: bool,
 
+    /// Path to a snapshot directory for restoring from an existing op-reth database.
+    snapshot: Option<PathBuf>,
+    /// When true, copy the snapshot reth database instead of symlinking it.
+    copy_snapshot: bool,
+
     // Docker images
     anvil_docker: DockerImage,
     op_reth_docker: DockerImage,
@@ -171,6 +176,8 @@ impl DeployerBuilder {
             l2_node_count: 1,
             sequencer_count: 1,
             flashblocks: false,
+            snapshot: None,
+            copy_snapshot: false,
             anvil_docker: DockerImage::new(ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG),
             op_reth_docker: DockerImage::new(OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG),
             kona_node_docker: DockerImage::new(KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG),
@@ -329,6 +336,26 @@ impl DeployerBuilder {
     /// Enable or disable flashblocks support.
     pub fn flashblocks(mut self, enabled: bool) -> Self {
         self.flashblocks = enabled;
+        self
+    }
+
+    /// Set the snapshot directory path for restoring from an existing op-reth database.
+    pub fn snapshot(mut self, path: impl Into<PathBuf>) -> Self {
+        self.snapshot = Some(path.into());
+        self
+    }
+
+    /// Set the snapshot directory path if `Some`, otherwise do nothing.
+    pub fn maybe_snapshot(mut self, path: Option<PathBuf>) -> Self {
+        if let Some(p) = path {
+            self.snapshot = Some(p);
+        }
+        self
+    }
+
+    /// Set whether to copy the snapshot reth database instead of symlinking it.
+    pub fn copy_snapshot(mut self, copy: bool) -> Self {
+        self.copy_snapshot = copy;
         self
     }
 
@@ -619,43 +646,44 @@ impl DeployerBuilder {
             .context("Failed to canonicalize output data directory path")?;
 
         // Determine genesis timestamp and fork block number
-        let (genesis_timestamp, fork_block_number) = if let Some(manual_timestamp) = self.genesis_timestamp {
-            // Use manually specified timestamp
-            let fork_block_number = if self.l1_rpc_url.is_some() {
-                // If forking, still fetch the fork block number
-                let block = fetch_latest_block(self.l1_rpc_url.as_ref().unwrap())
+        let (genesis_timestamp, fork_block_number) =
+            if let Some(manual_timestamp) = self.genesis_timestamp {
+                // Use manually specified timestamp
+                let fork_block_number = if let Some(url) = &self.l1_rpc_url {
+                    // If forking, still fetch the fork block number
+                    let block = fetch_latest_block(url)
+                        .await
+                        .context("Failed to fetch latest block from L1 RPC")?;
+                    Some(block.number)
+                } else {
+                    None
+                };
+                tracing::info!(
+                    genesis_timestamp = manual_timestamp,
+                    "Using manually specified genesis timestamp"
+                );
+                (Some(manual_timestamp), fork_block_number)
+            } else if let Some(ref rpc_url) = self.l1_rpc_url {
+                // Fetch and calculate genesis timestamp from L1 RPC
+                let block = fetch_latest_block(rpc_url)
                     .await
                     .context("Failed to fetch latest block from L1 RPC")?;
-                Some(block.number)
+                (
+                    Some(
+                        block
+                            .timestamp
+                            .saturating_sub(self.block_time * block.number),
+                    ),
+                    Some(block.number),
+                )
             } else {
-                None
+                // Local mode: use current time as genesis timestamp
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                (Some(now), None)
             };
-            tracing::info!(
-                genesis_timestamp = manual_timestamp,
-                "Using manually specified genesis timestamp"
-            );
-            (Some(manual_timestamp), fork_block_number)
-        } else if let Some(ref rpc_url) = self.l1_rpc_url {
-            // Fetch and calculate genesis timestamp from L1 RPC
-            let block = fetch_latest_block(rpc_url)
-                .await
-                .context("Failed to fetch latest block from L1 RPC")?;
-            (
-                Some(
-                    block
-                        .timestamp
-                        .saturating_sub(self.block_time * block.number),
-                ),
-                Some(block.number),
-            )
-        } else {
-            // Local mode: use current time as genesis timestamp
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            (Some(now), None)
-        };
 
         tracing::info!(
             network_name,
@@ -747,7 +775,11 @@ impl DeployerBuilder {
                             container_name: format!("{}-kona-node{}", network_name, suffix),
                             l1_slot_duration: self.block_time,
                             rpc_host_port: Some(0), // Explicitly publish RPC port
-                            metrics_host_port: if self.publish_all_ports { Some(0) } else { None },
+                            metrics_host_port: if self.publish_all_ports {
+                                Some(0)
+                            } else {
+                                None
+                            },
                             flashblocks_enabled: self.flashblocks,
                             flashblocks_relay_port: self
                                 .flashblocks
@@ -777,7 +809,11 @@ impl DeployerBuilder {
                             ),
                             l1_slot_duration: self.block_time,
                             rpc_host_port: Some(0), // Explicitly publish RPC port
-                            metrics_host_port: if self.publish_all_ports { Some(0) } else { None },
+                            metrics_host_port: if self.publish_all_ports {
+                                Some(0)
+                            } else {
+                                None
+                            },
                             // Validators consume flashblocks but don't relay them
                             flashblocks_enabled: self.flashblocks,
                             ..Default::default()
@@ -823,6 +859,8 @@ impl DeployerBuilder {
 
             dashboards_path: self.dashboards_path,
             detach: self.detach,
+            snapshot: self.snapshot,
+            copy_snapshot: self.copy_snapshot,
         };
 
         Ok(deployer)

@@ -100,11 +100,13 @@ impl DeploymentVersion {
     ///
     /// The file is written as formatted JSON for human readability.
     pub fn save_to_file(&self, path: &Path) -> Result<()> {
-        let json = serde_json::to_string_pretty(self)
-            .context("Failed to serialize deployment version")?;
+        let json =
+            serde_json::to_string_pretty(self).context("Failed to serialize deployment version")?;
 
-        std::fs::write(path, json)
-            .context(format!("Failed to write deployment version to {}", path.display()))?;
+        std::fs::write(path, json).context(format!(
+            "Failed to write deployment version to {}",
+            path.display()
+        ))?;
 
         Ok(())
     }
@@ -117,11 +119,13 @@ impl DeploymentVersion {
             anyhow::bail!("Deployment version file does not exist: {}", path.display());
         }
 
-        let content = std::fs::read_to_string(path)
-            .context(format!("Failed to read deployment version from {}", path.display()))?;
+        let content = std::fs::read_to_string(path).context(format!(
+            "Failed to read deployment version from {}",
+            path.display()
+        ))?;
 
-        let version: Self = serde_json::from_str(&content)
-            .context("Failed to parse deployment version JSON")?;
+        let version: Self =
+            serde_json::from_str(&content).context("Failed to parse deployment version JSON")?;
 
         Ok(version)
     }
@@ -307,10 +311,13 @@ mod tests {
             .expect("Failed to save version");
 
         // Load
-        let loaded_version = DeploymentVersion::load_from_file(&version_path)
-            .expect("Failed to load version");
+        let loaded_version =
+            DeploymentVersion::load_from_file(&version_path).expect("Failed to load version");
 
-        assert_eq!(original_version, loaded_version, "Loaded version should match original");
+        assert_eq!(
+            original_version, loaded_version,
+            "Loaded version should match original"
+        );
     }
 
     #[test]
@@ -328,16 +335,20 @@ mod tests {
         let version_path = temp_dir.path().join(".deployment-version.json");
 
         // Write corrupted JSON
-        std::fs::write(&version_path, "{ invalid json }")
-            .expect("Failed to write corrupted file");
+        std::fs::write(&version_path, "{ invalid json }").expect("Failed to write corrupted file");
 
         let result = DeploymentVersion::load_from_file(&version_path);
-        assert!(result.is_err(), "Loading corrupted file should return error");
+        assert!(
+            result.is_err(),
+            "Loading corrupted file should return error"
+        );
     }
 
     #[test]
     fn test_from_deployer() {
-        use crate::{AnvilConfig, KupDockerConfig, L2StackBuilder, MonitoringConfig, OpDeployerConfig};
+        use crate::{
+            AnvilConfig, KupDockerConfig, L2StackBuilder, MonitoringConfig, OpDeployerConfig,
+        };
         use std::path::PathBuf;
 
         let deployer = Deployer {
@@ -360,6 +371,8 @@ mod tests {
             monitoring: MonitoringConfig::default(),
             dashboards_path: None,
             detach: false,
+            snapshot: None,
+            copy_snapshot: false,
         };
 
         let config_hash = DeploymentConfigHash::from_deployer(&deployer);
