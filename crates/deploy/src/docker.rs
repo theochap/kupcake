@@ -785,7 +785,9 @@ ENTRYPOINT [\"/binary\"]
         );
 
         let mut cmd = tokio::process::Command::new("cargo");
-        cmd.args(&args).current_dir(source_dir);
+        cmd.args(&args)
+            .current_dir(source_dir)
+            .env("CARGO_TERM_COLOR", "never");
 
         // When cross-compiling, set the linker via env var so the user doesn't
         // need a .cargo/config.toml. The convention is
