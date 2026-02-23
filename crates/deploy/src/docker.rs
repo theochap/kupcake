@@ -7,6 +7,7 @@ use std::{
     io::Read as _,
     mem,
     path::{Path, PathBuf},
+    process::Stdio,
     time::Duration,
 };
 
@@ -25,7 +26,7 @@ use bollard::{
 };
 use derive_more::Deref;
 use futures::{StreamExt, executor::block_on, future::join_all};
-use tokio::{task::JoinHandle, time::timeout};
+use tokio::{io::AsyncBufReadExt, task::JoinHandle, time::timeout};
 use url::Url;
 
 /// Timeout for shutting down docker and cleaning up containers.
@@ -587,7 +588,7 @@ impl KupDocker {
             if let Some(stream) = &build_info.stream {
                 let stream = stream.trim();
                 if !stream.is_empty() {
-                    tracing::trace!(stream, "Docker build");
+                    tracing::info!(target: "docker_build", "{}", stream);
                 }
             }
 
@@ -799,11 +800,35 @@ ENTRYPOINT [\"/binary\"]
             cmd.env(&env_key, &linker);
         }
 
-        let output = cmd.output().await.context("Failed to run cargo build")?;
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("cargo build failed:\n{}", stderr);
+        let mut child = cmd.spawn().context("Failed to spawn cargo build")?;
+
+        // Stream stderr (cargo writes progress/compile messages to stderr)
+        let stderr = child.stderr.take().context("Failed to capture cargo stderr")?;
+        let stderr_handle = tokio::spawn(async move {
+            let reader = tokio::io::BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::info!(target: "cargo_build", "{}", line);
+            }
+        });
+
+        // Stream stdout
+        let stdout = child.stdout.take().context("Failed to capture cargo stdout")?;
+        let stdout_handle = tokio::spawn(async move {
+            let reader = tokio::io::BufReader::new(stdout);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tracing::info!(target: "cargo_build", "{}", line);
+            }
+        });
+
+        let status = child.wait().await.context("Failed to wait for cargo build")?;
+        let _ = tokio::join!(stderr_handle, stdout_handle);
+
+        if !status.success() {
+            anyhow::bail!("cargo build failed with exit code: {}", status);
         }
 
         // Determine the output path
