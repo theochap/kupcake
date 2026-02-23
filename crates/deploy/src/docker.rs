@@ -807,7 +807,10 @@ ENTRYPOINT [\"/binary\"]
         let mut child = cmd.spawn().context("Failed to spawn cargo build")?;
 
         // Stream stderr (cargo writes progress/compile messages to stderr)
-        let stderr = child.stderr.take().context("Failed to capture cargo stderr")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("Failed to capture cargo stderr")?;
         let stderr_handle = tokio::spawn(async move {
             let reader = tokio::io::BufReader::new(stderr);
             let mut lines = reader.lines();
@@ -817,7 +820,10 @@ ENTRYPOINT [\"/binary\"]
         });
 
         // Stream stdout
-        let stdout = child.stdout.take().context("Failed to capture cargo stdout")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("Failed to capture cargo stdout")?;
         let stdout_handle = tokio::spawn(async move {
             let reader = tokio::io::BufReader::new(stdout);
             let mut lines = reader.lines();
@@ -826,7 +832,10 @@ ENTRYPOINT [\"/binary\"]
             }
         });
 
-        let status = child.wait().await.context("Failed to wait for cargo build")?;
+        let status = child
+            .wait()
+            .await
+            .context("Failed to wait for cargo build")?;
         let _ = tokio::join!(stderr_handle, stdout_handle);
 
         if !status.success() {

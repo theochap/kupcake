@@ -1240,24 +1240,24 @@ async fn test_local_kona_binary() -> Result<()> {
         l1_chain_id
     );
 
-    // Path to the kona submodule (relative to the test crate)
-    // env!("CARGO_MANIFEST_DIR") points to crates/deploy
-    // Pass the directory — ensure_image_ready will auto-build and cross-compile
-    let kona_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/kona");
+    // Use pre-built binary from KONA_NODE_BINARY env var if available (CI),
+    // otherwise fall back to building from the kona submodule source directory.
+    let kona_binary = std::env::var("KONA_NODE_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/kona"));
 
     tracing::info!(
-        "=== Using kona source directory at {} (will auto-build) ===",
-        kona_dir.display()
+        "=== Using kona binary/source at {} ===",
+        kona_binary.display()
     );
 
-    // Deploy with local kona-node source directory (auto-builds for Docker's platform)
     let deployer = DeployerBuilder::new(l1_chain_id)
         .network_name(&network_name)
         .outdata(OutDataPath::Path(outdata_path.clone()))
         .l2_node_count(2) // 1 sequencer + 1 validator
         .sequencer_count(1)
         .block_time(2)
-        .with_kona_node_binary(&kona_dir)
+        .with_kona_node_binary(&kona_binary)
         .publish_all_ports(true) // Ensure all ports (including kona-node RPC) are published
         .detach(true)
         .build()
