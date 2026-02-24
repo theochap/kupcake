@@ -9,7 +9,16 @@ use derive_more::Display;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::{OpConductorBuilder, OpConductorHandler, docker::KupDocker};
+use crate::{
+    OpConductorBuilder, OpConductorHandler,
+    docker::{DockerImage, KupDocker},
+    service::KupcakeService,
+    services::{
+        OpConductorInput, OpRethInput,
+        kona_node::{KonaNodeBuilder, KonaNodeHandler, KonaNodeInput, P2pKeypair},
+        op_reth::{OpRethBuilder, OpRethHandler},
+    },
+};
 
 /// Interval between RPC readiness checks.
 const RPC_POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -115,12 +124,6 @@ async fn wait_for_consensus_rpc_ready(rpc_url: &str, timeout_secs: u64) -> anyho
     Ok(())
 }
 
-use super::{
-    anvil::AnvilHandler,
-    kona_node::{KonaNodeBuilder, KonaNodeHandler},
-    op_reth::{OpRethBuilder, OpRethHandler},
-};
-
 /// Context for op-conductor startup when part of a multi-sequencer setup.
 #[derive(Debug, Clone, Copy, Default)]
 pub enum ConductorContext {
@@ -160,18 +163,42 @@ impl L2NodeRole {
     }
 }
 
+/// Input parameters for deploying an L2 node (op-reth + kona-node + optional op-conductor).
+///
+/// Decoupled from handler references — uses raw URLs and keys.
+pub struct L2NodeInput {
+    /// L1 RPC URL (e.g., Anvil's Docker-internal URL).
+    pub l1_rpc_url: String,
+    /// L1 RPC URL accessible from the host (used for L1 config generation).
+    pub l1_host_url: Option<String>,
+    /// Unsafe block signer private key (hex-encoded, without 0x prefix).
+    pub unsafe_block_signer_key: String,
+    /// Optional URL of the sequencer's op-reth HTTP RPC (required for validators).
+    pub sequencer_rpc: Option<Url>,
+    /// List of kona-node enodes for P2P discovery.
+    pub kona_node_enodes: Vec<String>,
+    /// List of op-reth enodes for P2P discovery.
+    pub op_reth_enodes: Vec<String>,
+    /// L1 chain ID (used to determine if we need a custom L1 config for kona-node).
+    pub l1_chain_id: u64,
+    /// Context for op-conductor startup (leader, follower, or none).
+    pub conductor_context: ConductorContext,
+    /// Optional flashblocks relay URL from the sequencer's kona-node.
+    pub sequencer_flashblocks_relay_url: Option<Url>,
+}
+
 /// Configuration for an L2 node (op-reth + kona-node pair).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct L2NodeBuilder {
+pub struct L2NodeBuilder<EL = OpRethBuilder, CL = KonaNodeBuilder, Cond = OpConductorBuilder> {
     /// Role of this node (sequencer or validator).
     pub role: L2NodeRole,
     /// Configuration for op-reth execution client.
-    pub op_reth: OpRethBuilder,
+    pub op_reth: EL,
     /// Configuration for kona-node consensus client.
-    pub kona_node: KonaNodeBuilder,
+    pub kona_node: CL,
     /// Configuration for op-conductor (only for sequencer nodes in multi-sequencer setups).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub op_conductor: Option<OpConductorBuilder>,
+    pub op_conductor: Option<Cond>,
 }
 
 impl Default for L2NodeBuilder {
@@ -203,7 +230,17 @@ impl L2NodeBuilder {
     pub fn validator() -> Self {
         Self::new(L2NodeRole::Validator)
     }
+}
 
+impl<EL, CL, Cond> L2NodeBuilder<EL, CL, Cond> {
+    /// Attach an op-conductor configuration to this node.
+    pub fn with_conductor(mut self, conductor: Cond) -> Self {
+        self.op_conductor = Some(conductor);
+        self
+    }
+}
+
+impl L2NodeBuilder {
     /// Set a unique suffix for container names to avoid conflicts.
     pub fn with_name_suffix(mut self, suffix: &str) -> Self {
         self.op_reth.container_name = format!("{}-{}", self.op_reth.container_name, suffix);
@@ -213,27 +250,39 @@ impl L2NodeBuilder {
         }
         self
     }
+}
 
-    /// Attach an op-conductor configuration to this node.
-    pub fn with_conductor(mut self, conductor: OpConductorBuilder) -> Self {
-        self.op_conductor = Some(conductor);
-        self
+impl<EL, CL, Cond> KupcakeService for L2NodeBuilder<EL, CL, Cond>
+where
+    EL: KupcakeService<Input = OpRethInput, Output = OpRethHandler>,
+    CL: KupcakeService<Input = KonaNodeInput, Output = KonaNodeHandler>,
+    Cond: KupcakeService<Input = OpConductorInput, Output = OpConductorHandler>,
+{
+    type Input = L2NodeInput;
+    type Output = L2NodeHandler;
+
+    fn container_name(&self) -> &str {
+        self.op_reth.container_name()
     }
 
-    /// Generate a JWT secret for authenticated communication between op-reth and kona-node.
-    fn generate_jwt_secret() -> String {
-        use rand::Rng;
-        let mut rng = rand::rng();
-        let secret: [u8; 32] = rng.random();
-        hex::encode(secret)
+    fn docker_image(&self) -> &DockerImage {
+        self.op_reth.docker_image()
     }
 
-    /// Write a JWT secret to a file for this node pair.
-    async fn write_jwt_secret(
-        host_config_path: &Path,
-        node_id: &str,
-    ) -> Result<String, anyhow::Error> {
-        let jwt_secret = Self::generate_jwt_secret();
+    async fn deploy<'a>(
+        &'a self,
+        docker: &'a mut KupDocker,
+        host_config_path: &'a Path,
+        input: L2NodeInput,
+    ) -> Result<L2NodeHandler, anyhow::Error> {
+        // Generate a unique JWT secret for this node pair
+        let node_id = self.op_reth.container_name();
+        let jwt_secret = {
+            use rand::Rng;
+            let mut rng = rand::rng();
+            let secret: [u8; 32] = rng.random();
+            hex::encode(secret)
+        };
         let jwt_filename = format!("jwt-{}.hex", node_id);
         let jwt_path = host_config_path.join(&jwt_filename);
 
@@ -244,94 +293,59 @@ impl L2NodeBuilder {
                 jwt_path.display()
             ))?;
 
-        tracing::debug!(path = ?jwt_path, node_id, "JWT secret written for L2 node");
-        Ok(jwt_filename)
-    }
+        tracing::debug!(path = ?jwt_path, %node_id, "JWT secret written for L2 node");
 
-    /// Start the L2 node (op-reth + kona-node + optional op-conductor).
-    ///
-    /// For sequencer nodes, this starts with block production enabled.
-    /// For validator nodes, this connects to the sequencer for block syncing.
-    ///
-    /// After starting, this adds the node's enodes to the peer lists
-    /// so that subsequent nodes can use them as bootnodes.
-    ///
-    /// # Arguments
-    /// * `docker` - Docker client
-    /// * `host_config_path` - Path on host for config files
-    /// * `anvil_handler` - Handler for the L1 Anvil instance
-    /// * `sequencer_rpc` - Optional URL of the sequencer's kona-node RPC (required for validators)
-    /// * `kona_node_enodes` - Mutable list of kona-node enodes for P2P discovery. The node's enode will be added after startup.
-    /// * `op_reth_enodes` - Mutable list of op-reth enodes for P2P discovery. The node's enode will be added after startup.
-    /// * `l1_chain_id` - L1 chain ID (used to determine if we need a custom L1 config for kona-node)
-    /// * `conductor_context` - Context for op-conductor startup (leader, follower, or none).
-    /// * `sequencer_flashblocks_relay_url` - Optional flashblocks relay URL from the sequencer's kona-node.
-    ///   For validators, this provides the sequencer's relay WS URL so the validator's kona-node can subscribe.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn start(
-        &self,
-        docker: &mut KupDocker,
-        host_config_path: &Path,
-        anvil_handler: &AnvilHandler,
-        sequencer_rpc: Option<&Url>,
-        kona_node_enodes: &mut Vec<String>,
-        op_reth_enodes: &mut Vec<String>,
-        l1_chain_id: u64,
-        conductor_context: ConductorContext,
-        sequencer_flashblocks_relay_url: Option<&Url>,
-    ) -> Result<L2NodeHandler, anyhow::Error> {
-        // Generate a unique JWT secret for this node pair
-        // Use the op-reth container name as the node ID for uniqueness
-        let jwt_filename =
-            Self::write_jwt_secret(host_config_path, &self.op_reth.container_name).await?;
+        // Generate P2P keypair for op-reth
+        let op_reth_p2p_keypair = P2pKeypair::generate();
 
         // Start op-reth first, passing existing op-reth enodes as bootnodes
         let op_reth_handler = self
             .op_reth
-            .start(
+            .deploy(
                 docker,
                 host_config_path,
-                sequencer_rpc,
-                &jwt_filename,
-                op_reth_enodes,
+                OpRethInput {
+                    sequencer_rpc: input.sequencer_rpc.clone(),
+                    jwt_filename: jwt_filename.clone(),
+                    bootnodes: input.op_reth_enodes,
+                    p2p_keypair: op_reth_p2p_keypair,
+                },
             )
             .await?;
 
-        // Add op-reth's precomputed enode to the peer list for subsequent nodes
         let op_reth_enode = op_reth_handler.enode();
         tracing::info!(
             container_name = %op_reth_handler.container_name,
             enode = %op_reth_enode,
-            "Added op-reth enode to peer list"
+            "op-reth enode computed"
         );
-        op_reth_enodes.push(op_reth_enode);
 
         // Pre-compute conductor RPC URL if conductor is configured
-        // kona-node needs this at startup to enable conductor control mode
-        // The conductor will be started after kona-node, but kona-node needs the URL now
-        let conductor_rpc_url = self
-            .op_conductor
-            .as_ref()
-            .map(|c| format!("http://{}:{}/", c.container_name, c.rpc_port));
+        let conductor_rpc_url = self.op_conductor.as_ref().map(|c| {
+            format!(
+                "http://{}:{}/",
+                c.container_name(),
+                super::op_conductor::DEFAULT_RPC_PORT
+            )
+        });
 
-        // Determine if this sequencer is the Raft leader (first sequencer starts active)
-        let is_conductor_leader = matches!(conductor_context, ConductorContext::Leader { .. });
+        // Determine if this sequencer is the Raft leader
+        let is_conductor_leader =
+            matches!(input.conductor_context, ConductorContext::Leader { .. });
 
-        // Determine the flashblocks builder URL for kona-node:
-        // - For sequencers: use the op-rbuilder's flashblocks WS URL (if flashblocks enabled)
-        // - For validators: use the sequencer's kona-node relay URL (passed from L2StackBuilder)
+        // Determine the flashblocks builder URL for kona-node
         let flashblocks_builder_url = match self.role {
             L2NodeRole::Sequencer => op_reth_handler
                 .flashblocks_ws_url
                 .as_ref()
                 .map(|u| u.to_string()),
-            L2NodeRole::Validator => sequencer_flashblocks_relay_url.map(|u| u.to_string()),
+            L2NodeRole::Validator => input
+                .sequencer_flashblocks_relay_url
+                .as_ref()
+                .map(|u| u.to_string()),
         };
 
-        // When flashblocks is enabled, op-rbuilder's HTTP server starts last (after WS server,
-        // consensus engine, engine API). If kona-node connects to the flashblocks WS before
-        // op-rbuilder has finished initializing, it can cause a deadlock on the initialization
-        // chain. Wait for op-rbuilder's HTTP RPC to be ready before starting kona-node.
+        // When flashblocks is enabled, wait for op-rbuilder's HTTP RPC before starting kona-node
         if op_reth_handler.flashblocks_ws_url.is_some() {
             let wait_url = op_reth_handler
                 .http_host_url
@@ -348,40 +362,37 @@ impl L2NodeBuilder {
                 .context("op-rbuilder RPC not ready before kona-node startup")?;
         }
 
-        // Start kona-node with conductor RPC URL (if configured)
-        // kona-node must have --conductor.rpc set for conductor to recognize it
+        // Start kona-node with decoupled input
         let kona_node_handler = self
             .kona_node
-            .start(
+            .deploy(
                 docker,
                 host_config_path,
-                anvil_handler,
-                &op_reth_handler,
-                self.role,
-                &jwt_filename,
-                kona_node_enodes,
-                l1_chain_id,
-                conductor_rpc_url.as_deref(),
-                is_conductor_leader,
-                flashblocks_builder_url.as_deref(),
+                KonaNodeInput {
+                    l1_rpc_url: input.l1_rpc_url,
+                    l1_host_url: input.l1_host_url,
+                    authrpc_url: op_reth_handler.authrpc_url.to_string(),
+                    unsafe_block_signer_key: input.unsafe_block_signer_key,
+                    role: self.role,
+                    jwt_filename,
+                    bootnodes: input.kona_node_enodes,
+                    l1_chain_id: input.l1_chain_id,
+                    conductor_rpc: conductor_rpc_url,
+                    is_conductor_leader,
+                    flashblocks_builder_url,
+                },
             )
             .await?;
 
-        // Add kona-node's precomputed enode to the peer list for subsequent nodes
         let kona_node_enode = kona_node_handler.enode();
         tracing::info!(
             container_name = %kona_node_handler.container_name,
             enode = %kona_node_enode,
-            "Added kona-node enode to peer list"
+            "kona-node enode computed"
         );
-        kona_node_enodes.push(kona_node_enode);
 
-        // Start op-conductor AFTER both op-reth and kona-node are running
-        // Conductor needs to connect to both EL (op-reth) and CL (kona-node) RPCs on startup
-        // Wait for both RPCs to be ready before starting conductor (conductor connects immediately)
-        // Use the host-accessible URLs since we're running outside Docker
+        // Wait for both RPCs before starting conductor
         if self.op_conductor.is_some() {
-            // Wait for op-reth execution RPC
             let op_reth_wait_url = op_reth_handler
                 .http_host_url
                 .as_ref()
@@ -395,7 +406,6 @@ impl L2NodeBuilder {
                 .await
                 .context("op-reth RPC not ready in time for conductor startup")?;
 
-            // Wait for kona-node consensus RPC
             let kona_wait_url = kona_node_handler
                 .rpc_host_url
                 .as_ref()
@@ -410,22 +420,25 @@ impl L2NodeBuilder {
                 .context("kona-node RPC not ready in time for conductor startup")?;
         }
 
-        let op_conductor = match (&self.op_conductor, conductor_context) {
+        let op_conductor = match (&self.op_conductor, input.conductor_context) {
             (Some(conductor_config), ConductorContext::Leader { index }) => {
                 let server_id = format!("sequencer-{}", index);
                 tracing::info!(
                     server_id = %server_id,
-                    container_name = %conductor_config.container_name,
+                    container_name = %conductor_config.container_name(),
                     "Starting op-conductor as Raft leader (after EL and CL)..."
                 );
                 Some(
                     conductor_config
-                        .start_leader(
+                        .deploy(
                             docker,
                             host_config_path,
-                            &server_id,
-                            &op_reth_handler,
-                            kona_node_handler.rpc_url.as_str(),
+                            OpConductorInput {
+                                server_id,
+                                execution_rpc_url: op_reth_handler.http_rpc_url.to_string(),
+                                kona_node_rpc_url: kona_node_handler.rpc_url.to_string(),
+                                bootstrap: true,
+                            },
                         )
                         .await
                         .context("Failed to start op-conductor leader")?,
@@ -435,17 +448,20 @@ impl L2NodeBuilder {
                 let server_id = format!("sequencer-{}", index);
                 tracing::info!(
                     server_id = %server_id,
-                    container_name = %conductor_config.container_name,
+                    container_name = %conductor_config.container_name(),
                     "Starting op-conductor as Raft follower (after EL and CL)..."
                 );
                 Some(
                     conductor_config
-                        .start_follower(
+                        .deploy(
                             docker,
                             host_config_path,
-                            &server_id,
-                            &op_reth_handler,
-                            kona_node_handler.rpc_url.as_str(),
+                            OpConductorInput {
+                                server_id,
+                                execution_rpc_url: op_reth_handler.http_rpc_url.to_string(),
+                                kona_node_rpc_url: kona_node_handler.rpc_url.to_string(),
+                                bootstrap: false,
+                            },
                         )
                         .await
                         .context("Failed to start op-conductor follower")?,

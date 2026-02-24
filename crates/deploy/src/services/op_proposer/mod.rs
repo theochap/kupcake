@@ -10,11 +10,18 @@ use url::Url;
 
 pub use cmd::OpProposerCmdBuilder;
 
-use crate::docker::{
-    CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig,
-};
+use crate::docker::{DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig};
+use crate::service::{self, KupcakeService};
 
-use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler};
+/// Input parameters for deploying the op-proposer.
+pub struct OpProposerInput {
+    /// L1 RPC URL (e.g., Anvil).
+    pub l1_rpc_url: String,
+    /// Rollup (consensus) RPC URL (e.g., kona-node).
+    pub rollup_rpc_url: String,
+    /// Private key for the proposer account.
+    pub proposer_private_key: String,
+}
 
 /// Default ports for op-proposer.
 pub const DEFAULT_RPC_PORT: u16 = 8560;
@@ -79,41 +86,18 @@ pub struct OpProposerHandler {
 }
 
 impl OpProposerBuilder {
-    /// Start the op-proposer.
-    pub async fn start(
+    /// Build the Docker command arguments for op-proposer.
+    pub fn build_cmd(
         &self,
-        docker: &mut KupDocker,
         host_config_path: &Path,
-        anvil_handler: &AnvilHandler,
-        kona_node_handler: &KonaNodeHandler,
-    ) -> Result<OpProposerHandler, anyhow::Error> {
-        let container_config_path = PathBuf::from("/data");
+        input: &OpProposerInput,
+    ) -> Result<Vec<String>, anyhow::Error> {
+        let dgf_address = super::read_dgf_address(host_config_path)?;
 
-        // Ensure the Docker image is ready (pull or build if needed)
-        docker
-            .ensure_image_ready(&self.docker_image, "op-proposer")
-            .await
-            .context("Failed to ensure op-proposer image is ready")?;
-
-        let proposer_private_key = &anvil_handler.accounts.proposer.private_key;
-
-        // Read the DisputeGameFactory address from state.json
-        let state_file_path = host_config_path.join("state.json");
-        let state_content = tokio::fs::read_to_string(&state_file_path)
-            .await
-            .context("Failed to read state.json for DisputeGameFactory address")?;
-
-        let state: serde_json::Value =
-            serde_json::from_str(&state_content).context("Failed to parse state.json")?;
-
-        let dgf_address = state["opChainDeployments"][0]["DisputeGameFactoryProxy"]
-            .as_str()
-            .context("DisputeGameFactory address not found in state.json")?;
-
-        let cmd = OpProposerCmdBuilder::new(
-            anvil_handler.l1_rpc_url.to_string(),
-            kona_node_handler.rpc_url.to_string(),
-            proposer_private_key.to_string(),
+        Ok(OpProposerCmdBuilder::new(
+            input.l1_rpc_url.to_string(),
+            input.rollup_rpc_url.to_string(),
+            input.proposer_private_key.to_string(),
             dgf_address,
         )
         .game_type(254) // Permissioned game type
@@ -121,7 +105,31 @@ impl OpProposerBuilder {
         .rpc_port(self.rpc_port)
         .metrics(true, "0.0.0.0", self.metrics_port)
         .extra_args(self.extra_args.clone())
-        .build();
+        .build())
+    }
+}
+
+impl KupcakeService for OpProposerBuilder {
+    type Input = OpProposerInput;
+    type Output = OpProposerHandler;
+
+    fn container_name(&self) -> &str {
+        &self.container_name
+    }
+
+    fn docker_image(&self) -> &DockerImage {
+        &self.docker_image
+    }
+
+    async fn deploy<'a>(
+        &'a self,
+        docker: &'a mut KupDocker,
+        host_config_path: &'a Path,
+        input: OpProposerInput,
+    ) -> Result<OpProposerHandler, anyhow::Error> {
+        let container_config_path = PathBuf::from("/data");
+
+        let cmd = self.build_cmd(host_config_path, &input)?;
 
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> = [
@@ -132,7 +140,6 @@ impl OpProposerBuilder {
         .flatten()
         .collect();
 
-        // Always expose all ports to the Docker network (regardless of publish_all_ports)
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports(port_mappings)
@@ -140,14 +147,14 @@ impl OpProposerBuilder {
             .expose(ExposedPort::tcp(self.metrics_port))
             .bind(host_config_path, &container_config_path, "rw");
 
-        let handler = docker
-            .start_service(
-                &self.container_name,
-                service_config,
-                CreateAndStartContainerOptions::default(),
-            )
-            .await
-            .context("Failed to start op-proposer container")?;
+        let handler = service::deploy_container(
+            docker,
+            &self.docker_image,
+            &self.container_name,
+            service_config,
+        )
+        .await
+        .context("Failed to start op-proposer container")?;
 
         tracing::info!(
             container_id = %handler.container_id,

@@ -13,11 +13,20 @@ use url::Url;
 
 pub use cmd::OpConductorCmdBuilder;
 
-use crate::docker::{
-    CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig,
-};
+use crate::docker::{DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig};
+use crate::service::{self, KupcakeService};
 
-use super::op_reth::OpRethHandler;
+/// Input parameters for deploying op-conductor.
+pub struct OpConductorInput {
+    /// Unique ID for this sequencer in the Raft cluster.
+    pub server_id: String,
+    /// The execution client RPC URL (e.g., op-reth HTTP).
+    pub execution_rpc_url: String,
+    /// The kona-node RPC URL for this sequencer.
+    pub kona_node_rpc_url: String,
+    /// Whether to bootstrap the Raft cluster (true for leader, false for follower).
+    pub bootstrap: bool,
+}
 
 /// Default ports for op-conductor.
 pub const DEFAULT_RPC_PORT: u16 = 8547;
@@ -101,87 +110,57 @@ pub struct OpConductorHandler {
 }
 
 impl OpConductorBuilder {
-    /// Start the op-conductor for a single sequencer (leader/bootstrap mode).
-    ///
-    /// This is used when starting the first conductor in a cluster.
-    pub async fn start_leader(
+    /// Build the Docker command arguments for op-conductor.
+    pub fn build_cmd(
         &self,
-        docker: &mut KupDocker,
-        host_config_path: &Path,
-        server_id: &str,
-        op_reth_handler: &OpRethHandler,
-        kona_node_rpc_url: &str,
-    ) -> Result<OpConductorHandler, anyhow::Error> {
-        self.start_internal(
-            docker,
-            host_config_path,
-            server_id,
-            op_reth_handler,
-            kona_node_rpc_url,
-            true, // bootstrap
-        )
-        .await
-    }
-
-    /// Start the op-conductor for a follower sequencer.
-    ///
-    /// This is used when adding additional sequencers to an existing cluster.
-    pub async fn start_follower(
-        &self,
-        docker: &mut KupDocker,
-        host_config_path: &Path,
-        server_id: &str,
-        op_reth_handler: &OpRethHandler,
-        kona_node_rpc_url: &str,
-    ) -> Result<OpConductorHandler, anyhow::Error> {
-        self.start_internal(
-            docker,
-            host_config_path,
-            server_id,
-            op_reth_handler,
-            kona_node_rpc_url,
-            false, // not bootstrap
-        )
-        .await
-    }
-
-    /// Internal method to start the op-conductor.
-    async fn start_internal(
-        &self,
-        docker: &mut KupDocker,
-        host_config_path: &Path,
-        server_id: &str,
-        op_reth_handler: &OpRethHandler,
-        kona_node_rpc_url: &str,
-        bootstrap: bool,
-    ) -> Result<OpConductorHandler, anyhow::Error> {
+        _host_config_path: &Path,
+        input: &OpConductorInput,
+    ) -> Result<Vec<String>, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
         let raft_storage_dir = container_config_path.join("raft");
         let rollup_config_path = container_config_path.join("rollup.json");
 
-        // Ensure the Docker image is ready (pull or build if needed)
-        docker
-            .ensure_image_ready(&self.docker_image, "op-conductor")
-            .await
-            .context("Failed to ensure op-conductor image is ready")?;
-
-        let cmd = OpConductorCmdBuilder::new(
-            kona_node_rpc_url.to_string(),
-            op_reth_handler.http_rpc_url.to_string(),
-            server_id,
+        Ok(OpConductorCmdBuilder::new(
+            input.kona_node_rpc_url.clone(),
+            input.execution_rpc_url.clone(),
+            input.server_id.clone(),
             raft_storage_dir.display().to_string(),
             rollup_config_path.display().to_string(),
         )
-        .raft_bootstrap(bootstrap)
+        .raft_bootstrap(input.bootstrap)
         .rpc_addr(&self.host)
         .rpc_port(self.rpc_port)
-        .consensus_addr(&self.container_name) // Must be resolvable by other nodes
+        .consensus_addr(&self.container_name)
         .consensus_port(self.consensus_port)
         .healthcheck_interval(&self.healthcheck_interval)
         .healthcheck_unsafe_interval(&self.healthcheck_unsafe_interval)
         .healthcheck_min_peer_count(&self.healthcheck_min_peer_count)
         .extra_args(self.extra_args.clone())
-        .build();
+        .build())
+    }
+}
+
+impl KupcakeService for OpConductorBuilder {
+    type Input = OpConductorInput;
+    type Output = OpConductorHandler;
+
+    fn container_name(&self) -> &str {
+        &self.container_name
+    }
+
+    fn docker_image(&self) -> &DockerImage {
+        &self.docker_image
+    }
+
+    async fn deploy<'a>(
+        &'a self,
+        docker: &'a mut KupDocker,
+        host_config_path: &'a Path,
+        input: OpConductorInput,
+    ) -> Result<OpConductorHandler, anyhow::Error> {
+        let container_config_path = PathBuf::from("/data");
+
+        let cmd = self.build_cmd(host_config_path, &input)?;
 
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> = [
@@ -199,30 +178,26 @@ impl OpConductorBuilder {
             .expose(ExposedPort::tcp(self.consensus_port))
             .bind(host_config_path, &container_config_path, "rw");
 
-        let handler = docker
-            .start_service(
-                &self.container_name,
-                service_config,
-                CreateAndStartContainerOptions::default(),
-            )
-            .await
-            .context("Failed to start op-conductor container")?;
+        let handler = service::deploy_container(
+            docker,
+            &self.docker_image,
+            &self.container_name,
+            service_config,
+        )
+        .await
+        .context("Failed to start op-conductor container")?;
 
         // Build internal Docker network URL
         let rpc_url = KupDocker::build_http_url(&handler.container_name, self.rpc_port)?;
 
         // Build host-accessible URLs from bound ports
-        let rpc_host_url = handler
-            .get_tcp_host_port(self.rpc_port)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build RPC host URL")?;
+        let rpc_host_url = handler.build_host_url(self.rpc_port, "http")?;
 
         tracing::info!(
             container_id = %handler.container_id,
             container_name = %handler.container_name,
-            server_id = %server_id,
-            bootstrap = bootstrap,
+            server_id = %input.server_id,
+            bootstrap = input.bootstrap,
             ?rpc_host_url,
             "op-conductor container started"
         );

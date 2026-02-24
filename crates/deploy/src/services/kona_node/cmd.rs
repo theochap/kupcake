@@ -2,8 +2,6 @@
 
 use std::path::Path;
 
-use alloy_core::primitives::Bytes;
-
 pub const DEFAULT_P2P_PORT: u16 = 9222;
 
 /// Builder for kona-node consensus client commands.
@@ -25,7 +23,7 @@ pub struct KonaNodeCmdBuilder {
     bootnodes: Vec<String>,
     /// P2P private key (32 bytes hex-encoded)
     p2p_priv_key: Option<String>,
-    unsafe_block_signer_key: Option<Bytes>,
+    unsafe_block_signer_key: Option<String>,
     /// Conductor RPC URL (enables conductor control when set)
     conductor_rpc: Option<String>,
     /// Start sequencer in stopped state (for conductor-managed sequencers)
@@ -92,9 +90,9 @@ impl KonaNodeCmdBuilder {
         self
     }
 
-    /// Set the unsafe block signer key.
-    pub fn unsafe_block_signer_key(mut self, key: Bytes) -> Self {
-        self.unsafe_block_signer_key = Some(key);
+    /// Set the unsafe block signer key (hex-encoded, without 0x prefix).
+    pub fn unsafe_block_signer_key(mut self, key: impl Into<String>) -> Self {
+        self.unsafe_block_signer_key = Some(key.into());
         self
     }
 
@@ -200,7 +198,7 @@ impl KonaNodeCmdBuilder {
 
         if let Some(unsafe_block_signer_key) = self.unsafe_block_signer_key {
             cmd.push("--p2p.sequencer.key".to_string());
-            cmd.push(hex::encode(unsafe_block_signer_key));
+            cmd.push(unsafe_block_signer_key);
         }
 
         cmd.push("--mode".to_string());

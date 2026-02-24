@@ -2,7 +2,7 @@
 
 mod cmd;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use backon::{ConstantBuilder, Retryable};
@@ -13,12 +13,17 @@ pub use cmd::{AnvilCmdBuilder, AnvilInitMode};
 
 use crate::{
     AccountInfo,
-    docker::{
-        CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping,
-        ServiceConfig,
-    },
+    docker::{DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig},
     fs::FsHandler,
+    service::{self, KupcakeService},
 };
+
+/// Input parameters for deploying Anvil.
+pub struct AnvilInput {
+    pub chain_id: u64,
+    pub init_mode: Option<AnvilInitMode>,
+    pub accounts: AnvilAccounts,
+}
 
 /// Named accounts from Anvil matching the OP Stack participant roles.
 ///
@@ -188,34 +193,17 @@ pub struct AnvilHandler {
     pub accounts: AnvilAccounts,
 }
 
+/// Anvil listens on port 8545 inside the container.
+const ANVIL_INTERNAL_PORT: u16 = 8545;
+
 impl AnvilConfig {
-    /// Start an Anvil container with pre-derived accounts and the given init mode.
-    ///
-    /// # Arguments
-    /// * `docker` - Docker client
-    /// * `host_config_path` - Path on host to store Anvil data
-    /// * `chain_id` - Chain ID for Anvil
-    /// * `init_mode` - How Anvil should load initial state (None for fresh/fork)
-    /// * `accounts` - Pre-derived accounts from mnemonic
-    pub async fn start(
-        self,
-        docker: &mut KupDocker,
-        host_config_path: PathBuf,
-        chain_id: u64,
-        init_mode: Option<AnvilInitMode>,
-        accounts: AnvilAccounts,
-    ) -> Result<AnvilHandler, anyhow::Error> {
-        if !host_config_path.exists() {
-            FsHandler::create_host_config_directory(&host_config_path)?;
-        }
-
-        // Container path where anvil will write the config
-        let container_config_path = PathBuf::from("/data");
-
-        // Anvil listens on port 8545 inside the container
-        const ANVIL_INTERNAL_PORT: u16 = 8545;
-
-        let mut cmd_builder = AnvilCmdBuilder::new(chain_id)
+    /// Build the Docker command arguments for Anvil.
+    pub fn build_cmd(
+        &self,
+        _host_config_path: &Path,
+        input: &AnvilInput,
+    ) -> Result<Vec<String>, anyhow::Error> {
+        let mut cmd_builder = AnvilCmdBuilder::new(input.chain_id)
             .host("0.0.0.0")
             .port(ANVIL_INTERNAL_PORT)
             .block_time(self.block_time)
@@ -223,15 +211,43 @@ impl AnvilConfig {
             .fork_block_number(self.fork_block_number)
             .extra_args(self.extra_args.clone());
 
-        if let Some(mode) = init_mode {
-            cmd_builder = cmd_builder.init_mode(mode);
+        if let Some(ref mode) = input.init_mode {
+            cmd_builder = cmd_builder.init_mode(mode.clone());
         }
 
         if let Some(ref fork_url) = self.fork_url {
             cmd_builder = cmd_builder.fork_url(fork_url);
         }
 
-        let cmd = cmd_builder.build();
+        Ok(cmd_builder.build())
+    }
+}
+
+impl KupcakeService for AnvilConfig {
+    type Input = AnvilInput;
+    type Output = AnvilHandler;
+
+    fn container_name(&self) -> &str {
+        &self.container_name
+    }
+
+    fn docker_image(&self) -> &DockerImage {
+        &self.docker_image
+    }
+
+    async fn deploy<'a>(
+        &'a self,
+        docker: &'a mut KupDocker,
+        host_config_path: &'a Path,
+        input: AnvilInput,
+    ) -> Result<AnvilHandler, anyhow::Error> {
+        if !host_config_path.exists() {
+            FsHandler::create_host_config_directory(&host_config_path.to_path_buf())?;
+        }
+
+        let container_config_path = PathBuf::from("/data");
+
+        let cmd = self.build_cmd(host_config_path, &input)?;
 
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> =
@@ -244,16 +260,16 @@ impl AnvilConfig {
             .cmd(cmd)
             .expose(ExposedPort::tcp(ANVIL_INTERNAL_PORT))
             .ports(port_mappings)
-            .bind(&host_config_path, &container_config_path, "rw");
+            .bind(host_config_path, &container_config_path, "rw");
 
-        let mut handler = docker
-            .start_service(
-                &self.container_name,
-                service_config,
-                CreateAndStartContainerOptions::default(),
-            )
-            .await
-            .context("Failed to start Anvil container")?;
+        let mut handler = service::deploy_container(
+            docker,
+            &self.docker_image,
+            &self.container_name,
+            service_config,
+        )
+        .await
+        .context("Failed to start Anvil container")?;
 
         tracing::info!(
             container_id = %handler.container_id,
@@ -283,11 +299,7 @@ impl AnvilConfig {
         let l1_rpc_url = KupDocker::build_http_url(&handler.container_name, ANVIL_INTERNAL_PORT)?;
 
         // Build host-accessible URL from bound port
-        let l1_host_url = handler
-            .get_tcp_host_port(ANVIL_INTERNAL_PORT)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build Anvil host URL")?;
+        let l1_host_url = handler.build_host_url(ANVIL_INTERNAL_PORT, "http")?;
 
         tracing::info!(
             container_id = %handler.container_id,
@@ -299,7 +311,7 @@ impl AnvilConfig {
         Ok(AnvilHandler {
             container_id: handler.container_id,
             container_name: handler.container_name,
-            accounts,
+            accounts: input.accounts,
             l1_rpc_url,
             l1_host_url,
         })
