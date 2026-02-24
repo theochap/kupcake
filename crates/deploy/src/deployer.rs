@@ -549,8 +549,8 @@ impl Deployer {
                 tracing::info!("Deploying L1 contracts...");
 
                 // Enable automine so every transaction is instantly mined into
-                // its own block. This avoids RPC contention between a polling
-                // mining loop and op-deployer's parallel transaction management.
+                // its own block. This avoids the 16-tx-per-sender txpool limit
+                // that causes dropped transactions with interval mining.
                 anvil
                     .enable_automine()
                     .await
@@ -569,7 +569,7 @@ impl Deployer {
                     )
                     .await;
 
-                // Disable automine before switching to interval mining
+                // Disable automine before switching to interval mining.
                 anvil
                     .disable_automine()
                     .await

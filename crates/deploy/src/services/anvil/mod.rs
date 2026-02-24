@@ -200,7 +200,7 @@ impl AnvilHandler {
         Ok(())
     }
 
-    /// Switch Anvil to automatic interval mining at the given block time.
+    /// Switch Anvil to automatic interval mining at the given block time (in seconds).
     pub async fn enable_interval_mining(&self, block_time: u64) -> Result<(), anyhow::Error> {
         let client = rpc::create_client()?;
         let _: serde_json::Value = rpc::json_rpc_call(
@@ -213,6 +213,7 @@ impl AnvilHandler {
         .context("Failed to enable interval mining")?;
         Ok(())
     }
+
 
     /// Enable automine mode: every transaction is instantly mined into its own block.
     pub async fn enable_automine(&self) -> Result<(), anyhow::Error> {

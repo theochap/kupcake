@@ -193,7 +193,7 @@ impl OpDeployerConfig {
             "sh".to_string(),
             "-c".to_string(),
             format!(
-                "cat {container_config_path_str}/intent.toml && op-deployer --cache-dir {container_config_path_str}/.cache apply --workdir {container_config_path_str} --l1-rpc-url {l1_rpc_url} --private-key {private_key} --tx-prepare-retry-interval 100ms --tx-prepare-max-attempts 500",
+                "cat {container_config_path_str}/intent.toml && op-deployer --cache-dir {container_config_path_str}/.cache apply --workdir {container_config_path_str} --l1-rpc-url {l1_rpc_url} --private-key {private_key}",
                 container_config_path_str = container_config_path.display().to_string(),
                 l1_rpc_url = anvil_handler.l1_rpc_url.to_string(),
                 private_key = anvil_handler.accounts.deployer.private_key.to_string(),
