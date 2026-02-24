@@ -18,6 +18,7 @@ use crate::{
         ServiceConfig,
     },
     fs::FsHandler,
+    rpc,
 };
 
 /// Named accounts from Anvil matching the OP Stack participant roles.
@@ -176,6 +177,44 @@ pub struct AnvilHandler {
     pub accounts: AnvilAccounts,
 }
 
+impl AnvilHandler {
+    /// Get the host-accessible RPC URL, returning an error if not available.
+    fn host_url(&self) -> Result<&str, anyhow::Error> {
+        self.l1_host_url
+            .as_ref()
+            .map(|u| u.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Anvil host URL not available"))
+    }
+
+    /// Set the block timestamp interval so each mined block advances by `block_time` seconds.
+    pub async fn set_block_timestamp_interval(&self, block_time: u64) -> Result<(), anyhow::Error> {
+        let client = rpc::create_client()?;
+        let _: serde_json::Value = rpc::json_rpc_call(
+            &client,
+            self.host_url()?,
+            "anvil_setBlockTimestampInterval",
+            vec![serde_json::Value::Number(block_time.into())],
+        )
+        .await
+        .context("Failed to set block timestamp interval")?;
+        Ok(())
+    }
+
+    /// Switch Anvil to automatic interval mining at the given block time.
+    pub async fn enable_interval_mining(&self, block_time: u64) -> Result<(), anyhow::Error> {
+        let client = rpc::create_client()?;
+        let _: serde_json::Value = rpc::json_rpc_call(
+            &client,
+            self.host_url()?,
+            "evm_setIntervalMining",
+            vec![serde_json::Value::Number(block_time.into())],
+        )
+        .await
+        .context("Failed to enable interval mining")?;
+        Ok(())
+    }
+}
+
 impl AnvilConfig {
     /// Start an Anvil container.
     ///
@@ -205,7 +244,6 @@ impl AnvilConfig {
         let mut cmd_builder = AnvilCmdBuilder::new(chain_id)
             .host("0.0.0.0")
             .port(ANVIL_INTERNAL_PORT)
-            .block_time(self.block_time)
             .timestamp(self.timestamp)
             .fork_block_number(self.fork_block_number)
             .config_out(container_config_path.join("anvil.json"))
@@ -293,13 +331,26 @@ impl AnvilConfig {
             "Anvil container started"
         );
 
-        Ok(AnvilHandler {
+        let anvil_handler = AnvilHandler {
             container_id: handler.container_id,
             container_name: handler.container_name,
             accounts,
             l1_rpc_url,
             l1_host_url,
+        };
+
+        // Wait for Anvil's RPC server to be ready, then configure timestamp spacing.
+        // The config file may appear before the HTTP server accepts connections.
+        let block_time = self.block_time;
+        rpc::wait_until_ready("Anvil RPC", 30, || async {
+            anvil_handler
+                .set_block_timestamp_interval(block_time)
+                .await
         })
+        .await
+        .context("Failed to set block timestamp interval on Anvil")?;
+
+        Ok(anvil_handler)
     }
 }
 

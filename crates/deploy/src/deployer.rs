@@ -1,11 +1,15 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 
 use crate::{
     AnvilConfig, AnvilHandler, DeploymentConfigHash, DeploymentVersion, KupDocker, KupDockerConfig,
     L2StackBuilder, MetricsTarget, MonitoringConfig, OpBatcherHandler, OpChallengerHandler,
-    OpDeployerConfig, OpProposerHandler, fs, services, services::MonitoringHandler,
+    OpDeployerConfig, OpProposerHandler, fs, rpc, services, services::MonitoringHandler,
     services::l2_node::L2NodeHandler,
 };
 
@@ -194,6 +198,51 @@ impl Deployer {
 }
 
 impl Deployer {
+    /// Poll the Anvil txpool and mine blocks on-demand until signalled to stop.
+    ///
+    /// When `stop` is set, drains any remaining pending transactions before returning.
+    async fn mine_pending_transactions(
+        anvil_url: &str,
+        stop: Arc<AtomicBool>,
+    ) -> Result<()> {
+        let client = rpc::create_client()?;
+
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                // Drain: mine until txpool is empty
+                while Self::txpool_pending_count(&client, anvil_url).await? > 0 {
+                    Self::mine_block(&client, anvil_url).await?;
+                }
+                return Ok(());
+            }
+
+            if Self::txpool_pending_count(&client, anvil_url).await? > 0 {
+                Self::mine_block(&client, anvil_url).await?;
+                continue;
+            }
+
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Query the number of pending transactions in Anvil's txpool.
+    async fn txpool_pending_count(client: &reqwest::Client, url: &str) -> Result<u64> {
+        let result: serde_json::Value =
+            rpc::json_rpc_call(client, url, "txpool_status", vec![]).await?;
+        let hex = result
+            .get("pending")
+            .and_then(|v| v.as_str())
+            .context("txpool_status response missing 'pending' field")?;
+        u64::from_str_radix(hex.trim_start_matches("0x"), 16)
+            .context("Failed to parse pending tx count")
+    }
+
+    /// Mine a single block on Anvil.
+    async fn mine_block(client: &reqwest::Client, url: &str) -> Result<()> {
+        let _: serde_json::Value = rpc::json_rpc_call(client, url, "evm_mine", vec![]).await?;
+        Ok(())
+    }
+
     /// Build metrics targets for Prometheus scraping from L2 stack handlers.
     fn build_metrics_targets(l2_stack: &L2StackHandler) -> Vec<MetricsTarget> {
         use services::kona_node::DEFAULT_METRICS_PORT as KONA_METRICS_PORT;
@@ -501,6 +550,7 @@ impl Deployer {
         // Save values we'll need after self is consumed
         let detach = self.detach;
         let outdata = self.outdata.clone();
+        let block_time = self.anvil.block_time;
 
         tracing::info!(
             anvil_config = ?self.anvil,
@@ -545,7 +595,25 @@ impl Deployer {
             if needs_deployment {
                 tracing::info!("Deploying L1 contracts...");
 
-                self.op_deployer
+                // Spawn on-demand mining loop: polls txpool every 200ms and mines
+                // when pending transactions exist. This makes contract deployment
+                // near-instant since Anvil starts with --no-mining.
+                let stop = Arc::new(AtomicBool::new(false));
+                let mining_stop = stop.clone();
+                let mining_url = anvil
+                    .l1_host_url
+                    .as_ref()
+                    .context("Anvil host URL required for on-demand mining")?
+                    .to_string();
+
+                let deploy_start = Instant::now();
+
+                let mining_handle = tokio::spawn(async move {
+                    Self::mine_pending_transactions(&mining_url, mining_stop).await
+                });
+
+                let deploy_result = self
+                    .op_deployer
                     .deploy_contracts(
                         docker,
                         l2_nodes_data_path.clone(),
@@ -553,7 +621,21 @@ impl Deployer {
                         self.l1_chain_id,
                         self.l2_chain_id,
                     )
-                    .await?;
+                    .await;
+
+                // Signal the mining loop to drain remaining txs and stop
+                stop.store(true, Ordering::Relaxed);
+                mining_handle
+                    .await
+                    .context("Mining task panicked")?
+                    .context("On-demand mining loop failed")?;
+
+                tracing::info!(
+                    deploy_time_ms = deploy_start.elapsed().as_millis() as u64,
+                    "L1 contract deployment complete"
+                );
+
+                deploy_result?;
 
                 // Save version file after successful deployment
                 let version = DeploymentVersion::new(current_hash.clone());
@@ -567,6 +649,18 @@ impl Deployer {
                 );
             }
         }
+
+        // Switch Anvil to automatic interval mining for normal L2 operation.
+        // This runs regardless of whether contracts were deployed or skipped.
+        anvil
+            .enable_interval_mining(block_time)
+            .await
+            .context("Failed to enable interval mining on Anvil")?;
+
+        tracing::info!(
+            block_time,
+            "Anvil switched to interval mining"
+        );
 
         let skip_proposer_challenger = self.snapshot.is_some();
 
