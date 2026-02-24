@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -9,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AnvilConfig, AnvilHandler, DeploymentConfigHash, DeploymentVersion, KupDocker, KupDockerConfig,
     L2StackBuilder, MetricsTarget, MonitoringConfig, OpBatcherHandler, OpChallengerHandler,
-    OpDeployerConfig, OpProposerHandler, fs, rpc, services, services::MonitoringHandler,
+    OpDeployerConfig, OpProposerHandler, fs, services, services::MonitoringHandler,
     services::l2_node::L2NodeHandler,
 };
 
@@ -198,51 +196,6 @@ impl Deployer {
 }
 
 impl Deployer {
-    /// Poll the Anvil txpool and mine blocks on-demand until signalled to stop.
-    ///
-    /// When `stop` is set, drains any remaining pending transactions before returning.
-    async fn mine_pending_transactions(
-        anvil_url: &str,
-        stop: Arc<AtomicBool>,
-    ) -> Result<()> {
-        let client = rpc::create_client()?;
-
-        loop {
-            if stop.load(Ordering::Relaxed) {
-                // Drain: mine until txpool is empty
-                while Self::txpool_pending_count(&client, anvil_url).await? > 0 {
-                    Self::mine_block(&client, anvil_url).await?;
-                }
-                return Ok(());
-            }
-
-            if Self::txpool_pending_count(&client, anvil_url).await? > 0 {
-                Self::mine_block(&client, anvil_url).await?;
-                continue;
-            }
-
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    }
-
-    /// Query the number of pending transactions in Anvil's txpool.
-    async fn txpool_pending_count(client: &reqwest::Client, url: &str) -> Result<u64> {
-        let result: serde_json::Value =
-            rpc::json_rpc_call(client, url, "txpool_status", vec![]).await?;
-        let hex = result
-            .get("pending")
-            .and_then(|v| v.as_str())
-            .context("txpool_status response missing 'pending' field")?;
-        u64::from_str_radix(hex.trim_start_matches("0x"), 16)
-            .context("Failed to parse pending tx count")
-    }
-
-    /// Mine a single block on Anvil.
-    async fn mine_block(client: &reqwest::Client, url: &str) -> Result<()> {
-        let _: serde_json::Value = rpc::json_rpc_call(client, url, "evm_mine", vec![]).await?;
-        Ok(())
-    }
-
     /// Build metrics targets for Prometheus scraping from L2 stack handlers.
     fn build_metrics_targets(l2_stack: &L2StackHandler) -> Vec<MetricsTarget> {
         use services::kona_node::DEFAULT_METRICS_PORT as KONA_METRICS_PORT;
@@ -595,22 +548,15 @@ impl Deployer {
             if needs_deployment {
                 tracing::info!("Deploying L1 contracts...");
 
-                // Spawn on-demand mining loop: polls txpool every 200ms and mines
-                // when pending transactions exist. This makes contract deployment
-                // near-instant since Anvil starts with --no-mining.
-                let stop = Arc::new(AtomicBool::new(false));
-                let mining_stop = stop.clone();
-                let mining_url = anvil
-                    .l1_host_url
-                    .as_ref()
-                    .context("Anvil host URL required for on-demand mining")?
-                    .to_string();
+                // Enable automine so every transaction is instantly mined into
+                // its own block. This avoids RPC contention between a polling
+                // mining loop and op-deployer's parallel transaction management.
+                anvil
+                    .enable_automine()
+                    .await
+                    .context("Failed to enable automine on Anvil")?;
 
                 let deploy_start = Instant::now();
-
-                let mining_handle = tokio::spawn(async move {
-                    Self::mine_pending_transactions(&mining_url, mining_stop).await
-                });
 
                 let deploy_result = self
                     .op_deployer
@@ -623,12 +569,11 @@ impl Deployer {
                     )
                     .await;
 
-                // Signal the mining loop to drain remaining txs and stop
-                stop.store(true, Ordering::Relaxed);
-                mining_handle
+                // Disable automine before switching to interval mining
+                anvil
+                    .disable_automine()
                     .await
-                    .context("Mining task panicked")?
-                    .context("On-demand mining loop failed")?;
+                    .context("Failed to disable automine on Anvil")?;
 
                 tracing::info!(
                     deploy_time_ms = deploy_start.elapsed().as_millis() as u64,

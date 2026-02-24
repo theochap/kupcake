@@ -213,6 +213,34 @@ impl AnvilHandler {
         .context("Failed to enable interval mining")?;
         Ok(())
     }
+
+    /// Enable automine mode: every transaction is instantly mined into its own block.
+    pub async fn enable_automine(&self) -> Result<(), anyhow::Error> {
+        let client = rpc::create_client()?;
+        let _: serde_json::Value = rpc::json_rpc_call(
+            &client,
+            self.host_url()?,
+            "evm_setAutomine",
+            vec![serde_json::Value::Bool(true)],
+        )
+        .await
+        .context("Failed to enable automine")?;
+        Ok(())
+    }
+
+    /// Disable automine mode.
+    pub async fn disable_automine(&self) -> Result<(), anyhow::Error> {
+        let client = rpc::create_client()?;
+        let _: serde_json::Value = rpc::json_rpc_call(
+            &client,
+            self.host_url()?,
+            "evm_setAutomine",
+            vec![serde_json::Value::Bool(false)],
+        )
+        .await
+        .context("Failed to disable automine")?;
+        Ok(())
+    }
 }
 
 impl AnvilConfig {
