@@ -429,15 +429,16 @@ impl Drop for KupDocker {
                 .into_iter()
                 .collect::<Result<Vec<_>>>()?;
 
-            // Remove network if it exists (ignore if already removed)
+            // Ensure all containers are fully removed before removing the network
+            Self::ensure_containers_removed(&docker, &self.network_id).await?;
+
+            // Remove network (ignore if already removed)
             tracing::trace!(self.network_id, "Removing network");
             match docker.remove_network(&self.network_id).await {
                 Ok(_) => tracing::trace!(self.network_id, "Network removed"),
                 Err(e) => {
                     let msg = e.to_string();
-                    if msg.contains("No such network") || msg.contains("not found") {
-                        tracing::debug!(self.network_id, "Network already removed");
-                    } else {
+                    if !msg.contains("No such network") && !msg.contains("not found") {
                         anyhow::bail!("Failed to remove network: {}", e);
                     }
                 }
@@ -1212,6 +1213,46 @@ ENTRYPOINT [\"/binary\"]
         Self::stop_and_remove_container_static(&self.docker, container_id).await
     }
 
+    /// Ensure all containers on a network have been removed.
+    ///
+    /// Inspects the network for any remaining containers and force-removes them.
+    /// Retries until the network has no active endpoints or the maximum number
+    /// of attempts is reached.
+    async fn ensure_containers_removed(docker: &Docker, network_id: &str) -> Result<()> {
+        for attempt in 0..5 {
+            let info = match docker.inspect_network::<String>(network_id, None).await {
+                Ok(info) => info,
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("No such network") || msg.contains("not found") {
+                        return Ok(());
+                    }
+                    anyhow::bail!("Failed to inspect network: {}", e);
+                }
+            };
+
+            let containers = info.containers.unwrap_or_default();
+            if containers.is_empty() {
+                return Ok(());
+            }
+
+            tracing::debug!(
+                network_id,
+                attempt,
+                remaining = containers.len(),
+                "Network still has active containers, force-removing..."
+            );
+
+            for (container_id, _) in &containers {
+                Self::stop_and_remove_container_static(docker, container_id).await?;
+            }
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+
+        Ok(())
+    }
+
     /// Check if a container is running.
     pub async fn is_container_running(&self, container_name: &str) -> Result<bool> {
         match self.inspect_container(container_name, None).await {
@@ -1584,18 +1625,21 @@ pub async fn cleanup_by_prefix(prefix: &str) -> Result<CleanupResult> {
         }
     }
 
-    // Try to remove the network
+    // Ensure all containers are removed, then remove the network
     let network_name = format!("{}-network", prefix);
     tracing::debug!("Attempting to remove network: {}", network_name);
+
+    if let Err(e) = KupDocker::ensure_containers_removed(&docker, &network_name).await {
+        tracing::warn!("Failed to ensure containers removed from {}: {}", network_name, e);
+    }
 
     match docker.remove_network(&network_name).await {
         Ok(_) => {
             result.network_removed = Some(network_name);
         }
         Err(e) => {
-            // Only log if it's not a "not found" error
-            let err_str = e.to_string();
-            if !err_str.contains("No such network") && !err_str.contains("not found") {
+            let msg = e.to_string();
+            if !msg.contains("No such network") && !msg.contains("not found") {
                 tracing::warn!("Failed to remove network {}: {}", network_name, e);
             } else {
                 tracing::debug!("Network '{}' does not exist", network_name);

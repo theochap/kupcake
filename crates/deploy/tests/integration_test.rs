@@ -187,6 +187,33 @@ async fn wait_for_all_nodes(deployment: &DeploymentResult) {
     }
 }
 
+/// Wait for all L2 nodes to have block_number > 0 by polling the health check.
+/// Validators may take a while to sync from the sequencer, so this is more
+/// reliable than a fixed sleep.
+async fn wait_for_all_nodes_advancing(
+    deployer: &kupcake_deploy::Deployer,
+    timeout_secs: u64,
+) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        let report = health::health_check(deployer).await?;
+        let all_advancing = report.nodes.iter().all(|node| {
+            node.execution.block_number.unwrap_or(0) > 0
+        });
+        if all_advancing {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "Timed out waiting for all nodes to advance blocks after {}s.\n{}",
+                timeout_secs,
+                report
+            );
+        }
+        sleep(Duration::from_secs(5)).await;
+    }
+}
+
 /// Initialize tracing for tests (idempotent).
 fn init_test_tracing() {
     tracing_subscriber::fmt()
@@ -1704,16 +1731,16 @@ async fn test_health_check_reports_healthy() -> Result<()> {
     tracing::info!("=== Waiting for nodes to be ready... ===");
     wait_for_all_nodes(&deployment).await;
 
-    // Wait for blocks to advance on all nodes (validators need extra time to sync)
-    tracing::info!("=== Waiting 60 seconds for blocks to be produced... ===");
-    sleep(Duration::from_secs(60)).await;
-
-    // Load config and run health check
-    tracing::info!("=== Running health check... ===");
+    // Load config and wait for all nodes to advance blocks
     let config_path = ctx.outdata_path.join("Kupcake.toml");
     let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
         .context("Failed to load deployer from config file")?;
 
+    tracing::info!("=== Waiting for all nodes to advance blocks... ===");
+    wait_for_all_nodes_advancing(&loaded_deployer, 180).await?;
+
+    // Run health check
+    tracing::info!("=== Running health check... ===");
     let report = health::health_check(&loaded_deployer).await?;
     tracing::info!("{}", report);
 
@@ -1806,17 +1833,17 @@ async fn test_health_check_reports_unhealthy_on_stopped_container() -> Result<()
     let (mut _docker, deployment) = ctx.deploy(deployer).await?;
     tracing::info!("=== Deployment completed successfully ===");
 
-    // Wait for nodes to be ready and blocks to advance
+    // Wait for nodes to be ready
     tracing::info!("=== Waiting for nodes to be ready... ===");
     wait_for_all_nodes(&deployment).await;
 
-    tracing::info!("=== Waiting 60 seconds for blocks to be produced... ===");
-    sleep(Duration::from_secs(60)).await;
-
-    // Load config for health checks
+    // Load config and wait for all nodes to advance blocks
     let config_path = ctx.outdata_path.join("Kupcake.toml");
     let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
         .context("Failed to load deployer from config file")?;
+
+    tracing::info!("=== Waiting for all nodes to advance blocks... ===");
+    wait_for_all_nodes_advancing(&loaded_deployer, 180).await?;
 
     // Verify network is healthy first
     tracing::info!("=== Verifying network is initially healthy... ===");
