@@ -167,22 +167,46 @@ pub struct L2StackBuilder {
 
 ## Deployment Sequence
 
-Kupcake deploys services in this order (see [Deployment Flow](deployment-flow.md)):
+Kupcake supports two deployment targets that determine how OP Stack contracts are deployed:
+
+### Live Mode (default)
+
+In live mode, Anvil starts first and contracts are deployed to the running L1 via transactions. This supports forking remote L1 chains.
 
 1. **Compute deployment configuration hash** (SHA-256 of deployment-relevant parameters)
 2. **Create Docker network**
-3. **Start Anvil** (L1 fork)
+3. **Start Anvil** (L1, optionally forking a remote chain)
 4. **Check deployment version** - Compare current hash with saved hash
    - If unchanged, skip contract deployment (saves 30-60s)
    - If changed, missing, or corrupted, redeploy contracts
 5. **Deploy contracts** (op-deployer init + apply) - Only if needed
 6. **Save deployment version** - Store hash, timestamp, and Kupcake version
 7. **Generate genesis/rollup configs**
-8. **Start all op-reth instances** (execution layer; op-rbuilder for sequencers if `--flashblocks`)
-9. **Start all kona-node instances** (consensus layer; with flashblocks relay if `--flashblocks`)
-10. **Start op-batcher, op-proposer, op-challenger**
-11. **Start op-conductor** (if multi-sequencer)
-12. **Start Prometheus and Grafana**
+
+### Genesis Mode
+
+In genesis mode, contracts are deployed into an in-memory L1 state, then Anvil boots from the resulting genesis. This is ~3-4x faster but only works with local Anvil (no fork).
+
+L1 state restoration is supported: if `anvil/state.json` exists and contracts haven't been redeployed, Anvil restores from the persisted state via `--init-state` instead of booting fresh from genesis. Note: Anvil's `--init` flag is incompatible with `--dump-state`, so the first genesis boot does not automatically persist state.
+
+1. **Compute deployment configuration hash**
+2. **Create Docker network**
+3. **Check deployment version** - Compare current hash with saved hash
+4. **Deploy contracts in-memory** (op-deployer init + apply with `--l1-state-dump`) - Only if needed
+5. **Extract L1 genesis** from state dump
+6. **Start Anvil** - If persisted `state.json` exists (from a previous run), use `--init-state` to restore; otherwise use `--init` with L1 genesis and `--dump-state` to persist state on exit
+7. **Patch rollup.json** with Anvil's actual genesis block hash (workaround for [foundry-rs/foundry#7366](https://github.com/foundry-rs/foundry/issues/7366))
+8. **Save deployment version**
+
+### Common Steps (both modes)
+
+After L1 and contracts are ready:
+
+8/9. **Start all op-reth instances** (execution layer; op-rbuilder for sequencers if `--flashblocks`)
+9/10. **Start all kona-node instances** (consensus layer; with flashblocks relay if `--flashblocks`)
+10/11. **Start op-batcher, op-proposer, op-challenger**
+11/12. **Start op-conductor** (if multi-sequencer)
+12/13. **Start Prometheus and Grafana**
 
 Each step waits for the previous step to complete.
 
@@ -352,7 +376,7 @@ fs::write("./data/Kupcake.toml", toml)?;
 
 ### Deployment Versioning
 
-Kupcake implements a hash-based versioning system to skip unnecessary contract redeployments (`crates/deploy/src/deployment_hash.rs`):
+Kupcake implements a hash-based versioning system to skip unnecessary contract redeployments in both live and genesis modes (`crates/deploy/src/deployment_hash.rs`):
 
 **Implementation**:
 

@@ -240,6 +240,7 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         .copy_snapshot(args.copy_snapshot)
         .op_rbuilder_image(args.docker_images.op_rbuilder_image)
         .op_rbuilder_tag(args.docker_images.op_rbuilder_tag)
+        .deployment_target(args.deployment_target.into())
         .op_deployer_image(args.docker_images.op_deployer_image)
         .op_deployer_tag(args.docker_images.op_deployer_tag)
         .prometheus_image(args.docker_images.prometheus_image)

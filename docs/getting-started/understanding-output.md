@@ -55,12 +55,12 @@ The op-deployer runs in two phases:
 
 **Deployment Optimization**:
 
-Kupcake uses configuration hashing to avoid unnecessary contract redeployments. The `.deployment-version.json` file stores:
-- SHA-256 hash of deployment-relevant parameters (L1/L2 chain IDs, fork URL, etc.)
+Kupcake uses configuration hashing to avoid unnecessary contract redeployments in both live and genesis modes. The `.deployment-version.json` file stores:
+- SHA-256 hash of deployment-relevant parameters (L1/L2 chain IDs, fork URL, deployment target, etc.)
 - Timestamp of deployment
 - Kupcake version used
 
-On subsequent runs, if the configuration hash matches, contract deployment is skipped (saves 30-60 seconds). Use `--redeploy` to force redeployment.
+On subsequent runs, if the configuration hash matches, contract deployment is skipped (saves 30-60 seconds in live mode, ~15 seconds in genesis mode). Use `--redeploy` to force redeployment.
 
 ### L2 Execution Layer (op-reth)
 

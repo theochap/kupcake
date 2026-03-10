@@ -169,19 +169,33 @@ Deployment configuration is saved to `{outdata}/Kupcake.toml` and can be reloade
 - Modifying and redeploying
 - Sharing configurations
 
+### Deployment Targets
+
+Kupcake supports two deployment targets (`--deployment-target`):
+
+- **Live** (default): Anvil starts first, then op-deployer deploys contracts to the running L1 via transactions. Supports forking remote L1 chains (`--l1`).
+- **Genesis**: op-deployer deploys contracts into an in-memory L1 state dump, then Anvil boots from the resulting genesis. ~3-4x faster but only works with local Anvil (no fork).
+
+Genesis mode implementation:
+- `crates/deploy/src/l1_genesis.rs` - Extracts L1 genesis from op-deployer state dump, patches rollup.json with Anvil's actual genesis block hash (workaround for [foundry-rs/foundry#7366](https://github.com/foundry-rs/foundry/issues/7366))
+- `crates/deploy/src/accounts.rs` - Derives Anvil accounts from mnemonic for genesis mode (Anvil isn't running yet)
+
+Genesis mode supports L1 state restoration: if `anvil/state.json` exists (e.g., from a prior live-mode run or manual RPC dump) and contracts weren't redeployed, Anvil uses `--init-state` to restore from the persisted state. Otherwise, Anvil boots fresh from `l1-genesis.json` via `--init`. Note: Anvil's `--init` flag is incompatible with `--dump-state`, so the first genesis boot does not automatically persist state. If contracts are redeployed, stale `state.json` is deleted so Anvil boots fresh from the new genesis.
+
 ### Deployment Versioning
 
-Kupcake implements a configuration hash-based versioning system to avoid unnecessary contract redeployments (`crates/deploy/src/deployment_hash.rs`):
+Kupcake implements a configuration hash-based versioning system to avoid unnecessary contract redeployments in both live and genesis modes (`crates/deploy/src/deployment_hash.rs`):
 
 **How it works:**
 1. Before deploying contracts, compute a SHA-256 hash of deployment-relevant parameters
 2. Save hash to `{outdata}/l2-stack/.deployment-version.json` after successful deployment
 3. On subsequent runs, compare current config hash with saved hash
-4. Skip contract deployment if hashes match (saves 30-60s)
+4. Skip contract deployment if hashes match (saves 30-60s in live mode, ~15s in genesis mode)
 
 **Parameters included in hash (affect contract deployment):**
 - `l1_chain_id` - Determines which OPCM contracts are used
 - `l2_chain_id` - Embedded in deployed contracts and genesis
+- `deployment_target` - Live vs Genesis changes how contracts are deployed
 - `fork_url` - Changes which L1 state is forked
 - `fork_block_number` - Changes L1 fork point
 - `timestamp` - Affects genesis timestamp alignment
@@ -205,6 +219,7 @@ Kupcake implements a configuration hash-based versioning system to avoid unneces
 ├── Kupcake.toml              # Saved deployment configuration
 ├── anvil/
 │   ├── anvil.json            # Anvil account information
+│   ├── l1-genesis.json       # L1 genesis state (genesis mode only)
 │   └── state.json            # Anvil state snapshots
 ├── l2-stack/
 │   ├── .deployment-version.json  # Deployment version metadata (hash, timestamp, version)
@@ -254,15 +269,26 @@ The `block_time` parameter affects both:
 ### Service Startup Order
 
 Critical startup sequence managed by `Deployer::deploy()`:
+
+**Live mode:**
 1. Create Docker network
 2. Start Anvil (L1)
-3. Deploy contracts via op-deployer (init + apply)
+3. Deploy contracts via op-deployer (init + apply) — skipped if config hash matches
 4. Generate genesis.json and rollup.json
-5. Start all op-reth instances (execution layer)
-6. Start all kona-node instances (consensus layer)
-7. Start op-batcher, op-proposer, op-challenger
-8. Start op-conductor (if multi-sequencer)
-9. Start Prometheus and Grafana
+
+**Genesis mode:**
+1. Create Docker network
+2. Deploy contracts in-memory via op-deployer — skipped if config hash matches
+3. Extract L1 genesis from state dump
+4. Start Anvil with `--init` (boots from genesis)
+5. Patch rollup.json with actual genesis block hash
+
+**Both modes (continued):**
+- Start all op-reth instances (execution layer)
+- Start all kona-node instances (consensus layer)
+- Start op-batcher, op-proposer, op-challenger
+- Start op-conductor (if multi-sequencer)
+- Start Prometheus and Grafana
 
 ### Cleanup Behavior
 
@@ -377,6 +403,42 @@ if let Some(cached) = cache.get(&key) {
 match opt {
     Some(v) => v,
     None => panic!("missing value"),
+}
+```
+
+### Retry and Polling
+- **NEVER write manual polling loops** (`loop` + `sleep` + deadline/`Instant` checks)
+- Use the `backon` crate (`Retryable` with `ConstantBuilder` or `ExponentialBuilder`) for all retry/polling patterns
+- This applies to port readiness checks, RPC availability, file existence, or any condition that needs repeated checking
+
+```rust
+// Good
+use backon::{ConstantBuilder, Retryable};
+
+let backoff = ConstantBuilder::default()
+    .with_delay(Duration::from_millis(500))
+    .with_max_times(30);
+
+let result = (|| async {
+    let value = check_something().await?;
+    if !value.is_ready() {
+        anyhow::bail!("not ready yet");
+    }
+    Ok(value)
+})
+.retry(backoff)
+.await
+.context("Timed out waiting for readiness")?;
+
+// Bad
+loop {
+    if start.elapsed() > timeout {
+        anyhow::bail!("timed out");
+    }
+    if let Ok(value) = check_something().await {
+        break value;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
 }
 ```
 

@@ -85,10 +85,7 @@ pub struct GrafanaConfig {
     pub port: u16,
 
     /// Host port for Grafana. If None, not published to host. If Some(0), OS picks port.
-    #[serde(
-        default = "default_grafana_host_port",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_port: Option<u16>,
 
     /// Admin username.
@@ -96,10 +93,6 @@ pub struct GrafanaConfig {
 
     /// Admin password.
     pub admin_password: String,
-}
-
-fn default_grafana_host_port() -> Option<u16> {
-    Some(0) // Let OS pick an available port
 }
 
 /// Default Docker image for Grafana.

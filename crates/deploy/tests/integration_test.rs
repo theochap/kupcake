@@ -1,9 +1,13 @@
 //! Integration tests for kupcake-deploy.
 //!
 //! These tests require Docker to be running and will deploy actual networks.
-//! They run in local mode without forking, which deploys all contracts from scratch.
+//! They use genesis deployment mode by default for speed.
 //! Each test uses a unique random L1 chain ID to avoid conflicts when running in parallel.
+//!
+//! For slower live deployment tests, see `live_integration_test.rs`.
 //! Run with: cargo test --test integration_test
+
+mod common;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -11,233 +15,16 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use kupcake_deploy::{
-    DeployerBuilder, DeploymentResult, KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG, KupDocker,
+    DeployerBuilder, DeploymentTarget, KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG, KupDocker,
     OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG, OutDataPath, cleanup_by_prefix, faucet, health,
     rpc, services::SyncStatus,
 };
-use rand::Rng;
 use serde_json::Value;
-use tokio::sync::Semaphore;
 use tokio::time::{sleep, timeout};
 
-/// Global semaphore to limit concurrent integration tests.
-/// Each test deploys Docker containers which consume significant resources,
-/// so we limit concurrency to avoid OOM kills and resource exhaustion.
-static TEST_SEMAPHORE: Semaphore = Semaphore::const_new(5);
+use common::*;
 
-// Timeout constants
-const DEPLOYMENT_TIMEOUT_SECS: u64 = 600;
 const CONDUCTOR_DEPLOYMENT_TIMEOUT_SECS: u64 = 900;
-const NODE_READY_TIMEOUT_SECS: u64 = 300;
-
-/// Generate a random L1 chain ID for local testing.
-///
-/// Uses a range that doesn't conflict with known chains (Mainnet=1, Sepolia=11155111)
-/// and is different for each test run. Range: 100000-999999
-fn generate_random_l1_chain_id() -> u64 {
-    rand::rng().random_range(100000..=999999)
-}
-
-/// Test setup context containing common test infrastructure.
-struct TestContext {
-    l1_chain_id: u64,
-    network_name: String,
-    outdata_path: PathBuf,
-}
-
-impl TestContext {
-    /// Initialize a new test context with random chain ID and unique network name.
-    fn new(test_prefix: &str) -> Self {
-        let l1_chain_id = generate_random_l1_chain_id();
-        let network_name = format!("kup-{}-{}", test_prefix, l1_chain_id);
-        let base_tmp = std::env::var("KUPCAKE_TEST_TMPDIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/tmp"));
-        let outdata_path = base_tmp.join(&network_name);
-
-        Self {
-            l1_chain_id,
-            network_name,
-            outdata_path,
-        }
-    }
-
-    /// Build a standard deployer for testing.
-    async fn build_deployer(&self) -> Result<kupcake_deploy::Deployer> {
-        DeployerBuilder::new(self.l1_chain_id)
-            .network_name(&self.network_name)
-            .outdata(OutDataPath::Path(self.outdata_path.clone()))
-            .l2_node_count(2) // 1 sequencer + 1 validator
-            .sequencer_count(1)
-            .block_time(2)
-            .detach(true)
-            .build()
-            .await
-            .context("Failed to build deployer")
-    }
-
-    /// Execute a deployment with timeout and error handling.
-    ///
-    /// Returns the KupDocker and DeploymentResult on success.
-    async fn deploy(
-        &self,
-        deployer: kupcake_deploy::Deployer,
-    ) -> Result<(KupDocker, DeploymentResult)> {
-        let mut docker = KupDocker::new(deployer.docker.clone()).await?;
-        let deploy_result = timeout(
-            Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS),
-            deployer.deploy(&mut docker, false, false),
-        )
-        .await;
-
-        match deploy_result {
-            Ok(Ok(deployment)) => Ok((docker, deployment)),
-            Ok(Err(e)) => {
-                let _ = cleanup_by_prefix(&self.network_name).await;
-                Err(e).context("Deployment failed")
-            }
-            Err(_) => {
-                let _ = cleanup_by_prefix(&self.network_name).await;
-                anyhow::bail!(
-                    "Deployment timed out after {} seconds",
-                    DEPLOYMENT_TIMEOUT_SECS
-                )
-            }
-        }
-    }
-
-    /// Get the deployment version hash from the version file.
-    fn get_deployment_hash(&self) -> Result<String> {
-        let version_file_path = self.outdata_path.join("l2-stack/.deployment-version.json");
-
-        if !version_file_path.exists() {
-            anyhow::bail!(
-                "Deployment version file not found: {}",
-                version_file_path.display()
-            );
-        }
-
-        let version_content = std::fs::read_to_string(&version_file_path)
-            .context("Failed to read deployment version file")?;
-
-        let version: Value = serde_json::from_str(&version_content)
-            .context("Failed to parse deployment version file")?;
-
-        version["config_hash"]
-            .as_str()
-            .context("No config_hash in deployment version file")
-            .map(String::from)
-    }
-}
-
-/// Collect sync status from all L2 nodes in a deployment.
-async fn collect_all_sync_status(deployment: &DeploymentResult) -> Vec<(String, SyncStatus)> {
-    let mut statuses = Vec::new();
-
-    for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
-        let label = if node.is_sequencer() {
-            if idx == 0 {
-                "sequencer".to_string()
-            } else {
-                format!("sequencer-{}", idx)
-            }
-        } else {
-            format!(
-                "validator-{}",
-                idx - deployment.l2_stack.sequencers.len() + 1
-            )
-        };
-
-        match node.kona_node.sync_status().await {
-            Ok(status) => {
-                tracing::info!(
-                    "{}: unsafe_l2={}, safe_l2={}, finalized_l2={}",
-                    label,
-                    status.unsafe_l2.number,
-                    status.safe_l2.number,
-                    status.finalized_l2.number
-                );
-                statuses.push((label, status));
-            }
-            Err(e) => {
-                tracing::info!("Warning: Failed to get status for {}: {}", label, e);
-            }
-        }
-    }
-
-    statuses
-}
-
-/// Wait for all L2 nodes in a deployment to be ready.
-async fn wait_for_all_nodes(deployment: &DeploymentResult) {
-    for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
-        let label = if node.is_sequencer() {
-            format!("sequencer-{}", idx)
-        } else {
-            format!("validator-{}", idx - deployment.l2_stack.sequencers.len())
-        };
-
-        if let Err(e) = node
-            .kona_node
-            .wait_until_ready(NODE_READY_TIMEOUT_SECS)
-            .await
-        {
-            tracing::info!("Warning: {} not ready: {}", label, e);
-        }
-    }
-}
-
-/// Wait for all L2 nodes to have block_number > 0 by polling the health check.
-/// Validators may take a while to sync from the sequencer, so this is more
-/// reliable than a fixed sleep.
-async fn wait_for_all_nodes_advancing(
-    deployer: &kupcake_deploy::Deployer,
-    timeout_secs: u64,
-) -> Result<()> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        let report = health::health_check(deployer).await?;
-        let all_advancing = report.nodes.iter().all(|node| {
-            node.execution.block_number.unwrap_or(0) > 0
-        });
-        if all_advancing {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline {
-            anyhow::bail!(
-                "Timed out waiting for all nodes to advance blocks after {}s.\n{}",
-                timeout_secs,
-                report
-            );
-        }
-        sleep(Duration::from_secs(5)).await;
-    }
-}
-
-/// Initialize tracing for tests (idempotent).
-fn init_test_tracing() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .with_test_writer()
-        .try_init()
-        .ok();
-}
-
-/// Query sync status from a kona-node RPC URL.
-/// Helper for tests that don't have access to deployment result yet.
-async fn get_sync_status(rpc_url: &str) -> Result<SyncStatus> {
-    let client = rpc::create_client()?;
-    rpc::json_rpc_call(&client, rpc_url, "optimism_syncStatus", vec![]).await
-}
-
-/// Wait for a kona-node to be ready by polling its RPC endpoint.
-/// Helper for tests that don't have access to deployment result yet.
-async fn wait_for_node_ready(rpc_url: &str, timeout_secs: u64) -> Result<()> {
-    rpc::wait_until_ready("kona-node", timeout_secs, || async {
-        get_sync_status(rpc_url).await.map(|_| ())
-    })
-    .await
-}
 
 /// Get the host port mapped to a container port using docker inspect.
 /// Build the Docker-internal RPC URL for the primary sequencer from a loaded deployer.
@@ -358,15 +145,15 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
         l1_chain_id
     );
 
-    // Build the deployer - use local mode (no forking, deploys all contracts from scratch)
+    // Build the deployer - use genesis deployment mode (faster than live)
     let deployer = DeployerBuilder::new(l1_chain_id)
         .network_name(&network_name)
         .outdata(OutDataPath::Path(outdata_path.clone()))
-        // No l1_rpc_url - this triggers local mode
         .l2_node_count(2) // 1 sequencer + 1 validator (minimum for faster testing)
         .sequencer_count(1)
         .block_time(2) // Fast block time for testing
         .detach(true) // Exit after deployment
+        .deployment_target(DeploymentTarget::Genesis)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -490,15 +277,14 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
         l1_chain_id
     );
 
-    // Use local mode (no forking, deploys all contracts from scratch)
     let deployer = DeployerBuilder::new(l1_chain_id)
         .network_name(&network_name)
         .outdata(OutDataPath::Path(outdata_path.clone()))
-        // No l1_rpc_url - this triggers local mode
         .l2_node_count(2)
         .sequencer_count(1)
         .block_time(2)
         .detach(true)
+        .deployment_target(DeploymentTarget::Genesis)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -677,6 +463,7 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
         .sequencer_count(2) // This triggers conductor deployment
         .block_time(2)
         .detach(true)
+        .deployment_target(DeploymentTarget::Genesis)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -881,15 +668,14 @@ async fn test_op_batcher_health() -> Result<()> {
         l1_chain_id
     );
 
-    // Use local mode (no forking, deploys all contracts from scratch)
     let deployer = DeployerBuilder::new(l1_chain_id)
         .network_name(&network_name)
         .outdata(OutDataPath::Path(outdata_path.clone()))
-        // No l1_rpc_url - this triggers local mode
         .l2_node_count(2)
         .sequencer_count(1)
         .block_time(2)
         .detach(true)
+        .deployment_target(DeploymentTarget::Genesis)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -1037,6 +823,7 @@ async fn test_publish_all_ports() -> Result<()> {
         .block_time(2)
         .publish_all_ports(true) // Enable publish_all_ports
         .detach(true)
+        .deployment_target(DeploymentTarget::Genesis)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -1287,6 +1074,7 @@ async fn test_local_kona_binary() -> Result<()> {
         .with_kona_node_binary(&kona_binary)
         .publish_all_ports(true) // Ensure all ports (including kona-node RPC) are published
         .detach(true)
+        .deployment_target(DeploymentTarget::Genesis)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -1459,52 +1247,56 @@ async fn test_local_kona_binary() -> Result<()> {
     Ok(())
 }
 
-/// Test that deployment skipping works correctly.
+/// Test that deployment skipping works correctly in Genesis mode.
 /// This test verifies:
-/// - Deploy a network once
+/// - Deploy a network once (Genesis mode)
 /// - Stop and cleanup
 /// - Redeploy with same configuration (should skip contract deployment)
 /// - Verify deployment version file exists and hash matches
 /// - Network is healthy and advances
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_deployment_skipping() -> Result<()> {
+async fn test_genesis_deployment_skipping() -> Result<()> {
     let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
     init_test_tracing();
 
-    let ctx = TestContext::new("skip-test");
+    let ctx = TestContext::new("genesis-skip");
     tracing::info!(
-        "=== Starting deployment skipping test with network: {} (L1 chain ID: {}) ===",
+        "=== Starting genesis deployment skipping test with network: {} (L1 chain ID: {}) ===",
         ctx.network_name,
         ctx.l1_chain_id
     );
 
-    // First deployment - should deploy contracts
-    tracing::info!("=== First deployment: deploying contracts ===");
-    let deployer = ctx.build_deployer().await?;
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(2)
+        .sequencer_count(1)
+        .block_time(2)
+        .detach(true)
+        .deployment_target(DeploymentTarget::Genesis)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
+
+    // First deployment - should deploy contracts at genesis
+    tracing::info!("=== First deployment: deploying contracts at genesis ===");
     let config_path = deployer.save_config()?;
-    tracing::info!("Configuration saved to: {}", config_path.display());
 
     let (docker, _deployment) = ctx.deploy(deployer).await?;
     tracing::info!("=== First deployment completed successfully ===");
 
-    // Verify deployment version file and get hash
     let first_hash = ctx
         .get_deployment_hash()
         .inspect(|hash| tracing::info!("First deployment hash: {}", hash))?;
 
-    // Stop and cleanup the network by dropping the first deployment and docker.
-    // docker must be dropped explicitly here so there is only one KupDocker owner
-    // of the network at a time — the second ctx.deploy() will reuse the same
-    // network name, so without this the two instances would both try to remove it.
     tracing::info!("=== Cleaning up first deployment... ===");
     drop(_deployment);
     drop(docker);
 
-    // Second deployment - should skip contract deployment
+    // Second deployment - should skip contract deployment and reuse artifacts
     tracing::info!("=== Second deployment: should skip contract deployment ===");
     let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
         .context("Failed to load deployer from config file")?;
-    tracing::info!("Configuration loaded from: {}", config_path.display());
 
     let start_time = std::time::Instant::now();
     let (mut _docker, deployment) = ctx.deploy(loaded_deployer).await?;
@@ -1534,10 +1326,7 @@ async fn test_deployment_skipping() -> Result<()> {
     }
     tracing::info!("✓ Network is healthy");
 
-    // Cleanup
-    tracing::info!("=== Cleaning up network... ===");
-
-    tracing::info!("=== Test passed! Deployment skipping works correctly. ===");
+    tracing::info!("=== Test passed! Genesis deployment skipping works correctly. ===");
     Ok(())
 }
 
@@ -1562,9 +1351,20 @@ async fn test_stop_and_restart_from_config() -> Result<()> {
         ctx.l1_chain_id
     );
 
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(2)
+        .sequencer_count(1)
+        .block_time(2)
+        .detach(true)
+        .deployment_target(DeploymentTarget::Genesis)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
+
     // Initial deployment
     tracing::info!("=== Initial deployment ===");
-    let deployer = ctx.build_deployer().await?;
     let config_path = deployer.save_config()?;
     tracing::info!("Configuration saved to: {}", config_path.display());
 
@@ -3363,6 +3163,7 @@ async fn test_flashblocks_deployment() -> Result<()> {
         .block_time(2)
         .flashblocks(true)
         .detach(true)
+        .deployment_target(DeploymentTarget::Genesis)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -3565,6 +3366,7 @@ async fn test_flashblocks_with_spam() -> Result<()> {
         .block_time(2)
         .flashblocks(true)
         .detach(true)
+        .deployment_target(DeploymentTarget::Genesis)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -4014,5 +3816,134 @@ async fn test_flashblocks_grafana_dashboard() -> Result<()> {
     tracing::info!("=== Cleaning up network... ===");
 
     tracing::info!("=== Test passed! Flashblocks Grafana dashboard is correctly configured. ===");
+    Ok(())
+}
+
+/// Test genesis deployment mode: contracts are deployed at genesis (in-memory),
+/// then Anvil boots from the resulting L1 state dump, and the full L2 stack starts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_genesis_deployment_mode() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
+    init_test_tracing();
+
+    let ctx = TestContext::new("genesis");
+
+    tracing::info!(
+        "=== Starting genesis deployment test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name,
+        ctx.l1_chain_id
+    );
+
+    // Build deployer in genesis mode (local, no fork URL)
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(2) // 1 sequencer + 1 validator
+        .sequencer_count(1)
+        .block_time(2)
+        .detach(true)
+        .deployment_target(DeploymentTarget::Genesis)
+        .build()
+        .await
+        .context("Failed to build deployer in genesis mode")?;
+
+    deployer.save_config()?;
+
+    tracing::info!("=== Deploying network in genesis mode... ===");
+
+    // Deploy with timeout, keeping the deployer for later assertions
+    let mut docker = KupDocker::new(deployer.docker.clone()).await?;
+    let deploy_result = timeout(
+        Duration::from_secs(DEPLOYMENT_TIMEOUT_SECS),
+        deployer.deploy(&mut docker, false, false),
+    )
+    .await;
+
+    let deployment = match deploy_result {
+        Ok(Ok(deployment)) => deployment,
+        Ok(Err(e)) => {
+            return Err(e).context("Genesis deployment failed");
+        }
+        Err(_) => {
+            anyhow::bail!(
+                "Genesis deployment timed out after {} seconds",
+                DEPLOYMENT_TIMEOUT_SECS
+            );
+        }
+    };
+
+    // Reload the deployer from config for helpers that need &Deployer
+    let deployer =
+        kupcake_deploy::Deployer::load_from_file(&ctx.outdata_path.join("Kupcake.toml"))?;
+
+    // Verify L1 genesis file was created (written to anvil data dir)
+    let l1_genesis_path = ctx.outdata_path.join("anvil/l1-genesis.json");
+    assert!(
+        l1_genesis_path.exists(),
+        "L1 genesis file should exist at {}",
+        l1_genesis_path.display()
+    );
+
+    // Verify the L1 genesis contains expected structure
+    let l1_genesis: Value = serde_json::from_str(&std::fs::read_to_string(&l1_genesis_path)?)?;
+    assert!(
+        l1_genesis.get("alloc").is_some(),
+        "L1 genesis should have an 'alloc' section"
+    );
+    assert!(
+        l1_genesis.get("config").is_some(),
+        "L1 genesis should have a 'config' section"
+    );
+    let config = &l1_genesis["config"];
+    assert_eq!(
+        config["chainId"].as_u64(),
+        Some(ctx.l1_chain_id),
+        "L1 genesis chain ID should match"
+    );
+
+    // Verify L2 genesis and rollup config were generated
+    let l2_genesis_path = ctx.outdata_path.join("l2-stack/genesis.json");
+    let rollup_path = ctx.outdata_path.join("l2-stack/rollup.json");
+    assert!(l2_genesis_path.exists(), "L2 genesis.json should exist");
+    assert!(rollup_path.exists(), "rollup.json should exist");
+
+    // Verify deployment version was saved
+    let hash = ctx.get_deployment_hash()?;
+    assert!(!hash.is_empty(), "Deployment hash should be non-empty");
+
+    // Wait for nodes to be ready and producing blocks
+    tracing::info!("=== Waiting for nodes to be ready... ===");
+    wait_for_all_nodes(&deployment).await;
+
+    tracing::info!("=== Waiting for blocks to advance... ===");
+    wait_for_all_nodes_advancing(&deployer, 60).await?;
+
+    // Verify sync status shows healthy state
+    let statuses = collect_all_sync_status(&deployment).await;
+    assert!(
+        !statuses.is_empty(),
+        "Should have sync status from at least one node"
+    );
+
+    for (label, status) in &statuses {
+        tracing::info!(
+            "{}: unsafe_l2={}, safe_l2={}, finalized_l2={}",
+            label,
+            status.unsafe_l2.number,
+            status.safe_l2.number,
+            status.finalized_l2.number,
+        );
+        assert!(
+            status.unsafe_l2.number > 0,
+            "{} should have produced blocks (unsafe_l2 > 0)",
+            label,
+        );
+    }
+
+    // Cleanup
+    tracing::info!("=== Cleaning up... ===");
+    cleanup_by_prefix(&ctx.network_name).await?;
+
+    tracing::info!("=== Test passed! Genesis deployment mode works correctly. ===");
     Ok(())
 }

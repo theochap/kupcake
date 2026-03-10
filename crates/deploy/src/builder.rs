@@ -143,6 +143,9 @@ pub struct DeployerBuilder {
     /// When true, copy the snapshot reth database instead of symlinking it.
     copy_snapshot: bool,
 
+    /// Deployment target (live or genesis).
+    deployment_target: crate::DeploymentTarget,
+
     // Docker images
     anvil_docker: DockerImage,
     op_reth_docker: DockerImage,
@@ -178,6 +181,7 @@ impl DeployerBuilder {
             flashblocks: false,
             snapshot: None,
             copy_snapshot: false,
+            deployment_target: crate::DeploymentTarget::default(),
             anvil_docker: DockerImage::new(ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG),
             op_reth_docker: DockerImage::new(OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG),
             kona_node_docker: DockerImage::new(KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG),
@@ -356,6 +360,12 @@ impl DeployerBuilder {
     /// Set whether to copy the snapshot reth database instead of symlinking it.
     pub fn copy_snapshot(mut self, copy: bool) -> Self {
         self.copy_snapshot = copy;
+        self
+    }
+
+    /// Set the deployment target (live or genesis).
+    pub fn deployment_target(mut self, target: crate::DeploymentTarget) -> Self {
+        self.deployment_target = target;
         self
     }
 
@@ -608,6 +618,22 @@ impl DeployerBuilder {
     /// 3. Creates the output data directory if it doesn't exist
     /// 4. Fetches genesis timestamp from L1 RPC if an RPC URL is provided
     pub async fn build(self) -> Result<Deployer> {
+        // Validate genesis mode constraints
+        if self.deployment_target == crate::DeploymentTarget::Genesis {
+            if self.l1_rpc_url.is_some() {
+                anyhow::bail!(
+                    "Genesis deployment mode is incompatible with L1 forking (--l1). \
+                     Genesis mode deploys contracts into the L1 genesis state and requires a local Anvil instance."
+                );
+            }
+            if self.snapshot.is_some() {
+                anyhow::bail!(
+                    "Genesis deployment mode is incompatible with snapshots (--snapshot). \
+                     Genesis mode always deploys fresh contracts."
+                );
+            }
+        }
+
         // Generate L2 chain ID if not provided
         let l2_chain_id = self
             .l2_chain_id
@@ -680,8 +706,8 @@ impl DeployerBuilder {
                 // Local mode: use current time as genesis timestamp
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                    .context("System time is before Unix epoch")?
+                    .as_secs();
                 (Some(now), None)
             };
 
@@ -861,6 +887,7 @@ impl DeployerBuilder {
             detach: self.detach,
             snapshot: self.snapshot,
             copy_snapshot: self.copy_snapshot,
+            deployment_target: self.deployment_target,
         };
 
         Ok(deployer)

@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use kupcake_deploy::{
     ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG, GRAFANA_DEFAULT_IMAGE, GRAFANA_DEFAULT_TAG,
     KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG, OP_BATCHER_DEFAULT_IMAGE,
@@ -67,6 +67,24 @@ impl L2Chain {
             L2Chain::BaseSepolia => 84532,
             L2Chain::BaseMainnet => 8453,
             L2Chain::Custom(id) => id,
+        }
+    }
+}
+
+/// CLI-facing deployment target argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
+pub enum DeploymentTargetArg {
+    /// Deploy contracts to a live, running L1 (default).
+    Live,
+    /// Deploy contracts at genesis into an in-memory L1 state.
+    Genesis,
+}
+
+impl From<DeploymentTargetArg> for kupcake_deploy::DeploymentTarget {
+    fn from(arg: DeploymentTargetArg) -> Self {
+        match arg {
+            DeploymentTargetArg::Live => kupcake_deploy::DeploymentTarget::Live,
+            DeploymentTargetArg::Genesis => kupcake_deploy::DeploymentTarget::Genesis,
         }
     }
 }
@@ -404,6 +422,19 @@ pub struct DeployArgs {
     #[arg(long, env = "KUP_FLASHBLOCKS")]
     pub flashblocks: bool,
 
+    /// Deployment target for OP Stack contracts.
+    ///
+    /// - "live" (default): Anvil starts first, then op-deployer deploys contracts to the live L1.
+    /// - "genesis": op-deployer deploys contracts into an in-memory L1 state, then Anvil boots
+    ///   from the resulting genesis. Only compatible with local Anvil (no --l1 fork).
+    #[arg(
+        long,
+        env = "KUP_DEPLOYMENT_TARGET",
+        default_value = "live",
+        value_enum
+    )]
+    pub deployment_target: DeploymentTargetArg,
+
     /// Path to an existing kupconf.toml configuration file to load.
     ///
     /// When provided, the deployment will use the configuration from this file
@@ -435,6 +466,7 @@ impl Default for DeployArgs {
             l2_nodes: 5,
             sequencer_count: 2,
             flashblocks: false,
+            deployment_target: DeploymentTargetArg::Live,
             config: None,
             docker_images: DockerImageOverrides::default(),
         }

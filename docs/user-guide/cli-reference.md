@@ -261,6 +261,50 @@ kupcake  # Random chain ID
 
 ### Deployment Behavior
 
+#### `--deployment-target <TARGET>`
+
+Deployment target for OP Stack contracts.
+
+**Values**:
+- `live` (default) - Anvil starts first, then op-deployer deploys contracts to the running L1 via transactions. Supports forking remote L1 chains (`--l1`).
+- `genesis` - op-deployer deploys contracts into an in-memory L1 state, then Anvil boots from the resulting genesis. Faster (~15s vs ~45-60s) but only compatible with local Anvil (no `--l1` fork).
+
+**Default**: `live`
+**Environment Variable**: `KUP_DEPLOYMENT_TARGET`
+
+**Behavior**:
+
+In **live** mode:
+1. Anvil starts (optionally forking a remote L1)
+2. op-deployer deploys contracts to the running Anvil via transactions
+3. L2 services start
+
+In **genesis** mode:
+1. op-deployer deploys contracts into an in-memory state dump
+2. L1 genesis is extracted and Anvil boots from it (using `--init`)
+3. L2 services start
+
+Genesis mode is significantly faster because contracts are deployed in-memory rather than via transactions. However, it cannot fork remote L1 chains.
+
+Both modes support [deployment skipping](#--redeploy) — if the configuration hash matches a previous deployment, contract deployment is skipped entirely.
+
+**Note**: Due to a known Anvil bug ([foundry-rs/foundry#7366](https://github.com/foundry-rs/foundry/issues/7366)), Anvil computes the genesis block hash from an empty state root instead of the actual state root. Kupcake automatically patches `rollup.json` with Anvil's actual block 0 hash after startup.
+
+**Examples**:
+```bash
+# Default: live mode
+kupcake
+
+# Genesis mode (faster, local only)
+kupcake --deployment-target genesis
+
+# Genesis mode with fast blocks
+kupcake --deployment-target genesis --block-time 2
+
+# Live mode with L1 fork (genesis mode not supported here)
+kupcake --deployment-target live --l1 sepolia
+```
+
 #### `--redeploy`
 
 Force redeployment of all contracts, bypassing configuration hash checks.
