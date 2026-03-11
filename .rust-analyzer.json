@@ -1,0 +1,3 @@
+{
+  "files.excludeDirs": ["kona", "crates/deploy/tests/kona"]
+}
