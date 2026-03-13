@@ -435,6 +435,49 @@ kupcake --no-cleanup
 docker ps  # See running containers
 ```
 
+#### `--dump-state`
+
+Dump Anvil L1 state to disk before cleanup via `anvil_dumpState` RPC.
+
+**Default**: `true` (state is preserved on exit)
+**Environment Variable**: `KUP_DUMP_STATE`
+
+**Behavior**:
+- Before stopping containers, calls `anvil_dumpState` RPC to capture L1 state
+- Writes hex-decoded state to `{outdata}/anvil/state.json`
+- On subsequent runs, Anvil restores from this file via `--load-state`
+- Works with both live and genesis deployment targets
+- Set to `false` to skip state persistence (e.g., for ephemeral test runs)
+
+**Example**:
+```bash
+# Default: state is persisted across restarts
+kupcake
+
+# Disable state persistence
+kupcake --dump-state false
+```
+
+#### `--override-state <PATH>`
+
+Load an external Anvil state file at startup (live mode only).
+
+**Environment Variable**: `KUP_OVERRIDE_STATE`
+
+**Behavior**:
+- Passes the specified file to Anvil via `--load-state` at startup
+- Only supported in live mode; errors out if `--deployment-target genesis` is specified
+- Useful for restoring a previously exported L1 state or sharing state between environments
+
+**Example**:
+```bash
+# Load external Anvil state
+kupcake --override-state /path/to/state.json
+
+# Combine with other options
+kupcake --l1 sepolia --override-state ./exported-state.json --no-cleanup
+```
+
 #### `--detach`
 
 Run in detached mode - deploy and exit, leaving containers running.

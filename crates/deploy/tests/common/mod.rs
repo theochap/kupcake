@@ -64,6 +64,7 @@ impl TestContext {
             .sequencer_count(1)
             .block_time(2)
             .detach(true)
+            .dump_state(false)
             .deployment_target(DeploymentTarget::Genesis)
             .build()
             .await

@@ -180,7 +180,7 @@ Genesis mode implementation:
 - `crates/deploy/src/l1_genesis.rs` - Extracts L1 genesis from op-deployer state dump, patches rollup.json with Anvil's actual genesis block hash (workaround for [foundry-rs/foundry#7366](https://github.com/foundry-rs/foundry/issues/7366))
 - `crates/deploy/src/accounts.rs` - Derives Anvil accounts from mnemonic for genesis mode (Anvil isn't running yet)
 
-Genesis mode supports L1 state restoration: if `anvil/state.json` exists (e.g., from a prior live-mode run or manual RPC dump) and contracts weren't redeployed, Anvil uses `--init-state` to restore from the persisted state. Otherwise, Anvil boots fresh from `l1-genesis.json` via `--init`. Note: Anvil's `--init` flag is incompatible with `--dump-state`, so the first genesis boot does not automatically persist state. If contracts are redeployed, stale `state.json` is deleted so Anvil boots fresh from the new genesis.
+Both modes use a unified Anvil state persistence approach: `--load-state` for restoring state and `anvil_dumpState` RPC for persisting state before cleanup. In genesis mode, if `anvil/state.json` exists and contracts weren't redeployed, Anvil uses `--load-state` to restore from the persisted state; otherwise, Anvil boots fresh from `l1-genesis.json` via `--init`. If contracts are redeployed, stale `state.json` is deleted so Anvil boots fresh from the new genesis. In live mode, if a persisted `state.json` exists from a previous run, it is restored via `--load-state`. The `--override-state <PATH>` flag allows loading an external Anvil state file in live mode (errors out in genesis mode). The `--dump-state` bool flag controls whether state is persisted via RPC on shutdown (default: true).
 
 ### Deployment Versioning
 
@@ -272,7 +272,7 @@ Critical startup sequence managed by `Deployer::deploy()`:
 
 **Live mode:**
 1. Create Docker network
-2. Start Anvil (L1)
+2. Start Anvil (L1; restores from `--override-state`, persisted `state.json`, or starts fresh)
 3. Deploy contracts via op-deployer (init + apply) — skipped if config hash matches
 4. Generate genesis.json and rollup.json
 
@@ -280,7 +280,7 @@ Critical startup sequence managed by `Deployer::deploy()`:
 1. Create Docker network
 2. Deploy contracts in-memory via op-deployer — skipped if config hash matches
 3. Extract L1 genesis from state dump
-4. Start Anvil with `--init` (boots from genesis)
+4. Start Anvil (restores from persisted `state.json` via `--load-state`, or boots fresh from genesis via `--init`)
 5. Patch rollup.json with actual genesis block hash
 
 **Both modes (continued):**

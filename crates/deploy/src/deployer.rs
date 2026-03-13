@@ -96,6 +96,19 @@ pub struct Deployer {
     /// Deployment target for OP Stack contracts (live or genesis).
     #[serde(default)]
     pub deployment_target: crate::DeploymentTarget,
+
+    /// Whether to dump Anvil state via RPC before cleanup.
+    #[serde(default = "default_dump_state")]
+    pub dump_state: bool,
+
+    /// Optional path to an external state file for Anvil to load via `--load-state`.
+    /// Only valid in live mode; genesis mode will error if this is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_state: Option<PathBuf>,
+}
+
+fn default_dump_state() -> bool {
+    true
 }
 
 impl Deployer {
@@ -312,17 +325,18 @@ impl Deployer {
             tracing::info!("Removed stale anvil state.json after contract redeployment");
         }
 
-        // If a persisted state exists (from a previous run), use --init-state to restore it.
-        // --init-state /data both loads and dumps state (like live mode), so L1 state
-        // accumulates across restarts.
-        // Otherwise, boot fresh from genesis with --init. Note: Anvil does not allow
-        // --dump-state with --init, so the first run's state is not persisted — but
-        // --init-state on subsequent runs will dump on exit.
+        // If a persisted state exists (from a previous run), use --load-state to restore it.
+        // The RPC-based state dump (configured in deploy()) handles persisting state
+        // before cleanup. Otherwise, boot fresh from genesis with --init.
         let init_mode = if !deployed && state_json_path.exists() {
-            tracing::info!("Found persisted Anvil state, restoring via --init-state");
-            crate::AnvilInitMode::InitState("/data".to_string())
+            tracing::info!("Found persisted Anvil state, restoring via --load-state");
+            Some(crate::AnvilInitMode::LoadState(
+                "/data/state.json".to_string(),
+            ))
         } else {
-            crate::AnvilInitMode::Init("/data/l1-genesis.json".to_string())
+            Some(crate::AnvilInitMode::Init(
+                "/data/l1-genesis.json".to_string(),
+            ))
         };
 
         tracing::info!(anvil_config = ?anvil_config, "Starting Anvil with genesis state...");
@@ -332,7 +346,6 @@ impl Deployer {
                 anvil_data_path.to_path_buf(),
                 l1_chain_id,
                 init_mode,
-                None,
                 accounts,
             )
             .await
@@ -376,11 +389,40 @@ impl Deployer {
         current_hash: &str,
         snapshot: Option<&PathBuf>,
         copy_snapshot: bool,
+        override_state: Option<&PathBuf>,
     ) -> Result<AnvilHandler> {
         let accounts = Self::derive_accounts()?;
 
-        let init_mode =
-            crate::AnvilInitMode::InitState(PathBuf::from("/data").display().to_string());
+        // Determine init mode for live deployment:
+        // 1. --override-state takes precedence: copy file into anvil data dir, use --load-state
+        // 2. Existing state.json from previous run: use --load-state
+        // 3. Otherwise: fresh start (no init mode, Anvil starts empty or forks)
+        let init_mode = match override_state {
+            Some(override_path) => {
+                let dest = anvil_data_path.join("override-state.json");
+                std::fs::copy(override_path, &dest).with_context(|| {
+                    format!(
+                        "Failed to copy override state from {} to {}",
+                        override_path.display(),
+                        dest.display()
+                    )
+                })?;
+                tracing::info!(
+                    source = %override_path.display(),
+                    "Loading external Anvil state via --load-state"
+                );
+                Some(crate::AnvilInitMode::LoadState(
+                    "/data/override-state.json".to_string(),
+                ))
+            }
+            None if anvil_data_path.join("state.json").exists() => {
+                tracing::info!("Found persisted Anvil state, restoring via --load-state");
+                Some(crate::AnvilInitMode::LoadState(
+                    "/data/state.json".to_string(),
+                ))
+            }
+            None => None,
+        };
 
         tracing::info!(anvil_config = ?anvil_config, "Starting Anvil...");
 
@@ -390,7 +432,6 @@ impl Deployer {
                 anvil_data_path.to_path_buf(),
                 l1_chain_id,
                 init_mode,
-                None,
                 accounts,
             )
             .await?;
@@ -725,6 +766,14 @@ impl Deployer {
     ) -> Result<DeploymentResult> {
         tracing::info!("Starting deployment process...");
 
+        // Genesis mode is incompatible with --override-state
+        if self.override_state.is_some() && self.deployment_target == DeploymentTarget::Genesis {
+            anyhow::bail!(
+                "--override-state is incompatible with genesis deployment mode. \
+                 Genesis mode boots Anvil from a generated L1 genesis, not an external state file."
+            );
+        }
+
         // Compute hash of current deployment configuration before any moves occur
         let current_config = DeploymentConfigHash::from_deployer(&self);
         let current_hash = current_config
@@ -770,6 +819,7 @@ impl Deployer {
                     &current_hash,
                     self.snapshot.as_ref(),
                     self.copy_snapshot,
+                    self.override_state.as_ref(),
                 )
                 .await?
             }
@@ -782,6 +832,17 @@ impl Deployer {
             .accounts
             .write_anvil_json(&self.outdata)
             .context("Failed to write anvil.json")?;
+
+        // Register RPC-based state dump so Anvil L1 state is persisted before
+        // containers are stopped. Both modes use this unified approach.
+        if self.dump_state
+            && let Some(ref host_url) = anvil.l1_host_url
+        {
+            docker.anvil_state_dump = Some(crate::AnvilStateDumpConfig {
+                rpc_url: host_url.to_string(),
+                output_path: self.outdata.join("anvil/state.json"),
+            });
+        }
 
         let skip_proposer_challenger = self.snapshot.is_some();
 

@@ -1,5 +1,6 @@
 //! Shared RPC utilities for interacting with Ethereum JSON-RPC endpoints.
 
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -71,6 +72,52 @@ pub async fn json_rpc_call<T: DeserializeOwned>(
 
     serde_json::from_value(result_value)
         .with_context(|| format!("Failed to deserialize {} result", method))
+}
+
+/// Dump Anvil state via `anvil_dumpState` RPC and write to disk.
+///
+/// Called before cleanup to persist Anvil L1 state via RPC. The returned hex
+/// string is decoded and written as the state file that `--load-state` expects
+/// on subsequent boots.
+pub async fn anvil_dump_state(rpc_url: &str, output_path: &Path) -> Result<(), anyhow::Error> {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    let client = create_client()?;
+    let hex_state: String = json_rpc_call(&client, rpc_url, "anvil_dumpState", vec![])
+        .await
+        .context("anvil_dumpState RPC failed")?;
+
+    let hex_str = hex_state.strip_prefix("0x").unwrap_or(&hex_state);
+    let compressed =
+        hex::decode(hex_str).context("Failed to hex-decode anvil_dumpState response")?;
+
+    // anvil_dumpState returns gzip-compressed JSON; --load-state expects plain JSON.
+    let bytes = if compressed.starts_with(&[0x1f, 0x8b]) {
+        let mut decoder = GzDecoder::new(&compressed[..]);
+        let mut decompressed = Vec::new();
+        decoder
+            .read_to_end(&mut decompressed)
+            .context("Failed to decompress gzipped anvil state")?;
+        decompressed
+    } else {
+        compressed
+    };
+
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+    }
+
+    std::fs::write(output_path, &bytes)
+        .with_context(|| format!("Failed to write state to {}", output_path.display()))?;
+
+    tracing::info!(
+        path = %output_path.display(),
+        bytes = bytes.len(),
+        "Dumped Anvil state via RPC"
+    );
+    Ok(())
 }
 
 /// Wait for a service to be ready by repeatedly calling a check function.

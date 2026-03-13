@@ -681,6 +681,8 @@ mod tests {
             snapshot: None,
             copy_snapshot: false,
             deployment_target: Default::default(),
+            dump_state: true,
+            override_state: None,
         };
 
         assert_eq!(container_name(&deployer), "kup-test-contender");

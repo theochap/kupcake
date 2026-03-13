@@ -8,9 +8,9 @@ pub enum AnvilInitMode {
     /// Load genesis state from a JSON file (`--init <path>`).
     /// Used in genesis deployment mode where contracts are embedded in the L1 genesis.
     Init(String),
-    /// Load persisted state from a state dump (`--init-state <path>`).
-    /// Used in live deployment mode as the state persistence path.
-    InitState(String),
+    /// Load persisted state from a state dump (`--load-state <path>`).
+    /// Used to restore previously dumped state or load external state via `--override-state`.
+    LoadState(String),
 }
 
 /// Builder for Anvil commands.
@@ -25,7 +25,6 @@ pub struct AnvilCmdBuilder {
     config_out: Option<String>,
     timestamp: Option<u64>,
     fork_block_number: Option<u64>,
-    dump_state: Option<String>,
     extra_args: Vec<String>,
 }
 
@@ -42,7 +41,6 @@ impl AnvilCmdBuilder {
             config_out: None,
             timestamp: None,
             fork_block_number: None,
-            dump_state: None,
             extra_args: Vec::new(),
         }
     }
@@ -95,13 +93,6 @@ impl AnvilCmdBuilder {
         self
     }
 
-    /// Set the dump state path (`--dump-state <path>`).
-    /// Anvil will write its state to this file on exit.
-    pub fn dump_state(mut self, path: impl Into<String>) -> Self {
-        self.dump_state = Some(path.into());
-        self
-    }
-
     /// Add extra arguments.
     pub fn extra_args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.extra_args.extend(args.into_iter().map(|s| s.into()));
@@ -110,7 +101,7 @@ impl AnvilCmdBuilder {
 
     /// Build the command as a vector of strings.
     ///
-    /// NOTE: `--init` / `--init-state` MUST appear before `--host` in the argument
+    /// NOTE: `--init` / `--load-state` MUST appear before `--host` in the argument
     /// list. Anvil's nightly build has a bug where `--init` resets the host binding
     /// to 127.0.0.1 if it appears after `--host`.
     pub fn build(self) -> Vec<String> {
@@ -122,8 +113,8 @@ impl AnvilCmdBuilder {
                 cmd.push("--init".to_string());
                 cmd.push(path);
             }
-            Some(AnvilInitMode::InitState(path)) => {
-                cmd.push("--init-state".to_string());
+            Some(AnvilInitMode::LoadState(path)) => {
+                cmd.push("--load-state".to_string());
                 cmd.push(path);
             }
             None => {
@@ -161,11 +152,6 @@ impl AnvilCmdBuilder {
             cmd.push(fork_url);
         }
 
-        if let Some(dump_state) = self.dump_state {
-            cmd.push("--dump-state".to_string());
-            cmd.push(dump_state);
-        }
-
         if let Some(config_out) = self.config_out {
             cmd.push("--config-out".to_string());
             cmd.push(config_out);
@@ -182,33 +168,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_anvil_cmd_builder_init_state() {
+    fn test_anvil_cmd_builder_load_state() {
         let cmd = AnvilCmdBuilder::new(11155111)
             .port(8545)
-            .fork_url("https://ethereum-sepolia-rpc.publicnode.com")
-            .init_mode(AnvilInitMode::InitState("/data".to_string()))
+            .init_mode(AnvilInitMode::LoadState("/data/state.json".to_string()))
             .build();
 
-        assert!(cmd.contains(&"--chain-id".to_string()));
-        assert!(cmd.contains(&"11155111".to_string()));
-        assert!(cmd.contains(&"--fork-url".to_string()));
-        assert!(cmd.contains(&"--init-state".to_string()));
-        assert!(!cmd.contains(&"--state".to_string()));
-    }
-
-    #[test]
-    fn test_anvil_cmd_builder_init_with_dump_state() {
-        let cmd = AnvilCmdBuilder::new(900)
-            .init_mode(AnvilInitMode::Init("/data/l1-genesis.json".to_string()))
-            .dump_state("/data/state.json")
-            .config_out("/data/anvil.json")
-            .build();
-
-        assert!(cmd.contains(&"--init".to_string()));
-        assert!(cmd.contains(&"/data/l1-genesis.json".to_string()));
-        assert!(cmd.contains(&"--dump-state".to_string()));
+        assert!(cmd.contains(&"--load-state".to_string()));
         assert!(cmd.contains(&"/data/state.json".to_string()));
-        assert!(!cmd.contains(&"--init-state".to_string()));
+        assert!(!cmd.contains(&"--init".to_string()));
     }
 
     #[test]
@@ -222,6 +190,6 @@ mod tests {
         assert!(cmd.contains(&"/data/l1-genesis.json".to_string()));
         assert!(cmd.contains(&"--config-out".to_string()));
         assert!(cmd.contains(&"/data/anvil.json".to_string()));
-        assert!(!cmd.contains(&"--init-state".to_string()));
+        assert!(!cmd.contains(&"--load-state".to_string()));
     }
 }

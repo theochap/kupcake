@@ -214,6 +214,8 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         }))
         .maybe_l1_rpc_url(l1_rpc_url)
         .no_cleanup(no_cleanup)
+        .dump_state(args.dump_state)
+        .maybe_override_state(args.override_state.map(PathBuf::from))
         .detach(args.detach)
         .publish_all_ports(args.publish_all_ports)
         .block_time(args.block_time)

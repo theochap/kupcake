@@ -350,6 +350,22 @@ pub struct DeployArgs {
     #[arg(long, env = "KUP_NO_CLEANUP")]
     pub no_cleanup: bool,
 
+    /// Dump Anvil L1 state before cleanup so it can be restored on next boot.
+    ///
+    /// When enabled, Anvil state is dumped via the `anvil_dumpState` RPC method
+    /// before containers are stopped. On the next deployment with the same
+    /// configuration, the persisted state is restored automatically.
+    #[arg(long, env = "KUP_DUMP_STATE", default_value_t = true)]
+    pub dump_state: bool,
+
+    /// Load an external Anvil state file via `--load-state` on startup.
+    ///
+    /// Only valid in live deployment mode. When provided, Anvil will boot
+    /// from this state file instead of starting fresh or restoring from
+    /// a previous dump. Incompatible with genesis mode.
+    #[arg(long, env = "KUP_OVERRIDE_STATE")]
+    pub override_state: Option<String>,
+
     /// Run in detached mode. Deploy the network and exit, leaving containers running.
     #[arg(long, env = "KUP_DETACH")]
     pub detach: bool,
@@ -458,6 +474,8 @@ impl Default for DeployArgs {
             redeploy: false,
             outdata: None,
             no_cleanup: false,
+            dump_state: true,
+            override_state: None,
             detach: false,
             spam: None,
             publish_all_ports: false,
