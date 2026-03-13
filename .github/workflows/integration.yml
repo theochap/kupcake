@@ -44,6 +44,34 @@ jobs:
           path: crates/deploy/tests/kona/target/release/kona-node
           retention-days: 1
 
+  bench:
+    name: Benchmark
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Run benchmark
+        run: ./target/release/kupcake bench --iterations 3 --warmup 1 --output bench-results.toml
+
+      - name: Print results
+        run: cat bench-results.toml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results.toml
+          retention-days: 30
+
   integration:
     name: Integration Tests (${{ matrix.partition }}/6)
     needs: build

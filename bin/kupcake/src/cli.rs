@@ -143,6 +143,64 @@ pub enum Commands {
     /// automatically funding the spammer account via the L1→L2 faucet deposit.
     /// Supports built-in scenarios (transfers, erc20, uni_v2) and custom TOML files.
     Spam(SpamArgs),
+
+    /// Benchmark deployment performance.
+    ///
+    /// Deploys a devnet N times, collects per-service metrics per iteration,
+    /// and outputs aggregate statistics (min/max/mean/median/p95/stddev) in TOML.
+    Bench(BenchArgs),
+}
+
+/// Arguments for the bench command.
+#[derive(Parser)]
+pub struct BenchArgs {
+    /// Number of measured iterations.
+    #[arg(long, default_value_t = 3)]
+    pub iterations: usize,
+
+    /// Number of warmup iterations (results discarded, images pre-pulled).
+    #[arg(long, default_value_t = 1)]
+    pub warmup: usize,
+
+    /// Write TOML output to a file instead of stdout.
+    #[arg(long)]
+    pub output: Option<String>,
+
+    /// Human-readable label for this benchmark run (e.g. "baseline", "pr-123").
+    #[arg(long)]
+    pub label: Option<String>,
+
+    /// Deployment target for OP Stack contracts.
+    #[arg(long, default_value = "genesis", value_enum)]
+    pub deployment_target: DeploymentTargetArg,
+
+    /// Total number of L2 nodes to deploy.
+    #[arg(long, alias = "nodes", default_value_t = 1)]
+    pub l2_nodes: usize,
+
+    /// Number of sequencer nodes.
+    #[arg(long, alias = "sequencers", default_value_t = 1)]
+    pub sequencer_count: usize,
+
+    /// Block time in seconds.
+    #[arg(long, default_value_t = 4)]
+    pub block_time: u64,
+
+    /// Enable flashblocks support.
+    #[arg(long)]
+    pub flashblocks: bool,
+
+    /// Disable op-proposer deployment.
+    #[arg(long)]
+    pub no_proposer: bool,
+
+    /// Disable op-challenger deployment.
+    #[arg(long)]
+    pub no_challenger: bool,
+
+    /// Docker image overrides for all services.
+    #[clap(flatten)]
+    pub docker_images: DockerImageOverrides,
 }
 
 /// Arguments for the health check command.
@@ -463,6 +521,20 @@ pub struct DeployArgs {
     )]
     pub deployment_target: DeploymentTargetArg,
 
+    /// Write deployment metrics to a TOML file.
+    ///
+    /// When provided, per-service deploy timings and image sizes
+    /// are written in TOML format to the specified path after deployment.
+    #[arg(long, env = "KUP_METRICS_FILE")]
+    pub metrics_file: Option<String>,
+
+    /// Write deployment endpoints to a TOML file.
+    ///
+    /// When provided, all service endpoints (both internal Docker network
+    /// and host-accessible URLs) are written in TOML format to the specified path.
+    #[arg(long, env = "KUP_PORTS_FILE")]
+    pub ports_file: Option<String>,
+
     /// Path to an existing kupconf.toml configuration file to load.
     ///
     /// When provided, the deployment will use the configuration from this file
@@ -489,6 +561,8 @@ impl Default for DeployArgs {
             dump_state: true,
             override_state: None,
             detach: false,
+            metrics_file: None,
+            ports_file: None,
             spam: None,
             publish_all_ports: false,
             block_time: 12,

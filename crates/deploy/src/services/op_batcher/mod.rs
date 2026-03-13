@@ -11,7 +11,7 @@ use url::Url;
 pub use cmd::OpBatcherCmdBuilder;
 
 use crate::docker::{DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig};
-
+use crate::metrics::ContainerDeployTimings;
 use crate::service::{self, KupcakeService};
 
 /// Input parameters for deploying the op-batcher.
@@ -98,6 +98,8 @@ pub struct OpBatcherHandler {
     pub rpc_host_url: Option<Url>,
     /// The metrics URL accessible from host (if published). None if not published.
     pub metrics_host_url: Option<Url>,
+    /// Deploy timings for metrics.
+    pub deploy_timings: ContainerDeployTimings,
 }
 
 impl OpBatcherBuilder {
@@ -159,7 +161,7 @@ impl KupcakeService for OpBatcherBuilder {
             .expose(ExposedPort::tcp(self.metrics_port))
             .bind(host_config_path, &container_config_path, "rw");
 
-        let handler = service::deploy_container(
+        let (handler, timings) = service::deploy_container(
             docker,
             &self.docker_image,
             &self.container_name,
@@ -189,6 +191,7 @@ impl KupcakeService for OpBatcherBuilder {
             rpc_url,
             rpc_host_url,
             metrics_host_url,
+            deploy_timings: timings,
         })
     }
 }

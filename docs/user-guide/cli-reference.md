@@ -145,6 +145,55 @@ kupcake spam kup-nutty-songs --target-node 1 --report
 kupcake spam kup-nutty-songs -- --verbose --seed 42
 ```
 
+### `bench`
+
+Benchmark deployment performance.
+
+```bash
+kupcake bench [OPTIONS]
+```
+
+**Options**:
+- `--iterations <N>` - Number of measured iterations (default: `3`)
+- `--warmup <N>` - Warmup iterations, results discarded (default: `1`)
+- `--output <PATH>` - Write TOML output to a file (default: print via tracing)
+- `--label <STRING>` - Human-readable label for this run (e.g. "baseline", "pr-123")
+- `--deployment-target <TARGET>` - `live` or `genesis` (default: `genesis`)
+- `--l2-nodes <N>` - Total L2 nodes (default: `1`)
+- `--sequencer-count <N>` - Sequencer count (default: `1`)
+- `--block-time <N>` - Block time in seconds (default: `4`)
+- `--flashblocks` - Enable flashblocks
+- `--no-proposer` - Skip op-proposer
+- `--no-challenger` - Skip op-challenger
+- All Docker image overrides (same as `deploy`)
+
+**Hardcoded Settings** (not configurable):
+- Always cleans up between iterations
+- No state persistence (`dump_state = false`)
+- Monitoring disabled (Prometheus/Grafana skipped)
+- Local mode only (no L1 fork)
+- Always redeploys contracts
+
+**Output Format**: TOML with per-service aggregate statistics including min/max/mean/median/p95/stddev for pull, setup, work, and total timings.
+
+**Examples**:
+```bash
+# Default: 1 warmup + 3 measured iterations, genesis mode
+kupcake bench
+
+# Custom iterations with label
+kupcake bench --iterations 5 --warmup 2 --label "baseline"
+
+# Save results to file
+kupcake bench --output bench-results.toml
+
+# Benchmark live mode deployment
+kupcake bench --deployment-target live
+
+# Minimal config for fast benchmarks
+kupcake bench --iterations 2 --warmup 0 --no-proposer --no-challenger
+```
+
 ### `cleanup`
 
 Clean up containers and network by prefix.
@@ -498,6 +547,34 @@ docker ps  # Verify containers running
 ```
 
 Use `kupcake cleanup <network-name>` to stop later.
+
+#### `--metrics-file <PATH>`
+
+Write deployment metrics to a TOML file after deployment completes.
+
+**Environment Variable**: `KUP_METRICS_FILE`
+
+The file contains per-service deploy timings (pull, setup, work, total in milliseconds) and Docker image sizes in a structured TOML format.
+
+**Example**:
+```bash
+kupcake --metrics-file metrics.toml
+kupcake --metrics-file ./data/deploy-metrics.toml --detach
+```
+
+#### `--ports-file <PATH>`
+
+Write all deployment endpoints to a TOML file after deployment completes.
+
+**Environment Variable**: `KUP_PORTS_FILE`
+
+The file contains all service endpoints (both internal Docker network URLs and host-accessible URLs) in a structured TOML format, keyed by container name.
+
+**Example**:
+```bash
+kupcake --ports-file ports.toml
+kupcake --ports-file ./data/endpoints.toml --detach
+```
 
 #### `--spam [PRESET]`
 

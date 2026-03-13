@@ -6,12 +6,15 @@
 use alloy_core::primitives::Bytes;
 use serde::{Deserialize, Serialize};
 
+pub mod bench;
+
 mod accounts;
 pub use accounts::{ANVIL_DEFAULT_MNEMONIC, derive_accounts_from_mnemonic};
 
 mod builder;
 pub use builder::{DeployerBuilder, OutDataPath};
 
+pub mod metrics;
 pub mod service;
 pub use service::KupcakeService;
 
@@ -90,7 +93,7 @@ pub use services::{
 };
 
 mod l2_stack;
-pub use deployer::{DeploymentResult, L2StackHandler};
+pub use deployer::{DeploymentEndpoints, DeploymentResult, L2StackHandler};
 pub use l2_stack::L2StackBuilder;
 
 /// Account information from Anvil.

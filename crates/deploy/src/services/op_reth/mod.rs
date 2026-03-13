@@ -14,6 +14,7 @@ pub use cmd::OpRethCmdBuilder;
 use crate::{
     ExposedPort,
     docker::{DockerImage, KupDocker, PortMapping, ServiceConfig},
+    metrics::ContainerDeployTimings,
     service::{self, KupcakeService},
     services::kona_node::P2pKeypair,
 };
@@ -165,6 +166,8 @@ pub struct OpRethHandler {
     pub ws_host_url: Option<Url>,
     /// The flashblocks WebSocket URL (internal Docker network). None if flashblocks not enabled.
     pub flashblocks_ws_url: Option<Url>,
+    /// Deploy timings for metrics.
+    pub deploy_timings: ContainerDeployTimings,
 }
 
 impl OpRethHandler {
@@ -292,7 +295,7 @@ impl KupcakeService for OpRethBuilder {
             .expose_ports(exposed_ports)
             .bind(host_config_path, &container_config_path, "rw");
 
-        let handler = service::deploy_container(
+        let (handler, timings) = service::deploy_container(
             docker,
             &self.docker_image,
             &self.container_name,
@@ -337,6 +340,7 @@ impl KupcakeService for OpRethBuilder {
             http_host_url,
             ws_host_url,
             flashblocks_ws_url,
+            deploy_timings: timings,
         })
     }
 }
