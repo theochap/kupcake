@@ -4,9 +4,14 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     AnvilConfig, AnvilHandler, DeploymentConfigHash, DeploymentTarget, DeploymentVersion,
-    KupDocker, KupDockerConfig, L2StackBuilder, MetricsTarget, MonitoringConfig, OpBatcherHandler,
-    OpChallengerHandler, OpDeployerConfig, OpProposerHandler, fs, services,
-    services::MonitoringHandler, services::l2_node::L2NodeHandler,
+    KupDocker, KupDockerConfig, L2StackBuilder, MetricsTarget, MonitoringConfig, OpBatcherBuilder,
+    OpBatcherHandler, OpChallengerBuilder, OpChallengerHandler, OpDeployerConfig,
+    OpProposerBuilder, OpProposerHandler, fs,
+    service::KupcakeService,
+    services,
+    services::MonitoringHandler,
+    services::anvil::AnvilInput,
+    services::l2_node::{L2NodeBuilder, L2NodeHandler},
 };
 
 /// The default name for the kupcake configuration file.
@@ -56,8 +61,25 @@ impl L2StackHandler {
 ///
 /// This struct contains all the configuration needed to deploy an OP Stack chain
 /// and can be serialized to/from TOML format.
+///
+/// The type parameters allow swapping implementations:
+/// - `L1` — the L1 chain type (default: `AnvilConfig`)
+/// - `Node` — the L2 node type (default: `L2NodeBuilder`, which combines op-reth + kona-node)
+/// - `B` — the batcher type (default: `OpBatcherBuilder`)
+/// - `P` — the proposer type (default: `OpProposerBuilder`)
+/// - `C` — the challenger type (default: `OpChallengerBuilder`)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Deployer {
+#[serde(bound(
+    serialize = "L1: Serialize, Node: Serialize, B: Serialize, P: Serialize, C: Serialize",
+    deserialize = "L1: serde::de::DeserializeOwned, Node: serde::de::DeserializeOwned, B: serde::de::DeserializeOwned, P: serde::de::DeserializeOwned, C: serde::de::DeserializeOwned"
+))]
+pub struct Deployer<
+    L1 = AnvilConfig,
+    Node = L2NodeBuilder,
+    B = OpBatcherBuilder,
+    P = OpProposerBuilder,
+    C = OpChallengerBuilder,
+> {
     /// The L1 chain ID.
     pub l1_chain_id: u64,
     /// The L2 chain ID.
@@ -65,15 +87,15 @@ pub struct Deployer {
     /// Path to the output data directory.
     pub outdata: PathBuf,
 
-    /// Configuration for the Anvil L1 fork.
-    pub anvil: AnvilConfig,
+    /// Configuration for the L1 chain.
+    pub anvil: L1,
     /// Configuration for the OP Deployer.
     pub op_deployer: OpDeployerConfig,
     /// Configuration for the Docker client.
     pub docker: KupDockerConfig,
     /// Configuration for all L2 components for the op-stack.
     #[serde(flatten)]
-    pub l2_stack: L2StackBuilder,
+    pub l2_stack: L2StackBuilder<Node, B, P, C>,
     /// Configuration for the monitoring stack.
     pub monitoring: MonitoringConfig,
 
@@ -341,12 +363,14 @@ impl Deployer {
 
         tracing::info!(anvil_config = ?anvil_config, "Starting Anvil with genesis state...");
         let anvil = anvil_config
-            .start(
+            .deploy(
                 docker,
-                anvil_data_path.to_path_buf(),
-                l1_chain_id,
-                init_mode,
-                accounts,
+                anvil_data_path,
+                AnvilInput {
+                    chain_id: l1_chain_id,
+                    init_mode,
+                    accounts,
+                },
             )
             .await
             .context("Failed to start Anvil with genesis state")?;
@@ -427,12 +451,14 @@ impl Deployer {
         tracing::info!(anvil_config = ?anvil_config, "Starting Anvil...");
 
         let anvil = anvil_config
-            .start(
+            .deploy(
                 docker,
-                anvil_data_path.to_path_buf(),
-                l1_chain_id,
-                init_mode,
-                accounts,
+                anvil_data_path,
+                AnvilInput {
+                    chain_id: l1_chain_id,
+                    init_mode,
+                    accounts,
+                },
             )
             .await?;
 
@@ -463,9 +489,7 @@ impl Deployer {
 
         Ok(anvil)
     }
-}
 
-impl Deployer {
     /// Build metrics targets for Prometheus scraping from L2 stack handlers.
     fn build_metrics_targets(l2_stack: &L2StackHandler) -> Vec<MetricsTarget> {
         use services::kona_node::DEFAULT_METRICS_PORT as KONA_METRICS_PORT;
@@ -759,7 +783,7 @@ impl Deployer {
     }
 
     pub async fn deploy(
-        self,
+        mut self,
         docker: &mut KupDocker,
         force_deploy: bool,
         wait_for_exit: bool,
@@ -844,14 +868,21 @@ impl Deployer {
             });
         }
 
-        let skip_proposer_challenger = self.snapshot.is_some();
+        // In snapshot mode, proposer and challenger are unavailable (no state.json)
+        if self.snapshot.is_some() {
+            self.l2_stack.op_proposer = None;
+            self.l2_stack.op_challenger = None;
+        }
 
         let node_count = self.l2_stack.node_count();
-        let services_label = if skip_proposer_challenger {
-            "op-batcher"
-        } else {
-            "op-batcher + op-proposer + op-challenger"
-        };
+        let mut services = vec!["op-batcher"];
+        if self.l2_stack.op_proposer.is_some() {
+            services.push("op-proposer");
+        }
+        if self.l2_stack.op_challenger.is_some() {
+            services.push("op-challenger");
+        }
+        let services_label = services.join(" + ");
         tracing::info!(
             node_count,
             sequencer_count = self.l2_stack.sequencers.len(),
@@ -863,13 +894,7 @@ impl Deployer {
 
         let l2_stack = self
             .l2_stack
-            .start(
-                docker,
-                l2_nodes_data_path.clone(),
-                &anvil,
-                self.l1_chain_id,
-                skip_proposer_challenger,
-            )
+            .start(docker, l2_nodes_data_path.clone(), &anvil, self.l1_chain_id)
             .await
             .context("Failed to start L2 stack")?;
 
@@ -1002,7 +1027,7 @@ impl Deployer {
             tracing::info!("Op Proposer RPC:      {}", proposer.rpc_url);
         }
         if let Some(ref challenger) = l2_stack.op_challenger {
-            tracing::info!("Op Challenger RPC:    {}", challenger.rpc_url);
+            tracing::info!("Op Challenger metrics: {}", challenger.metrics_url);
         }
 
         tracing::info!("");

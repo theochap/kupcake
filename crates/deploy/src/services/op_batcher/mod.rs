@@ -10,11 +10,21 @@ use url::Url;
 
 pub use cmd::OpBatcherCmdBuilder;
 
-use crate::docker::{
-    CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig,
-};
+use crate::docker::{DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig};
 
-use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethHandler};
+use crate::service::{self, KupcakeService};
+
+/// Input parameters for deploying the op-batcher.
+pub struct OpBatcherInput {
+    /// L1 RPC URL (e.g., Anvil).
+    pub l1_rpc_url: String,
+    /// L2 execution client RPC URL (e.g., op-reth HTTP).
+    pub l2_rpc_url: String,
+    /// Rollup (consensus) RPC URL (e.g., kona-node).
+    pub rollup_rpc_url: String,
+    /// Private key for the batcher account.
+    pub batcher_private_key: String,
+}
 
 /// Default ports for op-batcher.
 pub const DEFAULT_RPC_PORT: u16 = 8548;
@@ -91,36 +101,47 @@ pub struct OpBatcherHandler {
 }
 
 impl OpBatcherBuilder {
-    /// Start the op-batcher.
-    pub async fn start(
+    /// Build the Docker command arguments for op-batcher.
+    pub fn build_cmd(
         &self,
-        docker: &mut KupDocker,
-        host_config_path: &Path,
-        anvil_handler: &AnvilHandler,
-        op_reth_handler: &OpRethHandler,
-        kona_node_handler: &KonaNodeHandler,
-    ) -> Result<OpBatcherHandler, anyhow::Error> {
-        let container_config_path = PathBuf::from("/data");
-
-        // Ensure the Docker image is ready (pull or build if needed)
-        docker
-            .ensure_image_ready(&self.docker_image, "op-batcher")
-            .await
-            .context("Failed to ensure op-batcher image is ready")?;
-
-        let batcher_private_key = &anvil_handler.accounts.batcher.private_key;
-
-        let cmd = OpBatcherCmdBuilder::new(
-            anvil_handler.l1_rpc_url.to_string(),
-            op_reth_handler.http_rpc_url.to_string(),
-            kona_node_handler.rpc_url.to_string(),
-            batcher_private_key.to_string(),
+        _host_config_path: &Path,
+        input: &OpBatcherInput,
+    ) -> Result<Vec<String>, anyhow::Error> {
+        Ok(OpBatcherCmdBuilder::new(
+            input.l1_rpc_url.to_string(),
+            input.l2_rpc_url.to_string(),
+            input.rollup_rpc_url.to_string(),
+            input.batcher_private_key.to_string(),
         )
         .rpc_port(self.rpc_port)
         .metrics(true, "0.0.0.0", self.metrics_port)
         .data_availability_type("blobs")
         .extra_args(self.extra_args.clone())
-        .build();
+        .build())
+    }
+}
+
+impl KupcakeService for OpBatcherBuilder {
+    type Input = OpBatcherInput;
+    type Output = OpBatcherHandler;
+
+    fn container_name(&self) -> &str {
+        &self.container_name
+    }
+
+    fn docker_image(&self) -> &DockerImage {
+        &self.docker_image
+    }
+
+    async fn deploy<'a>(
+        &'a self,
+        docker: &'a mut KupDocker,
+        host_config_path: &'a Path,
+        input: OpBatcherInput,
+    ) -> Result<OpBatcherHandler, anyhow::Error> {
+        let container_config_path = PathBuf::from("/data");
+
+        let cmd = self.build_cmd(host_config_path, &input)?;
 
         // Build port mappings only for ports that should be published to host
         let port_mappings: Vec<PortMapping> = [
@@ -131,7 +152,6 @@ impl OpBatcherBuilder {
         .flatten()
         .collect();
 
-        // Always expose all ports to the Docker network (regardless of publish_all_ports)
         let service_config = ServiceConfig::new(self.docker_image.clone())
             .cmd(cmd)
             .ports(port_mappings)
@@ -139,30 +159,21 @@ impl OpBatcherBuilder {
             .expose(ExposedPort::tcp(self.metrics_port))
             .bind(host_config_path, &container_config_path, "rw");
 
-        let handler = docker
-            .start_service(
-                &self.container_name,
-                service_config,
-                CreateAndStartContainerOptions::default(),
-            )
-            .await
-            .context("Failed to start op-batcher container")?;
+        let handler = service::deploy_container(
+            docker,
+            &self.docker_image,
+            &self.container_name,
+            service_config,
+        )
+        .await
+        .context("Failed to start op-batcher container")?;
 
         // Build internal Docker network URL
         let rpc_url = KupDocker::build_http_url(&handler.container_name, self.rpc_port)?;
 
         // Build host-accessible URLs from bound ports
-        let rpc_host_url = handler
-            .get_tcp_host_port(self.rpc_port)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build RPC host URL")?;
-
-        let metrics_host_url = handler
-            .get_tcp_host_port(self.metrics_port)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build metrics host URL")?;
+        let rpc_host_url = handler.build_host_url(self.rpc_port, "http")?;
+        let metrics_host_url = handler.build_host_url(self.metrics_port, "http")?;
 
         tracing::info!(
             container_id = %handler.container_id,

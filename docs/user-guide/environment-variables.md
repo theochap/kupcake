@@ -178,6 +178,26 @@ export KUP_SEQUENCERS=3
 kupcake
 ```
 
+### `KUP_NO_PROPOSER`
+
+Disable op-proposer deployment.
+
+```bash
+export KUP_NO_PROPOSER=true
+kupcake
+# op-proposer will not be started
+```
+
+### `KUP_NO_CHALLENGER`
+
+Disable op-challenger deployment.
+
+```bash
+export KUP_NO_CHALLENGER=true
+kupcake
+# op-challenger will not be started
+```
+
 ### `KUP_FLASHBLOCKS`
 
 Enable flashblocks support.

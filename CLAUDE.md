@@ -109,15 +109,25 @@ cargo clippy --fix
 
 ### Service Architecture
 
-Each service follows a consistent pattern with two files:
-- `mod.rs` - Contains Config/Builder structs, Handler struct, and deployment logic
-- `cmd.rs` - Command builder that generates container arguments (passed to bollard's `Config::cmd`)
+Each service implements the `KupcakeService` trait (`crates/deploy/src/service.rs`) which provides a unified deploy interface:
+- `deploy()` - Deploy the service container(s) and return a handler
+- Associated types: `Input` (deploy-time parameters using owned data), `Output` (handler)
+
+**Pattern**: Each service has:
+- **Builder** - Configuration before deployment (implements `KupcakeService`)
+- **Input** - Deploy-time parameters using owned data (Strings, Urls), decoupled from handler types
+- **Handler** - Runtime handle to running container(s), returned by `deploy()`
+- **cmd.rs** - Command builder for container arguments
+- **`build_cmd()`** - Inherent method on each Builder that produces Docker command args
+
+A `deploy_container()` helper function (`crates/deploy/src/service.rs`) provides the common single-container deploy pipeline used by leaf services.
 
 Services are organized as L2 node pairs (op-reth + kona-node):
-- **L2NodeBuilder** - Combines OpRethBuilder + KonaNodeBuilder with a role (Sequencer/Validator)
+- **L2NodeBuilder<EL, CL, Cond>** - Generic composite that combines execution + consensus + optional conductor. Implements `KupcakeService` by delegating to its children's `deploy()` methods.
 - **L2NodeHandler** - Runtime handler managing both execution and consensus containers
-- **L2StackBuilder** - Collection of all L2 nodes plus op-batcher, op-proposer, op-challenger
+- **L2StackBuilder<Node, B, P, C>** - Generic collection of all L2 nodes plus batcher, proposer, challenger. Calls `node.deploy()` via the trait.
 - **L2StackHandler** - Runtime handlers for all L2 stack components
+- **Deployer<L1, Node, B, P, C>** - Generic top-level deployer. All type params default to concrete types for backward compatibility.
 
 ### Multi-Sequencer Support
 
@@ -151,9 +161,10 @@ Deployer
 
 ### Key Types
 
-- **Builder** types (e.g., `DeployerBuilder`, `OpRethBuilder`) - Configuration before deployment
-- **Config** types - Serializable configuration (used in Kupcake.toml)
-- **Handler** types - Runtime handles to running containers
+- **KupcakeService** trait (`crates/deploy/src/service.rs`) - Unified deploy interface with associated types `Input` and `Output`
+- **Builder** types (e.g., `OpRethBuilder`, `OpBatcherBuilder`) - Configuration before deployment, implement `KupcakeService`
+- **Input** types (e.g., `OpRethInput`, `L2NodeInput`) - Deploy-time parameters using owned data (`String`, `Url`, `Vec<String>`), decoupled from handler types
+- **Handler** types - Runtime handles to running containers, returned by `deploy()`
 - **DockerImage** - Image name and tag tuple for each service
 
 ### Docker Networking
@@ -320,12 +331,13 @@ When enabled (default), Prometheus scrapes metrics from all services:
 
 When adding new services:
 1. Create module in `crates/deploy/src/services/{service_name}/`
-2. Define `{Service}Config` or `{Service}Builder` (serializable)
+2. Define `{Service}Builder` (serializable) and `{Service}Input` struct
 3. Define `{Service}Handler` (runtime handle)
 4. Create `cmd.rs` with container argument builder
-5. Add default image/tag constants
-6. Export types in `services/mod.rs`
-7. Integrate into `Deployer` or `L2StackBuilder`
+5. Implement `KupcakeService` trait for `{Service}Builder` (see `service.rs` for the trait and `deploy_container` helper)
+6. Add default image/tag constants
+7. Export types in `services/mod.rs`
+8. Integrate into `Deployer` or `L2StackBuilder`
 
 When modifying container configuration:
 - Container arguments are built in `cmd.rs` files using the builder pattern

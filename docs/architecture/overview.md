@@ -81,10 +81,16 @@ Kupcake is a Rust CLI tool that orchestrates Docker containers to deploy a compl
 
 **Purpose**: Define and manage individual services.
 
+**Core Trait**: `KupcakeService` (`crates/deploy/src/service.rs`) provides a unified deploy interface:
+- `deploy()` - Deploy the service and return a handler
+- Associated types: `Input`, `Output`
+
 **Pattern**: Each service has:
-- **Config/Builder** - Configuration before deployment
-- **Handler** - Runtime handle to running container(s)
+- **Builder** - Configuration before deployment (implements `KupcakeService`)
+- **Input** - Deploy-time parameters using owned data (Strings, Urls), decoupled from handler types
+- **Handler** - Runtime handle to running container(s), returned by `deploy()`
 - **cmd.rs** - Command builder for container arguments
+- **`build_cmd()`** - Inherent method on each Builder that produces Docker command args
 
 **Services**:
 - `anvil/` - L1 fork
@@ -95,75 +101,59 @@ Kupcake is a Rust CLI tool that orchestrates Docker containers to deploy a compl
 - `op_proposer/` - State root proposals
 - `op_challenger/` - Fault proofs
 - `op_conductor/` - Multi-sequencer coordination
-- `l2_stack/` - Combines all L2 services
+- `l2_node.rs` - Composite: combines EL + CL + optional conductor (implements `KupcakeService` by delegating)
+- `l2_stack.rs` - Combines all L2 nodes + batcher/proposer/challenger
 - `prometheus/` - Metrics collection
 - `grafana/` - Metrics visualization
 
 ## Design Patterns
 
-### Builder Pattern
+### KupcakeService Trait
 
-All services follow the Builder pattern:
+All services implement the `KupcakeService` trait (`crates/deploy/src/service.rs`):
 
 ```rust
-pub struct OpRethBuilder {
-    pub image: DockerImage,
-    pub network_name: String,
-    pub role: L2NodeRole,
-    // ... configuration fields
-}
+pub trait KupcakeService: Send + Sync + 'static {
+    type Input: Send;
+    type Output: Send;
 
-impl OpRethBuilder {
-    pub async fn build(self, docker: &KupDocker) -> Result<OpRethHandler> {
-        // Create and start container
-        // Return runtime handler
-    }
+    fn container_name(&self) -> &str;
+    fn docker_image(&self) -> &DockerImage;
+    fn deploy<'a>(&'a self, docker: &'a mut KupDocker, host_config_path: &'a Path, input: Self::Input)
+        -> impl Future<Output = Result<Self::Output>> + Send + 'a;
 }
 ```
 
+**Decoupled Inputs**: Input types use owned data (`String`, `Url`, `Vec<String>`) instead of handler references. This keeps the trait simple (no GATs or lifetime parameters).
+
+**Command Building**: Each Builder has an inherent `build_cmd()` method (not on the trait) that produces Docker command args. This is called internally by `deploy()`.
+
 **Benefits**:
-- Immutable configuration before deployment
-- Validation at build time
-- Clear separation of config and runtime
+- Unified deploy interface for all services
+- Swappable implementations via generics
+- Composable: L2NodeBuilder implements the trait by delegating to children
 
-### Handler Pattern
+### Builder + Input + Handler Pattern
 
-Services return Handler types that represent running containers:
+Each service has three types:
+- **Builder** (e.g., `OpRethBuilder`) - Configuration, implements `KupcakeService`
+- **Input** (e.g., `OpRethInput`) - Deploy-time parameters using owned data (Strings, Urls), decoupled from handler types
+- **Handler** (e.g., `OpRethHandler`) - Runtime handle to running container(s)
+
+### Generic Composition
+
+`L2StackBuilder`, `L2NodeBuilder`, and `Deployer` are all generic over their service types with default type params for backward compatibility:
 
 ```rust
-pub struct OpRethHandler {
-    pub container_id: String,
-    pub container_name: String,
-    pub image: DockerImage,
-    pub rpc_port: u16,
-    // ... runtime info
-}
+pub struct L2NodeBuilder<EL = OpRethBuilder, CL = KonaNodeBuilder, Cond = OpConductorBuilder> { ... }
+pub struct L2StackBuilder<Node = L2NodeBuilder, B = OpBatcherBuilder, P = OpProposerBuilder, C = OpChallengerBuilder> { ... }
+pub struct Deployer<L1 = AnvilConfig, Node = L2NodeBuilder, B = OpBatcherBuilder, P = OpProposerBuilder, C = OpChallengerBuilder> { ... }
 ```
 
 **Benefits**:
-- Type-safe container management
-- Easy cleanup on shutdown
-- Runtime introspection
-
-### Composition Over Inheritance
-
-L2StackBuilder composes multiple service builders:
-
-```rust
-pub struct L2StackBuilder {
-    pub sequencers: Vec<L2NodeBuilder>,
-    pub validators: Vec<L2NodeBuilder>,
-    pub op_batcher: OpBatcherBuilder,
-    pub op_proposer: OpProposerBuilder,
-    pub op_challenger: OpChallengerBuilder,
-    pub op_conductor: Option<OpConductorBuilder>,
-}
-```
-
-**Benefits**:
-- Flexible service combinations
-- Independent service lifecycle
-- Clear service dependencies
+- Services are swappable at the type level
+- Default type params maintain backward compatibility
+- L2Node is treated as one opaque service by L2Stack and Deployer
 
 ## Deployment Sequence
 

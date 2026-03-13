@@ -237,6 +237,8 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         .op_challenger_tag(args.docker_images.op_challenger_tag)
         .op_conductor_image(args.docker_images.op_conductor_image)
         .op_conductor_tag(args.docker_images.op_conductor_tag)
+        .no_proposer(args.no_proposer)
+        .no_challenger(args.no_challenger)
         .flashblocks(args.flashblocks)
         .maybe_snapshot(args.snapshot.map(PathBuf::from))
         .copy_snapshot(args.copy_snapshot)

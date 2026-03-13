@@ -658,6 +658,33 @@ kupcake --sequencer-count 3  # Multi-sequencer with conductor
 
 See: [Multi-Sequencer Guide](multi-sequencer.md)
 
+#### `--no-proposer`
+
+Disable op-proposer deployment.
+
+**Default**: `false`
+**Environment Variable**: `KUP_NO_PROPOSER`
+
+When set, the op-proposer service will not be started as part of the L2 stack.
+
+```bash
+kupcake --no-proposer
+kupcake --no-proposer --no-challenger  # Skip both proposer and challenger
+```
+
+#### `--no-challenger`
+
+Disable op-challenger deployment.
+
+**Default**: `false`
+**Environment Variable**: `KUP_NO_CHALLENGER`
+
+When set, the op-challenger service will not be started as part of the L2 stack.
+
+```bash
+kupcake --no-challenger
+```
+
 #### `--flashblocks`
 
 Enable flashblocks support.

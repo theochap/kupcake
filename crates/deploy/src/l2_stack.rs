@@ -6,31 +6,52 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AnvilHandler, KupDocker, OpBatcherBuilder, OpChallengerBuilder, OpConductorBuilder,
-    OpProposerBuilder,
+    AnvilHandler, KupDocker, OpBatcherBuilder, OpBatcherHandler, OpChallengerBuilder,
+    OpChallengerHandler, OpConductorBuilder, OpProposerBuilder, OpProposerHandler,
     deployer::L2StackHandler,
     fs,
-    services::l2_node::{ConductorContext, L2NodeBuilder, L2NodeHandler},
+    service::KupcakeService,
+    services::{
+        OpBatcherInput, OpChallengerInput, OpProposerInput,
+        l2_node::{ConductorContext, L2NodeBuilder, L2NodeHandler, L2NodeInput},
+    },
 };
 
 /// Combined configuration for all L2 components for the op-stack.
 ///
 /// Each sequencer node can optionally have an op-conductor attached for
 /// multi-sequencer Raft consensus coordination.
+///
+/// The type parameters allow swapping implementations:
+/// - `Node` — the L2 node type (default: `L2NodeBuilder`, which combines op-reth + kona-node)
+/// - `B` — the batcher type (default: `OpBatcherBuilder`)
+/// - `P` — the proposer type (default: `OpProposerBuilder`)
+/// - `C` — the challenger type (default: `OpChallengerBuilder`)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct L2StackBuilder {
+#[serde(bound(
+    serialize = "Node: Serialize, B: Serialize, P: Serialize, C: Serialize",
+    deserialize = "Node: serde::de::DeserializeOwned, B: serde::de::DeserializeOwned, P: serde::de::DeserializeOwned, C: serde::de::DeserializeOwned"
+))]
+pub struct L2StackBuilder<
+    Node = L2NodeBuilder,
+    B = OpBatcherBuilder,
+    P = OpProposerBuilder,
+    C = OpChallengerBuilder,
+> {
     /// Configuration for sequencer nodes (op-reth + kona-node pairs).
     /// When there are multiple sequencers, each has an op-conductor for coordination.
-    pub sequencers: Vec<L2NodeBuilder>,
+    pub sequencers: Vec<Node>,
     /// Configuration for validator nodes (op-reth + kona-node pairs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub validators: Vec<L2NodeBuilder>,
+    pub validators: Vec<Node>,
     /// Configuration for op-batcher.
-    pub op_batcher: OpBatcherBuilder,
-    /// Configuration for op-proposer.
-    pub op_proposer: OpProposerBuilder,
-    /// Configuration for op-challenger.
-    pub op_challenger: OpChallengerBuilder,
+    pub op_batcher: B,
+    /// Configuration for op-proposer (None to skip deployment).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op_proposer: Option<P>,
+    /// Configuration for op-challenger (None to skip deployment).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op_challenger: Option<C>,
 }
 
 impl Default for L2StackBuilder {
@@ -39,12 +60,13 @@ impl Default for L2StackBuilder {
             sequencers: vec![L2NodeBuilder::sequencer()],
             validators: Vec::new(),
             op_batcher: OpBatcherBuilder::default(),
-            op_proposer: OpProposerBuilder::default(),
-            op_challenger: OpChallengerBuilder::default(),
+            op_proposer: Some(OpProposerBuilder::default()),
+            op_challenger: Some(OpChallengerBuilder::default()),
         }
     }
 }
 
+// Concrete-type methods: constructors and helpers that work with the default types.
 impl L2StackBuilder {
     /// Create a new L2 stack builder with the specified number of sequencers and validators.
     ///
@@ -92,8 +114,8 @@ impl L2StackBuilder {
             sequencers,
             validators,
             op_batcher: OpBatcherBuilder::default(),
-            op_proposer: OpProposerBuilder::default(),
-            op_challenger: OpChallengerBuilder::default(),
+            op_proposer: Some(OpProposerBuilder::default()),
+            op_challenger: Some(OpChallengerBuilder::default()),
         }
     }
 
@@ -157,11 +179,6 @@ impl L2StackBuilder {
         &self.sequencers[0]
     }
 
-    /// Get the total number of L2 nodes (sequencers + validators).
-    pub fn node_count(&self) -> usize {
-        self.sequencers.len() + self.validators.len()
-    }
-
     /// Returns true if op-conductor should be deployed (any sequencer has conductor config).
     pub fn needs_conductor(&self) -> bool {
         self.sequencers.iter().any(|s| s.op_conductor.is_some())
@@ -200,15 +217,22 @@ impl L2StackBuilder {
 
     /// Set the binary path or source directory for op-proposer.
     pub fn set_op_proposer_binary(mut self, path: impl Into<PathBuf>) -> Self {
-        self.op_proposer.docker_image =
-            crate::docker::DockerImage::from_binary_with_name(path, "op-proposer");
+        if let Some(ref mut p) = self.op_proposer {
+            p.docker_image = crate::docker::DockerImage::from_binary_with_name(path, "op-proposer");
+        } else {
+            tracing::warn!("op-proposer binary path ignored: op-proposer is disabled");
+        }
         self
     }
 
     /// Set the binary path or source directory for op-challenger.
     pub fn set_op_challenger_binary(mut self, path: impl Into<PathBuf>) -> Self {
-        self.op_challenger.docker_image =
-            crate::docker::DockerImage::from_binary_with_name(path, "op-challenger");
+        if let Some(ref mut c) = self.op_challenger {
+            c.docker_image =
+                crate::docker::DockerImage::from_binary_with_name(path, "op-challenger");
+        } else {
+            tracing::warn!("op-challenger binary path ignored: op-challenger is disabled");
+        }
         self
     }
 
@@ -222,11 +246,27 @@ impl L2StackBuilder {
         }
         self
     }
+}
 
+// Generic methods: the core deployment logic that works with any service implementations.
+impl<Node, B, P, C> L2StackBuilder<Node, B, P, C> {
+    /// Get the total number of L2 nodes (sequencers + validators).
+    pub fn node_count(&self) -> usize {
+        self.sequencers.len() + self.validators.len()
+    }
+}
+
+impl<Node, B, P, C> L2StackBuilder<Node, B, P, C>
+where
+    Node: KupcakeService<Input = L2NodeInput, Output = L2NodeHandler>,
+    B: KupcakeService<Input = OpBatcherInput, Output = OpBatcherHandler>,
+    P: KupcakeService<Input = OpProposerInput, Output = OpProposerHandler>,
+    C: KupcakeService<Input = OpChallengerInput, Output = OpChallengerHandler>,
+{
     /// Start all L2 node components.
     ///
     /// This starts sequencer nodes first (with their op-conductors if configured),
-    /// then validator nodes, then op-batcher, op-proposer, and op-challenger.
+    /// then validator nodes, then op-batcher, and optionally op-proposer and op-challenger.
     /// Each L2 node pair (op-reth + kona-node) generates its own JWT for authentication.
     /// P2P peer discovery is enabled by passing enodes between nodes.
     ///
@@ -235,33 +275,36 @@ impl L2StackBuilder {
     /// * `host_config_path` - Path on host for config files
     /// * `anvil_handler` - Handler for the L1 Anvil instance
     /// * `l1_chain_id` - L1 chain ID (used to determine if we need a custom L1 config for kona-node)
-    /// * `skip_proposer_challenger` - When true, op-proposer and op-challenger are not started
-    ///   (used in snapshot mode where state.json is unavailable)
     pub async fn start(
         &self,
         docker: &mut KupDocker,
         host_config_path: PathBuf,
         anvil_handler: &AnvilHandler,
         l1_chain_id: u64,
-        skip_proposer_challenger: bool,
     ) -> Result<L2StackHandler, anyhow::Error> {
         if !host_config_path.exists() {
             fs::FsHandler::create_host_config_directory(&host_config_path)?;
         }
 
+        // Extract raw data from anvil_handler for decoupled inputs
+        let l1_rpc_url = anvil_handler.l1_rpc_url.as_str();
+        let l1_host_url = anvil_handler.l1_host_url.as_ref().map(|u| u.as_str());
+        let unsafe_block_signer_key =
+            hex::encode(&anvil_handler.accounts.unsafe_block_signer.private_key);
+        let batcher_private_key = anvil_handler.accounts.batcher.private_key.to_string();
+        let proposer_private_key = anvil_handler.accounts.proposer.private_key.to_string();
+        let challenger_private_key = anvil_handler.accounts.challenger.private_key.to_string();
+
         // Mutable lists of peer enodes for P2P discovery
-        // Each node adds its enode after starting, so subsequent nodes can use it as a bootnode
         let mut kona_node_enodes: Vec<String> = Vec::new();
         let mut op_reth_enodes: Vec<String> = Vec::new();
 
-        // Determine if we need conductor coordination
-        let needs_conductor = self.needs_conductor();
+        let needs_conductor = self.sequencers.len() > 1;
 
         // Start all sequencer nodes (with conductors if configured)
         let mut sequencer_handlers: Vec<L2NodeHandler> = Vec::with_capacity(self.sequencers.len());
         for (i, sequencer) in self.sequencers.iter().enumerate() {
-            // Determine conductor context for this sequencer
-            let conductor_context = if needs_conductor && sequencer.op_conductor.is_some() {
+            let conductor_context = if needs_conductor {
                 if i == 0 {
                     ConductorContext::Leader { index: i }
                 } else {
@@ -272,32 +315,36 @@ impl L2StackBuilder {
             };
 
             if i == 0 {
-                tracing::info!(
-                    has_conductor = sequencer.op_conductor.is_some(),
-                    "Starting primary sequencer node (op-reth + kona-node)..."
-                );
+                tracing::info!("Starting primary sequencer node (op-reth + kona-node)...");
             } else {
                 tracing::info!(
                     index = i + 1,
-                    has_conductor = sequencer.op_conductor.is_some(),
                     "Starting sequencer node (op-reth + kona-node)..."
                 );
             }
 
             let sequencer_handler = sequencer
-                .start(
+                .deploy(
                     docker,
                     &host_config_path,
-                    anvil_handler,
-                    None, // Sequencers don't follow another sequencer
-                    &mut kona_node_enodes,
-                    &mut op_reth_enodes,
-                    l1_chain_id,
-                    conductor_context,
-                    None, // Sequencers get flashblocks URL from their own op-rbuilder
+                    L2NodeInput {
+                        l1_rpc_url: l1_rpc_url.to_string(),
+                        l1_host_url: l1_host_url.map(|s| s.to_string()),
+                        unsafe_block_signer_key: unsafe_block_signer_key.clone(),
+                        sequencer_rpc: None,
+                        kona_node_enodes: kona_node_enodes.clone(),
+                        op_reth_enodes: op_reth_enodes.clone(),
+                        l1_chain_id,
+                        conductor_context,
+                        sequencer_flashblocks_relay_url: None,
+                    },
                 )
                 .await
-                .context(format!("Failed to start sequencer node {}", i + 1))?;
+                .with_context(|| format!("Failed to start sequencer node {}", i + 1))?;
+
+            // Collect enodes from the deployed handler for subsequent nodes
+            op_reth_enodes.push(sequencer_handler.op_reth.enode());
+            kona_node_enodes.push(sequencer_handler.kona_node.enode());
 
             sequencer_handlers.push(sequencer_handler);
         }
@@ -309,7 +356,7 @@ impl L2StackBuilder {
         let sequencer_flashblocks_relay_url = sequencer_handlers[0]
             .kona_node
             .flashblocks_relay_url
-            .as_ref();
+            .clone();
 
         // Start validator nodes (no conductors)
         let mut validator_handlers: Vec<L2NodeHandler> = Vec::with_capacity(self.validators.len());
@@ -317,19 +364,27 @@ impl L2StackBuilder {
             tracing::info!("Starting validator node {} (op-reth + kona-node)...", i + 1);
 
             let validator_handler = validator
-                .start(
+                .deploy(
                     docker,
                     &host_config_path,
-                    anvil_handler,
-                    Some(&sequencer_rpc),
-                    &mut kona_node_enodes,
-                    &mut op_reth_enodes,
-                    l1_chain_id,
-                    ConductorContext::None,
-                    sequencer_flashblocks_relay_url,
+                    L2NodeInput {
+                        l1_rpc_url: l1_rpc_url.to_string(),
+                        l1_host_url: l1_host_url.map(|s| s.to_string()),
+                        unsafe_block_signer_key: unsafe_block_signer_key.clone(),
+                        sequencer_rpc: Some(sequencer_rpc.clone()),
+                        kona_node_enodes: kona_node_enodes.clone(),
+                        op_reth_enodes: op_reth_enodes.clone(),
+                        l1_chain_id,
+                        conductor_context: ConductorContext::None,
+                        sequencer_flashblocks_relay_url: sequencer_flashblocks_relay_url.clone(),
+                    },
                 )
                 .await
-                .context(format!("Failed to start validator node {}", i + 1))?;
+                .with_context(|| format!("Failed to start validator node {}", i + 1))?;
+
+            // Collect enodes from the deployed handler for subsequent nodes
+            op_reth_enodes.push(validator_handler.op_reth.enode());
+            kona_node_enodes.push(validator_handler.kona_node.enode());
 
             validator_handlers.push(validator_handler);
         }
@@ -354,45 +409,57 @@ impl L2StackBuilder {
         // Start op-batcher (connects to primary sequencer)
         let op_batcher_handler = self
             .op_batcher
-            .start(
+            .deploy(
                 docker,
                 &host_config_path,
-                anvil_handler,
-                &primary_sequencer.op_reth,
-                &primary_sequencer.kona_node,
+                OpBatcherInput {
+                    l1_rpc_url: l1_rpc_url.to_string(),
+                    l2_rpc_url: primary_sequencer.op_reth.http_rpc_url.to_string(),
+                    rollup_rpc_url: primary_sequencer.kona_node.rpc_url.to_string(),
+                    batcher_private_key: batcher_private_key.clone(),
+                },
             )
             .await?;
 
-        let (op_proposer_handler, op_challenger_handler) = if skip_proposer_challenger {
-            tracing::info!("Skipping op-proposer and op-challenger (snapshot mode, no state.json)");
-            (None, None)
-        } else {
+        let op_proposer_handler = if let Some(ref proposer_config) = self.op_proposer {
             tracing::info!("Starting op-proposer...");
+            Some(
+                proposer_config
+                    .deploy(
+                        docker,
+                        &host_config_path,
+                        OpProposerInput {
+                            l1_rpc_url: l1_rpc_url.to_string(),
+                            rollup_rpc_url: primary_sequencer.kona_node.rpc_url.to_string(),
+                            proposer_private_key: proposer_private_key.clone(),
+                        },
+                    )
+                    .await?,
+            )
+        } else {
+            tracing::info!("Skipping op-proposer (disabled)");
+            None
+        };
 
-            let proposer = self
-                .op_proposer
-                .start(
-                    docker,
-                    &host_config_path,
-                    anvil_handler,
-                    &primary_sequencer.kona_node,
-                )
-                .await?;
-
+        let op_challenger_handler = if let Some(ref challenger_config) = self.op_challenger {
             tracing::info!("Starting op-challenger...");
-
-            let challenger = self
-                .op_challenger
-                .start(
-                    docker,
-                    &host_config_path,
-                    anvil_handler,
-                    &primary_sequencer.kona_node,
-                    &self.sequencers[0].op_reth,
-                )
-                .await?;
-
-            (Some(proposer), Some(challenger))
+            Some(
+                challenger_config
+                    .deploy(
+                        docker,
+                        &host_config_path,
+                        OpChallengerInput {
+                            l1_rpc_url: l1_rpc_url.to_string(),
+                            l2_rpc_url: primary_sequencer.op_reth.http_rpc_url.to_string(),
+                            rollup_rpc_url: primary_sequencer.kona_node.rpc_url.to_string(),
+                            challenger_private_key: challenger_private_key.clone(),
+                        },
+                    )
+                    .await?,
+            )
+        } else {
+            tracing::info!("Skipping op-challenger (disabled)");
+            None
         };
 
         // Log all sequencer endpoints
@@ -423,7 +490,7 @@ impl L2StackBuilder {
             tracing::info!(op_proposer_rpc = %proposer.rpc_url, "op-proposer started");
         }
         if let Some(ref challenger) = op_challenger_handler {
-            tracing::info!(op_challenger_rpc = %challenger.rpc_url, "op-challenger started");
+            tracing::info!(op_challenger_metrics = %challenger.metrics_url, "op-challenger started");
         }
         tracing::info!(
             op_batcher_rpc = %op_batcher_handler.rpc_url,

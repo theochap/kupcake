@@ -143,26 +143,20 @@ pub async fn health_check(deployer: &Deployer) -> Result<HealthReport> {
     }
 
     // Check infrastructure services
-    let services = vec![
+    let mut services = vec![
         check_service(
             &docker,
             "op-batcher",
             &deployer.l2_stack.op_batcher.container_name,
         )
         .await,
-        check_service(
-            &docker,
-            "op-proposer",
-            &deployer.l2_stack.op_proposer.container_name,
-        )
-        .await,
-        check_service(
-            &docker,
-            "op-challenger",
-            &deployer.l2_stack.op_challenger.container_name,
-        )
-        .await,
     ];
+    if let Some(ref proposer) = deployer.l2_stack.op_proposer {
+        services.push(check_service(&docker, "op-proposer", &proposer.container_name).await);
+    }
+    if let Some(ref challenger) = deployer.l2_stack.op_challenger {
+        services.push(check_service(&docker, "op-challenger", &challenger.container_name).await);
+    }
 
     let healthy = compute_healthy(&l1, &nodes, &services);
 

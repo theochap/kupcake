@@ -267,6 +267,20 @@ impl ServiceHandler {
     pub fn get_tcp_host_port(&self, container_port: u16) -> Option<u16> {
         self.get_host_port(container_port, "tcp")
     }
+
+    /// Build a host-accessible URL from the bound port for a given container port.
+    ///
+    /// Returns `Ok(None)` if the port is not published to the host.
+    pub fn build_host_url(
+        &self,
+        container_port: u16,
+        scheme: &str,
+    ) -> Result<Option<url::Url>, anyhow::Error> {
+        self.get_tcp_host_port(container_port)
+            .map(|port| url::Url::parse(&format!("{}://localhost:{}/", scheme, port)))
+            .transpose()
+            .map_err(Into::into)
+    }
 }
 
 /// A Docker image reference with image name and tag.

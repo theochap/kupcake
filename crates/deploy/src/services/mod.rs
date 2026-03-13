@@ -4,6 +4,10 @@
 //! - `cmd.rs` - Command builder for generating Docker commands
 //! - `mod.rs` - Config, Handler, and start logic
 
+use std::path::Path;
+
+use anyhow::Context;
+
 pub mod anvil;
 pub mod grafana;
 pub mod kona_node;
@@ -17,7 +21,7 @@ pub mod op_reth;
 
 // Re-export commonly used types
 pub use anvil::{
-    AnvilAccounts, AnvilConfig, AnvilHandler, AnvilInitMode,
+    AnvilAccounts, AnvilConfig, AnvilHandler, AnvilInitMode, AnvilInput,
     DEFAULT_DOCKER_IMAGE as ANVIL_DEFAULT_IMAGE, DEFAULT_DOCKER_TAG as ANVIL_DEFAULT_TAG,
 };
 pub use grafana::{
@@ -29,21 +33,23 @@ pub use grafana::{
 };
 pub use kona_node::{
     DEFAULT_DOCKER_IMAGE as KONA_NODE_DEFAULT_IMAGE, DEFAULT_DOCKER_TAG as KONA_NODE_DEFAULT_TAG,
-    KonaNodeBuilder, KonaNodeHandler,
+    KonaNodeBuilder, KonaNodeHandler, KonaNodeInput,
     rpc::{BlockRef, SyncStatus},
 };
-pub use l2_node::{ConductorContext, L2NodeBuilder, L2NodeHandler, L2NodeRole};
+pub use l2_node::{ConductorContext, L2NodeBuilder, L2NodeHandler, L2NodeInput, L2NodeRole};
 pub use op_batcher::{
     DEFAULT_DOCKER_IMAGE as OP_BATCHER_DEFAULT_IMAGE, DEFAULT_DOCKER_TAG as OP_BATCHER_DEFAULT_TAG,
-    OpBatcherBuilder, OpBatcherHandler,
+    OpBatcherBuilder, OpBatcherHandler, OpBatcherInput,
 };
 pub use op_challenger::{
     DEFAULT_DOCKER_IMAGE as OP_CHALLENGER_DEFAULT_IMAGE,
     DEFAULT_DOCKER_TAG as OP_CHALLENGER_DEFAULT_TAG, OpChallengerBuilder, OpChallengerHandler,
+    OpChallengerInput,
 };
 pub use op_conductor::{
     DEFAULT_DOCKER_IMAGE as OP_CONDUCTOR_DEFAULT_IMAGE,
     DEFAULT_DOCKER_TAG as OP_CONDUCTOR_DEFAULT_TAG, OpConductorBuilder, OpConductorHandler,
+    OpConductorInput,
 };
 pub use op_deployer::{
     DEFAULT_DOCKER_IMAGE as OP_DEPLOYER_DEFAULT_IMAGE,
@@ -52,10 +58,29 @@ pub use op_deployer::{
 pub use op_proposer::{
     DEFAULT_DOCKER_IMAGE as OP_PROPOSER_DEFAULT_IMAGE,
     DEFAULT_DOCKER_TAG as OP_PROPOSER_DEFAULT_TAG, OpProposerBuilder, OpProposerHandler,
+    OpProposerInput,
 };
 pub use op_reth::{
     DEFAULT_DOCKER_IMAGE as OP_RETH_DEFAULT_IMAGE, DEFAULT_DOCKER_TAG as OP_RETH_DEFAULT_TAG,
     DEFAULT_RBUILDER_DOCKER_IMAGE as OP_RBUILDER_DEFAULT_IMAGE,
     DEFAULT_RBUILDER_DOCKER_TAG as OP_RBUILDER_DEFAULT_TAG, OpRethBuilder, OpRethHandler,
+    OpRethInput,
     rpc::{EthSyncProgress, OpRethStatus},
 };
+
+/// Read the DisputeGameFactory proxy address from state.json.
+///
+/// Used by op-proposer and op-challenger to look up the DGF address at deploy time.
+pub fn read_dgf_address(host_config_path: &Path) -> Result<String, anyhow::Error> {
+    let state_file_path = host_config_path.join("state.json");
+    let state_content = std::fs::read_to_string(&state_file_path)
+        .context("Failed to read state.json for DisputeGameFactory address")?;
+
+    let state: serde_json::Value =
+        serde_json::from_str(&state_content).context("Failed to parse state.json")?;
+
+    state["opChainDeployments"][0]["DisputeGameFactoryProxy"]
+        .as_str()
+        .map(String::from)
+        .context("DisputeGameFactory address not found in state.json")
+}

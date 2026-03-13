@@ -10,11 +10,20 @@ use url::Url;
 
 pub use cmd::OpChallengerCmdBuilder;
 
-use crate::docker::{
-    CreateAndStartContainerOptions, DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig,
-};
+use crate::docker::{DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig};
+use crate::service::{self, KupcakeService};
 
-use super::{anvil::AnvilHandler, kona_node::KonaNodeHandler, op_reth::OpRethBuilder};
+/// Input parameters for deploying the op-challenger.
+pub struct OpChallengerInput {
+    /// L1 RPC URL (e.g., Anvil).
+    pub l1_rpc_url: String,
+    /// L2 execution client RPC URL (e.g., op-reth HTTP).
+    pub l2_rpc_url: String,
+    /// Rollup (consensus) RPC URL (e.g., kona-node).
+    pub rollup_rpc_url: String,
+    /// Private key for the challenger account.
+    pub challenger_private_key: String,
+}
 
 /// Default port for op-challenger (for internal URL reference only - op-challenger has no RPC server).
 pub const DEFAULT_RPC_PORT: u16 = 8561;
@@ -65,51 +74,26 @@ pub struct OpChallengerHandler {
     pub container_id: String,
     /// Docker container name.
     pub container_name: String,
-    /// The RPC URL for the op-challenger.
-    pub rpc_url: Url,
+    /// The metrics URL for the op-challenger (op-challenger has no RPC server).
+    pub metrics_url: Url,
 }
 
 impl OpChallengerBuilder {
-    /// Start the op-challenger.
-    pub async fn start(
+    /// Build the Docker command arguments for op-challenger.
+    pub fn build_cmd(
         &self,
-        docker: &mut KupDocker,
         host_config_path: &Path,
-        anvil_handler: &AnvilHandler,
-        kona_node_handler: &KonaNodeHandler,
-        op_reth_config: &OpRethBuilder,
-    ) -> Result<OpChallengerHandler, anyhow::Error> {
+        input: &OpChallengerInput,
+    ) -> Result<Vec<String>, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
 
-        // Ensure the Docker image is ready (pull or build if needed)
-        docker
-            .ensure_image_ready(&self.docker_image, "op-challenger")
-            .await
-            .context("Failed to ensure op-challenger image is ready")?;
+        let dgf_address = super::read_dgf_address(host_config_path)?;
 
-        let challenger_private_key = &anvil_handler.accounts.challenger.private_key;
-
-        // Read the DisputeGameFactory address from state.json
-        let state_file_path = host_config_path.join("state.json");
-        let state_content = tokio::fs::read_to_string(&state_file_path)
-            .await
-            .context("Failed to read state.json for DisputeGameFactory address")?;
-
-        let state: serde_json::Value =
-            serde_json::from_str(&state_content).context("Failed to parse state.json")?;
-
-        let dgf_address = state["opChainDeployments"][0]["DisputeGameFactoryProxy"]
-            .as_str()
-            .context("DisputeGameFactory address not found in state.json")?;
-
-        let cmd = OpChallengerCmdBuilder::new(
-            anvil_handler.l1_rpc_url.to_string(),
-            format!(
-                "http://{}:{}",
-                op_reth_config.container_name, op_reth_config.http_port
-            ),
-            kona_node_handler.rpc_url.to_string(),
-            challenger_private_key.to_string(),
+        Ok(OpChallengerCmdBuilder::new(
+            input.l1_rpc_url.to_string(),
+            input.l2_rpc_url.to_string(),
+            input.rollup_rpc_url.to_string(),
+            input.challenger_private_key.to_string(),
             dgf_address,
             container_config_path.to_string_lossy(),
         )
@@ -121,9 +105,32 @@ impl OpChallengerBuilder {
         .game_allowlist([254]) // Permissioned game type
         .metrics(true, "0.0.0.0", self.metrics_port)
         .extra_args(self.extra_args.clone())
-        .build();
+        .build())
+    }
+}
 
-        // Build port mappings only for ports that should be published to host
+impl KupcakeService for OpChallengerBuilder {
+    type Input = OpChallengerInput;
+    type Output = OpChallengerHandler;
+
+    fn container_name(&self) -> &str {
+        &self.container_name
+    }
+
+    fn docker_image(&self) -> &DockerImage {
+        &self.docker_image
+    }
+
+    async fn deploy<'a>(
+        &'a self,
+        docker: &'a mut KupDocker,
+        host_config_path: &'a Path,
+        input: OpChallengerInput,
+    ) -> Result<OpChallengerHandler, anyhow::Error> {
+        let container_config_path = PathBuf::from("/data");
+
+        let cmd = self.build_cmd(host_config_path, &input)?;
+
         // op-challenger doesn't have an RPC server, only metrics
         let port_mappings: Vec<PortMapping> = [PortMapping::tcp_optional(
             self.metrics_port,
@@ -139,14 +146,14 @@ impl OpChallengerBuilder {
             .expose(ExposedPort::tcp(self.metrics_port))
             .bind(host_config_path, &container_config_path, "rw");
 
-        let handler = docker
-            .start_service(
-                &self.container_name,
-                service_config,
-                CreateAndStartContainerOptions::default(),
-            )
-            .await
-            .context("Failed to start op-challenger container")?;
+        let handler = service::deploy_container(
+            docker,
+            &self.docker_image,
+            &self.container_name,
+            service_config,
+        )
+        .await
+        .context("Failed to start op-challenger container")?;
 
         tracing::info!(
             container_id = %handler.container_id,
@@ -154,13 +161,13 @@ impl OpChallengerBuilder {
             "op-challenger container started"
         );
 
-        // op-challenger doesn't have an RPC server, use metrics URL as reference
-        let rpc_url = KupDocker::build_http_url(&handler.container_name, self.metrics_port)?;
+        // op-challenger doesn't have an RPC server, only metrics
+        let metrics_url = KupDocker::build_http_url(&handler.container_name, self.metrics_port)?;
 
         Ok(OpChallengerHandler {
             container_id: handler.container_id,
             container_name: handler.container_name,
-            rpc_url,
+            metrics_url,
         })
     }
 }

@@ -154,6 +154,9 @@ async fn test_network_deployment_and_sync_status() -> Result<()> {
         .block_time(2) // Fast block time for testing
         .detach(true) // Exit after deployment
         .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -285,6 +288,9 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
         .block_time(2)
         .detach(true)
         .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -464,6 +470,9 @@ async fn test_multi_sequencer_with_conductor() -> Result<()> {
         .block_time(2)
         .detach(true)
         .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -676,6 +685,9 @@ async fn test_op_batcher_health() -> Result<()> {
         .block_time(2)
         .detach(true)
         .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -824,6 +836,7 @@ async fn test_publish_all_ports() -> Result<()> {
         .publish_all_ports(true) // Enable publish_all_ports
         .detach(true)
         .deployment_target(DeploymentTarget::Genesis)
+        .no_challenger(true)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -1075,6 +1088,9 @@ async fn test_local_kona_binary() -> Result<()> {
         .publish_all_ports(true) // Ensure all ports (including kona-node RPC) are published
         .detach(true)
         .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -1274,6 +1290,9 @@ async fn test_genesis_deployment_skipping() -> Result<()> {
         .block_time(2)
         .detach(true)
         .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -1359,6 +1378,9 @@ async fn test_stop_and_restart_from_config() -> Result<()> {
         .block_time(2)
         .detach(true)
         .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -1520,7 +1542,21 @@ async fn test_health_check_reports_healthy() -> Result<()> {
         ctx.l1_chain_id
     );
 
-    let deployer = ctx.build_deployer().await?;
+    // This test explicitly checks proposer is running, so we enable it
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(2)
+        .sequencer_count(1)
+        .block_time(2)
+        .detach(true)
+        .dump_state(false)
+        .deployment_target(DeploymentTarget::Genesis)
+        .no_challenger(true)
+        .monitoring_enabled(false)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
     deployer.save_config()?;
 
     tracing::info!("=== Deploying network... ===");
@@ -1591,12 +1627,14 @@ async fn test_health_check_reports_healthy() -> Result<()> {
         "Sequencer should have produced L2 blocks"
     );
 
-    // Service checks — op-batcher and op-proposer must be running
-    assert_eq!(report.services.len(), 3, "Should have 3 services");
+    // Service checks — op-batcher and op-proposer must be running (challenger is disabled)
+    assert_eq!(
+        report.services.len(),
+        2,
+        "Should have 2 services (batcher + proposer)"
+    );
     for service in &report.services {
-        if service.name != "op-challenger" {
-            assert!(service.running, "{} should be running", service.name);
-        }
+        assert!(service.running, "{} should be running", service.name);
     }
 
     // Cleanup
@@ -1626,7 +1664,21 @@ async fn test_health_check_reports_unhealthy_on_stopped_container() -> Result<()
         ctx.l1_chain_id
     );
 
-    let deployer = ctx.build_deployer().await?;
+    // This test checks proposer is running after stopping batcher, so we enable it
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(2)
+        .sequencer_count(1)
+        .block_time(2)
+        .detach(true)
+        .dump_state(false)
+        .deployment_target(DeploymentTarget::Genesis)
+        .no_challenger(true)
+        .monitoring_enabled(false)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
     deployer.save_config()?;
 
     tracing::info!("=== Deploying network... ===");
@@ -1692,9 +1744,9 @@ async fn test_health_check_reports_unhealthy_on_stopped_container() -> Result<()
         "op-batcher should be reported as not running"
     );
 
-    // Other critical services should still be running
+    // Other critical services should still be running (challenger is disabled)
     for service in &unhealthy_report.services {
-        if service.name != "op-batcher" && service.name != "op-challenger" {
+        if service.name != "op-batcher" {
             assert!(service.running, "{} should still be running", service.name);
         }
     }
@@ -3164,6 +3216,9 @@ async fn test_flashblocks_deployment() -> Result<()> {
         .flashblocks(true)
         .detach(true)
         .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -3367,6 +3422,9 @@ async fn test_flashblocks_with_spam() -> Result<()> {
         .flashblocks(true)
         .detach(true)
         .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -3550,6 +3608,8 @@ async fn test_flashblocks_grafana_dashboard() -> Result<()> {
         .flashblocks(true)
         .dashboards_path(dashboards_path)
         .detach(true)
+        .no_proposer(true)
+        .no_challenger(true)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -3844,6 +3904,9 @@ async fn test_genesis_deployment_mode() -> Result<()> {
         .block_time(2)
         .detach(true)
         .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer in genesis mode")?;
@@ -3997,6 +4060,9 @@ async fn test_genesis_anvil_state_persistence() -> Result<()> {
         .detach(true)
         .dump_state(true)
         .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer")?;

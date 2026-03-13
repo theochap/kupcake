@@ -15,11 +15,53 @@ pub use cmd::KonaNodeCmdBuilder;
 
 use crate::{
     ExposedPort,
-    docker::{CreateAndStartContainerOptions, DockerImage, KupDocker, PortMapping, ServiceConfig},
+    docker::{DockerImage, KupDocker, PortMapping, ServiceConfig},
+    service::{self, KupcakeService},
     services::kona_node::cmd::DEFAULT_P2P_PORT,
 };
 
-use super::{anvil::AnvilHandler, l2_node::L2NodeRole, op_reth::OpRethHandler};
+use super::l2_node::L2NodeRole;
+
+/// Input parameters for deploying kona-node.
+///
+/// Decoupled from handler references — uses raw URLs and keys.
+pub struct KonaNodeInput {
+    /// L1 RPC URL (e.g., Anvil's Docker-internal URL).
+    pub l1_rpc_url: String,
+    /// L1 RPC URL accessible from the host (used for L1 config generation).
+    /// Falls back to `l1_rpc_url` if None.
+    pub l1_host_url: Option<String>,
+    /// The authenticated Engine API URL of the paired op-reth instance.
+    pub authrpc_url: String,
+    /// Unsafe block signer private key (hex-encoded, without 0x prefix).
+    pub unsafe_block_signer_key: String,
+    /// Role of this node (sequencer or validator).
+    pub role: L2NodeRole,
+    /// JWT secret filename (shared with op-reth).
+    pub jwt_filename: String,
+    /// Existing kona-node enodes for P2P peer discovery.
+    pub bootnodes: Vec<String>,
+    /// L1 chain ID (determines whether custom L1 config is needed).
+    pub l1_chain_id: u64,
+    /// Conductor RPC URL (enables conductor control when set).
+    pub conductor_rpc: Option<String>,
+    /// Whether this node is the Raft leader (starts active).
+    pub is_conductor_leader: bool,
+    /// Flashblocks builder URL (op-rbuilder WS or sequencer relay).
+    pub flashblocks_builder_url: Option<String>,
+}
+
+/// Command output from `KonaNodeBuilder::build_cmd`.
+///
+/// Includes both the container args and the P2P keypair generated during
+/// command construction, so callers can inspect the full command without
+/// needing to deploy.
+pub struct KonaNodeCmd {
+    /// Docker container command arguments.
+    pub args: Vec<String>,
+    /// P2P keypair generated (or loaded) during command construction.
+    pub p2p_keypair: P2pKeypair,
+}
 
 /// Ethereum Mainnet chain ID.
 pub const MAINNET_CHAIN_ID: u64 = 1;
@@ -319,44 +361,13 @@ impl KonaNodeHandler {
 }
 
 impl KonaNodeBuilder {
-    /// Start the kona-node consensus client.
-    ///
-    /// # Arguments
-    /// * `docker` - Docker client
-    /// * `host_config_path` - Path on host for config files
-    /// * `anvil_handler` - Handler for the L1 Anvil instance
-    /// * `op_reth_handler` - Handler for the paired op-reth instance
-    /// * `role` - Role of this node (sequencer or validator)
-    /// * `jwt_filename` - The JWT secret filename (shared with op-reth)
-    /// * `bootnodes` - List of enode URLs for P2P peer discovery
-    /// * `l1_chain_id` - L1 chain ID (used to determine if we need a custom L1 config)
-    /// * `conductor_rpc` - Optional conductor RPC URL. If provided, enables conductor control.
-    /// * `is_conductor_leader` - Whether this sequencer is the initial Raft leader. Leaders start
-    ///   active, while followers start in stopped state waiting for conductor to activate them.
-    /// * `flashblocks_builder_url` - Optional flashblocks builder WebSocket URL. For sequencers,
-    ///   this is the op-rbuilder WS URL. For validators, this is the sequencer's kona-node relay URL.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn start(
+    /// Build the kona-node command, including P2P keypair generation.
+    pub fn build_cmd(
         &self,
-        docker: &mut KupDocker,
-        host_config_path: &Path,
-        anvil_handler: &AnvilHandler,
-        op_reth_handler: &OpRethHandler,
-        role: L2NodeRole,
-        jwt_filename: &str,
-        bootnodes: &[String],
-        l1_chain_id: u64,
-        conductor_rpc: Option<&str>,
-        is_conductor_leader: bool,
-        flashblocks_builder_url: Option<&str>,
-    ) -> Result<KonaNodeHandler, anyhow::Error> {
+        _host_config_path: &Path,
+        input: &KonaNodeInput,
+    ) -> Result<KonaNodeCmd, anyhow::Error> {
         let container_config_path = PathBuf::from("/data");
-
-        // Ensure the Docker image is ready (pull or build if needed)
-        docker
-            .ensure_image_ready(&self.docker_image, "kona-node")
-            .await
-            .context("Failed to ensure kona-node image is ready")?;
 
         // Create or use the provided P2P keypair
         let p2p_keypair = match &self.p2p_secret_key {
@@ -372,37 +383,24 @@ impl KonaNodeBuilder {
         );
 
         let mut cmd_builder = KonaNodeCmdBuilder::new(
-            anvil_handler.l1_rpc_url.to_string(),
-            op_reth_handler.authrpc_url.to_string(),
+            input.l1_rpc_url.clone(),
+            input.authrpc_url.clone(),
             self.container_name.clone(),
             container_config_path.join("rollup.json"),
-            container_config_path.join(jwt_filename),
+            container_config_path.join(&input.jwt_filename),
         )
-        .mode(role.as_kona_mode())
+        .mode(input.role.as_kona_mode())
         .l1_slot_duration(self.l1_slot_duration)
         .rpc_port(self.rpc_port)
         .metrics(true, self.metrics_port)
         .discovery(true)
-        .bootnodes(bootnodes.to_vec())
+        .bootnodes(input.bootnodes.clone())
         .p2p_priv_key(&p2p_keypair.private_key)
         .extra_args(self.extra_args.clone());
 
-        // For local/custom chains (not Mainnet or Sepolia), generate and use a custom L1 config file
-        // fetched from the L1 RPC endpoint. Use host URL since we're calling from the host, not from
-        // inside a container.
-        if !is_known_l1_chain(l1_chain_id) {
-            let l1_rpc_for_host = anvil_handler
-                .l1_host_url
-                .as_ref()
-                .unwrap_or(&anvil_handler.l1_rpc_url);
-
-            generate_local_l1_config_from_rpc(
-                host_config_path,
-                l1_rpc_for_host.as_str(),
-                self.l1_slot_duration,
-            )
-            .await
-            .context("Failed to generate L1 config from RPC for local chain")?;
+        // For local/custom chains, add the L1 config file path.
+        // The actual file generation is async and happens in deploy().
+        if !is_known_l1_chain(input.l1_chain_id) {
             cmd_builder = cmd_builder.l1_config_file(
                 container_config_path
                     .join("l1-config.json")
@@ -411,12 +409,75 @@ impl KonaNodeBuilder {
             );
         }
 
-        // Configure conductor control if a conductor RPC URL is provided
-        // Leader starts active, followers start stopped waiting for conductor to activate them
-        if let Some(conductor_url) = conductor_rpc {
+        // Configure conductor control
+        if let Some(ref conductor_url) = input.conductor_rpc {
             cmd_builder = cmd_builder.conductor_rpc(conductor_url);
+            if !input.is_conductor_leader {
+                cmd_builder = cmd_builder.sequencer_stopped(true);
+            }
+        }
 
-            if is_conductor_leader {
+        // Flashblocks configuration
+        if self.flashblocks_enabled {
+            cmd_builder = cmd_builder.flashblocks(true);
+        }
+        if let Some(ref builder_url) = input.flashblocks_builder_url {
+            cmd_builder = cmd_builder.flashblocks_builder_url(builder_url);
+        }
+
+        let flashblocks_relay_port = self
+            .flashblocks_relay_port
+            .filter(|_| self.flashblocks_enabled && input.role == L2NodeRole::Sequencer);
+
+        if let Some(port) = flashblocks_relay_port {
+            cmd_builder = cmd_builder.flashblocks_relay("0.0.0.0", port);
+        }
+
+        cmd_builder = cmd_builder.unsafe_block_signer_key(&input.unsafe_block_signer_key);
+
+        let args = cmd_builder.build();
+
+        Ok(KonaNodeCmd { args, p2p_keypair })
+    }
+}
+
+impl KupcakeService for KonaNodeBuilder {
+    type Input = KonaNodeInput;
+    type Output = KonaNodeHandler;
+
+    fn container_name(&self) -> &str {
+        &self.container_name
+    }
+
+    fn docker_image(&self) -> &DockerImage {
+        &self.docker_image
+    }
+
+    async fn deploy<'a>(
+        &'a self,
+        docker: &'a mut KupDocker,
+        host_config_path: &'a Path,
+        input: KonaNodeInput,
+    ) -> Result<KonaNodeHandler, anyhow::Error> {
+        let container_config_path = PathBuf::from("/data");
+
+        // For local/custom chains, generate the L1 config file before building the command.
+        // build_cmd adds the --l1-config-file flag; this generates the actual file.
+        if !is_known_l1_chain(input.l1_chain_id) {
+            let l1_rpc_for_host = input.l1_host_url.as_deref().unwrap_or(&input.l1_rpc_url);
+
+            generate_local_l1_config_from_rpc(
+                host_config_path,
+                l1_rpc_for_host,
+                self.l1_slot_duration,
+            )
+            .await
+            .context("Failed to generate L1 config from RPC for local chain")?;
+        }
+
+        // Log conductor configuration
+        if let Some(ref conductor_url) = input.conductor_rpc {
+            if input.is_conductor_leader {
                 tracing::info!(
                     conductor_rpc = %conductor_url,
                     container_name = %self.container_name,
@@ -428,38 +489,17 @@ impl KonaNodeBuilder {
                     container_name = %self.container_name,
                     "Configuring kona-node with conductor control (follower, starting stopped)"
                 );
-                cmd_builder = cmd_builder.sequencer_stopped(true);
             }
         }
 
-        // Flashblocks configuration
-        if self.flashblocks_enabled {
-            cmd_builder = cmd_builder.flashblocks(true);
-        }
-        if let Some(builder_url) = flashblocks_builder_url {
-            cmd_builder = cmd_builder.flashblocks_builder_url(builder_url);
-        }
+        let cmd = self.build_cmd(host_config_path, &input)?;
+        let p2p_keypair = cmd.p2p_keypair;
 
-        // Determine flashblocks relay port for sequencer nodes that serve as relay
         let flashblocks_relay_port = self
             .flashblocks_relay_port
-            .filter(|_| self.flashblocks_enabled && role == L2NodeRole::Sequencer);
+            .filter(|_| self.flashblocks_enabled && input.role == L2NodeRole::Sequencer);
 
-        if let Some(port) = flashblocks_relay_port {
-            cmd_builder = cmd_builder.flashblocks_relay("0.0.0.0", port);
-        }
-
-        cmd_builder = cmd_builder.unsafe_block_signer_key(
-            anvil_handler
-                .accounts
-                .unsafe_block_signer
-                .private_key
-                .clone(),
-        );
-
-        let cmd = cmd_builder.build();
-
-        // Build port mappings only for ports that should be published to host
+        // Build port mappings
         let port_mappings: Vec<PortMapping> = [
             PortMapping::tcp_optional(self.rpc_port, self.rpc_host_port),
             PortMapping::tcp_optional(self.metrics_port, self.metrics_host_port),
@@ -469,7 +509,7 @@ impl KonaNodeBuilder {
         .collect();
 
         let mut service_config = ServiceConfig::new(self.docker_image.clone())
-            .cmd(cmd)
+            .cmd(cmd.args)
             .ports(port_mappings)
             .expose(ExposedPort::tcp(self.rpc_port))
             .expose(ExposedPort::tcp(self.metrics_port))
@@ -481,34 +521,22 @@ impl KonaNodeBuilder {
             service_config = service_config.expose(ExposedPort::tcp(relay_port));
         }
 
-        let handler = docker
-            .start_service(
-                &self.container_name,
-                service_config,
-                CreateAndStartContainerOptions {
-                    ..Default::default()
-                },
-            )
-            .await
-            .context("Failed to start kona-node container")?;
+        let handler = service::deploy_container(
+            docker,
+            &self.docker_image,
+            &self.container_name,
+            service_config,
+        )
+        .await
+        .context("Failed to start kona-node container")?;
 
         // Build internal Docker network URL
         let rpc_url = KupDocker::build_http_url(&handler.container_name, self.rpc_port)?;
 
         // Build host-accessible URLs from bound ports
-        let rpc_host_url = handler
-            .get_tcp_host_port(self.rpc_port)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build RPC host URL")?;
+        let rpc_host_url = handler.build_host_url(self.rpc_port, "http")?;
+        let metrics_host_url = handler.build_host_url(self.metrics_port, "http")?;
 
-        let metrics_host_url = handler
-            .get_tcp_host_port(self.metrics_port)
-            .map(|port| Url::parse(&format!("http://localhost:{}/", port)))
-            .transpose()
-            .context("Failed to build metrics host URL")?;
-
-        // Build flashblocks relay URL if this is a sequencer relay
         let flashblocks_relay_url = flashblocks_relay_port
             .map(|port| KupDocker::build_ws_url(&handler.container_name, port))
             .transpose()
