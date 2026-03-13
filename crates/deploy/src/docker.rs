@@ -1243,7 +1243,7 @@ ENTRYPOINT [\"/binary\"]
                 "Network still has active containers, force-removing..."
             );
 
-            for (container_id, _) in &containers {
+            for container_id in containers.keys() {
                 Self::stop_and_remove_container_static(docker, container_id).await?;
             }
 
@@ -1630,7 +1630,11 @@ pub async fn cleanup_by_prefix(prefix: &str) -> Result<CleanupResult> {
     tracing::debug!("Attempting to remove network: {}", network_name);
 
     if let Err(e) = KupDocker::ensure_containers_removed(&docker, &network_name).await {
-        tracing::warn!("Failed to ensure containers removed from {}: {}", network_name, e);
+        tracing::warn!(
+            "Failed to ensure containers removed from {}: {}",
+            network_name,
+            e
+        );
     }
 
     match docker.remove_network(&network_name).await {

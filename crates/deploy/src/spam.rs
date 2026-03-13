@@ -680,6 +680,7 @@ mod tests {
             detach: false,
             snapshot: None,
             copy_snapshot: false,
+            deployment_target: Default::default(),
         };
 
         assert_eq!(container_name(&deployer), "kup-test-contender");

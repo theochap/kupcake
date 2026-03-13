@@ -63,6 +63,21 @@ kupcake
 
 ## Deployment Behavior
 
+### `KUP_DEPLOYMENT_TARGET`
+
+Deployment target for OP Stack contracts.
+
+**Values**: `live`, `genesis`
+
+```bash
+# Genesis mode (faster, local only)
+export KUP_DEPLOYMENT_TARGET=genesis
+kupcake
+# Equivalent to: kupcake --deployment-target genesis
+```
+
+See [CLI Reference - --deployment-target](cli-reference.md#--deployment-target-target) for details on each mode.
+
 ### `KUP_REDEPLOY`
 
 Force contract redeployment.

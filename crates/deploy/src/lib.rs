@@ -4,6 +4,10 @@
 //! OP Stack chain.
 
 use alloy_core::primitives::Bytes;
+use serde::{Deserialize, Serialize};
+
+mod accounts;
+pub use accounts::{ANVIL_DEFAULT_MNEMONIC, derive_accounts_from_mnemonic};
 
 mod builder;
 pub use builder::{DeployerBuilder, OutDataPath};
@@ -13,6 +17,8 @@ pub use deployer::Deployer;
 
 mod deployment_hash;
 pub use deployment_hash::{DeploymentConfigHash, DeploymentVersion};
+
+mod l1_genesis;
 
 mod docker;
 pub mod faucet;
@@ -34,6 +40,7 @@ pub use services::{
     AnvilAccounts,
     AnvilConfig,
     AnvilHandler,
+    AnvilInitMode,
     // L2 Node types
     ConductorContext,
     GRAFANA_DEFAULT_IMAGE,
@@ -76,6 +83,7 @@ pub use services::{
     PROMETHEUS_DEFAULT_IMAGE,
     PROMETHEUS_DEFAULT_TAG,
     PrometheusConfig,
+    anvil_accounts_from_infos,
 };
 
 mod l2_stack;
@@ -87,4 +95,34 @@ pub use l2_stack::L2StackBuilder;
 pub struct AccountInfo {
     pub address: Bytes,
     pub private_key: Bytes,
+}
+
+/// Deployment target for OP Stack contracts.
+///
+/// Determines whether contracts are deployed to a live L1 chain (via transactions)
+/// or embedded into the L1 genesis state (for local development).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    Default,
+    derive_more::Display,
+    derive_more::FromStr,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum DeploymentTarget {
+    /// Deploy contracts to a live L1 chain via transactions (default).
+    /// Compatible with both forked and local Anvil instances.
+    #[default]
+    Live,
+    /// Deploy contracts into the L1 genesis state.
+    /// Only compatible with local Anvil (no forking).
+    /// Op-deployer runs before Anvil, and the resulting L1 state dump
+    /// is used as Anvil's initial genesis.
+    Genesis,
 }

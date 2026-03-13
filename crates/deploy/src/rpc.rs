@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use anyhow::Context;
+use backon::{ConstantBuilder, Retryable};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -74,6 +75,8 @@ pub async fn json_rpc_call<T: DeserializeOwned>(
 
 /// Wait for a service to be ready by repeatedly calling a check function.
 ///
+/// Uses `backon` for retries with a constant interval and a maximum duration.
+///
 /// # Arguments
 /// * `name` - Name of the service (for error messages)
 /// * `timeout_secs` - Maximum time to wait in seconds
@@ -90,21 +93,20 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<(), anyhow::Error>>,
 {
-    let start = std::time::Instant::now();
-    let max_duration = Duration::from_secs(timeout_secs);
+    let backoff = ConstantBuilder::default()
+        .with_delay(DEFAULT_POLL_INTERVAL)
+        .with_max_times(
+            (timeout_secs as usize * 1000) / DEFAULT_POLL_INTERVAL.as_millis() as usize,
+        );
 
-    loop {
-        if start.elapsed() > max_duration {
-            anyhow::bail!("Timeout waiting for {} to be ready", name);
+    (|| async {
+        let result = check_fn().await;
+        if let Err(ref e) = result {
+            tracing::trace!(error = %e, service = %name, "Readiness check failed, retrying...");
         }
-
-        match check_fn().await {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                tracing::trace!(error = %e, service = %name, "Readiness check failed, retrying...");
-            }
-        }
-
-        tokio::time::sleep(DEFAULT_POLL_INTERVAL).await;
-    }
+        result
+    })
+    .retry(backoff)
+    .await
+    .with_context(|| format!("Timeout waiting for {} to be ready", name))
 }

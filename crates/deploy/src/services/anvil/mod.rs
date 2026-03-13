@@ -4,12 +4,12 @@ mod cmd;
 
 use std::path::PathBuf;
 
-use alloy_core::primitives::Bytes;
 use anyhow::Context;
+use backon::{ConstantBuilder, Retryable};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-pub use cmd::AnvilCmdBuilder;
+pub use cmd::{AnvilCmdBuilder, AnvilInitMode};
 
 use crate::{
     AccountInfo,
@@ -64,35 +64,6 @@ impl AnvilAccounts {
     /// The minimum number of accounts required for OP Stack deployment.
     pub const MIN_REQUIRED_ACCOUNTS: usize = 10;
 
-    /// Create named accounts from a vector of account infos.
-    ///
-    /// Returns an error if fewer than 10 accounts are provided.
-    pub fn from_account_infos(accounts: Vec<AccountInfo>) -> Result<Self, anyhow::Error> {
-        if accounts.len() < Self::MIN_REQUIRED_ACCOUNTS {
-            anyhow::bail!(
-                "Not enough accounts provided. Need at least {}, got {}",
-                Self::MIN_REQUIRED_ACCOUNTS,
-                accounts.len()
-            );
-        }
-
-        let mut accounts = accounts.into_iter();
-
-        Ok(Self {
-            deployer: accounts.next().unwrap(),
-            l1_fee_vault_recipient: accounts.next().unwrap(),
-            sequencer_fee_vault_recipient: accounts.next().unwrap(),
-            l1_proxy_admin_owner: accounts.next().unwrap(),
-            l2_proxy_admin_owner: accounts.next().unwrap(),
-            system_config_owner: accounts.next().unwrap(),
-            unsafe_block_signer: accounts.next().unwrap(),
-            batcher: accounts.next().unwrap(),
-            proposer: accounts.next().unwrap(),
-            challenger: accounts.next().unwrap(),
-            extra_accounts: accounts.collect(),
-        })
-    }
-
     /// Returns all accounts as a slice, in order (named accounts first, then extra).
     pub fn all_accounts(&self) -> Vec<&AccountInfo> {
         let mut accounts = vec![
@@ -110,10 +81,48 @@ impl AnvilAccounts {
         accounts.extend(self.extra_accounts.iter());
         accounts
     }
+
+    /// Write accounts to `anvil.json` in the format expected by faucet/spam commands.
+    ///
+    /// This produces the same JSON structure that Anvil's `--config-out` flag writes,
+    /// with `available_accounts` and `private_keys` arrays. We write it ourselves
+    /// because `--config-out` is incompatible with `--init` (genesis mode).
+    pub fn write_anvil_json(&self, outdata: &std::path::Path) -> Result<(), anyhow::Error> {
+        let anvil_dir = outdata.join("anvil");
+        if !anvil_dir.exists() {
+            std::fs::create_dir_all(&anvil_dir).context("Failed to create anvil data directory")?;
+        }
+
+        let accounts = self.all_accounts();
+        let available_accounts: Vec<String> = accounts
+            .iter()
+            .map(|a| format!("0x{}", hex::encode(&a.address)))
+            .collect();
+        let private_keys: Vec<String> = accounts
+            .iter()
+            .map(|a| format!("0x{}", hex::encode(&a.private_key)))
+            .collect();
+
+        let data = serde_json::json!({
+            "available_accounts": available_accounts,
+            "private_keys": private_keys,
+        });
+
+        let path = anvil_dir.join("anvil.json");
+        std::fs::write(&path, serde_json::to_string_pretty(&data)?)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+
+        tracing::debug!(path = %path.display(), "Wrote anvil.json with {} accounts", accounts.len());
+        Ok(())
+    }
 }
 
 /// Default port for Anvil.
 pub const DEFAULT_PORT: u16 = 8545;
+
+/// Number of accounts Anvil generates from its HD mnemonic.
+/// Must match the count passed to `derive_accounts_from_mnemonic` in genesis mode.
+pub const DEFAULT_ACCOUNT_COUNT: usize = 30;
 
 /// Default Docker image for Anvil (Foundry).
 pub const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/foundry-rs/foundry";
@@ -130,10 +139,7 @@ pub struct AnvilConfig {
     /// Port for Anvil RPC (container port).
     pub port: u16,
     /// Host port for Anvil RPC. If None, not published to host.
-    #[serde(
-        default = "default_anvil_host_port",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_port: Option<u16>,
     /// Block time in seconds.
     pub block_time: u64,
@@ -151,15 +157,21 @@ pub struct AnvilConfig {
     pub extra_args: Vec<String>,
 }
 
-fn default_anvil_host_port() -> Option<u16> {
-    Some(0) // Let OS pick an available port
-}
-
-/// Parsed Anvil configuration data.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-struct L1AnvilData {
-    available_accounts: Vec<Bytes>,
-    private_keys: Vec<Bytes>,
+impl Default for AnvilConfig {
+    fn default() -> Self {
+        Self {
+            docker_image: DockerImage::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
+            container_name: "kupcake-anvil".to_string(),
+            host: "0.0.0.0".to_string(),
+            port: DEFAULT_PORT,
+            host_port: Some(0), // Let OS pick an available port
+            block_time: 12,
+            fork_url: None,
+            timestamp: None,
+            fork_block_number: None,
+            extra_args: Vec::new(),
+        }
+    }
 }
 
 /// Handler for a running Anvil instance.
@@ -177,20 +189,23 @@ pub struct AnvilHandler {
 }
 
 impl AnvilConfig {
-    /// Start an Anvil container.
+    /// Start an Anvil container with pre-derived accounts and the given init mode.
     ///
     /// # Arguments
     /// * `docker` - Docker client
     /// * `host_config_path` - Path on host to store Anvil data
     /// * `chain_id` - Chain ID for Anvil
-    ///
-    /// # Returns
-    /// An `AnvilHandler` with the running container information.
+    /// * `init_mode` - How Anvil should load initial state (`--init` or `--init-state`)
+    /// * `dump_state` - Optional path for `--dump-state` (Anvil writes state on exit)
+    /// * `accounts` - Pre-derived accounts from mnemonic
     pub async fn start(
         self,
         docker: &mut KupDocker,
         host_config_path: PathBuf,
         chain_id: u64,
+        init_mode: AnvilInitMode,
+        dump_state: Option<String>,
+        accounts: AnvilAccounts,
     ) -> Result<AnvilHandler, anyhow::Error> {
         if !host_config_path.exists() {
             FsHandler::create_host_config_directory(&host_config_path)?;
@@ -208,12 +223,15 @@ impl AnvilConfig {
             .block_time(self.block_time)
             .timestamp(self.timestamp)
             .fork_block_number(self.fork_block_number)
-            .config_out(container_config_path.join("anvil.json"))
-            .state_path(container_config_path.clone())
+            .init_mode(init_mode)
             .extra_args(self.extra_args.clone());
 
         if let Some(ref fork_url) = self.fork_url {
             cmd_builder = cmd_builder.fork_url(fork_url);
+        }
+
+        if let Some(ref dump_state) = dump_state {
+            cmd_builder = cmd_builder.dump_state(dump_state);
         }
 
         let cmd = cmd_builder.build();
@@ -231,7 +249,7 @@ impl AnvilConfig {
             .ports(port_mappings)
             .bind(&host_config_path, &container_config_path, "rw");
 
-        let handler = docker
+        let mut handler = docker
             .start_service(
                 &self.container_name,
                 service_config,
@@ -246,36 +264,24 @@ impl AnvilConfig {
             "Anvil container started"
         );
 
-        // Wait for the Anvil config file to be created
-        let config_file_path = host_config_path.join("anvil.json");
+        // Wait for Anvil to bind its ports (confirms container is ready)
+        let container_id = handler.container_id.clone();
+        handler.bound_ports = (|| async {
+            let ports = docker.get_container_bound_ports(&container_id).await?;
 
-        FsHandler::wait_for_file(&config_file_path, std::time::Duration::from_secs(120))
-            .await
-            .context("Anvil config file was not created in time")?;
+            if ports.is_empty() {
+                anyhow::bail!("no port bindings yet");
+            }
 
-        // Parse the Anvil config
-        let l1_config = serde_json::from_str::<L1AnvilData>(
-            &tokio::fs::read_to_string(&config_file_path)
-                .await
-                .context(format!(
-                    "Failed to read Anvil config from {}",
-                    config_file_path.display()
-                ))?,
+            Ok(ports)
+        })
+        .retry(
+            ConstantBuilder::default()
+                .with_delay(std::time::Duration::from_millis(500))
+                .with_max_times(30),
         )
-        .context("Failed to parse Anvil config")?;
-
-        let account_infos: Vec<AccountInfo> = l1_config
-            .available_accounts
-            .iter()
-            .zip(l1_config.private_keys)
-            .map(|(address, private_key)| AccountInfo {
-                address: address.clone(),
-                private_key: private_key.clone(),
-            })
-            .collect();
-
-        let accounts = AnvilAccounts::from_account_infos(account_infos)
-            .context("Failed to create named accounts from Anvil")?;
+        .await
+        .context("Anvil port bindings not available after 15s — container may have crashed")?;
 
         let l1_rpc_url = KupDocker::build_http_url(&handler.container_name, ANVIL_INTERNAL_PORT)?;
 
@@ -300,22 +306,5 @@ impl AnvilConfig {
             l1_rpc_url,
             l1_host_url,
         })
-    }
-}
-
-impl Default for AnvilConfig {
-    fn default() -> Self {
-        Self {
-            docker_image: DockerImage::new(DEFAULT_DOCKER_IMAGE, DEFAULT_DOCKER_TAG),
-            container_name: "kupcake-anvil".to_string(),
-            host: "0.0.0.0".to_string(),
-            port: DEFAULT_PORT,
-            host_port: Some(0), // Let OS pick an available port
-            block_time: 12,
-            fork_url: None,
-            timestamp: None,
-            fork_block_number: None,
-            extra_args: Vec::new(),
-        }
     }
 }

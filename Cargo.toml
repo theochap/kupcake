@@ -35,3 +35,7 @@ multiaddr = "0.18"
 k256 = "0.13"
 sha2 = "0.10"
 tar = "0.4"
+alloy-signer-local = { version = "1", features = ["mnemonic"] }
+flate2 = "1.1"
+base64 = "0.22"
+backon = "1.5"

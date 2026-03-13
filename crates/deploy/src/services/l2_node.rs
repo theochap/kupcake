@@ -4,16 +4,18 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
+use backon::{ConstantBuilder, Retryable};
 use derive_more::Display;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::{OpConductorBuilder, OpConductorHandler, docker::KupDocker};
 
+/// Interval between RPC readiness checks.
+const RPC_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
 /// Wait for an execution client RPC to be ready by polling with `eth_chainId`.
 async fn wait_for_execution_rpc_ready(rpc_url: &str, timeout_secs: u64) -> anyhow::Result<()> {
-    let start = std::time::Instant::now();
-    let max_duration = Duration::from_secs(timeout_secs);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -21,15 +23,13 @@ async fn wait_for_execution_rpc_ready(rpc_url: &str, timeout_secs: u64) -> anyho
 
     tracing::debug!(rpc_url = %rpc_url, timeout_secs = %timeout_secs, "Waiting for execution RPC to be ready");
 
-    loop {
-        if start.elapsed() > max_duration {
-            anyhow::bail!(
-                "Timeout waiting for execution RPC at {} to be ready",
-                rpc_url
-            );
-        }
+    let max_retries = (timeout_secs * 1000) as usize / RPC_POLL_INTERVAL.as_millis() as usize;
+    let backoff = ConstantBuilder::default()
+        .with_delay(RPC_POLL_INTERVAL)
+        .with_max_times(max_retries);
 
-        let response = client
+    (|| async {
+        let resp = client
             .post(rpc_url)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
@@ -38,24 +38,34 @@ async fn wait_for_execution_rpc_ready(rpc_url: &str, timeout_secs: u64) -> anyho
                 "id": 1
             }))
             .send()
-            .await;
+            .await
+            .context("request failed")?;
 
-        if let Ok(resp) = response
-            && let Ok(body) = resp.json::<serde_json::Value>().await
-            && body.get("result").is_some()
-        {
-            tracing::debug!(rpc_url = %rpc_url, "Execution RPC is ready");
-            return Ok(());
+        let body = resp
+            .json::<serde_json::Value>()
+            .await
+            .context("invalid json")?;
+        if body.get("result").is_some() {
+            Ok(())
+        } else {
+            anyhow::bail!("no result in response")
         }
+    })
+    .retry(backoff)
+    .await
+    .with_context(|| {
+        format!(
+            "Timeout waiting for execution RPC at {} to be ready",
+            rpc_url
+        )
+    })?;
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    tracing::debug!(rpc_url = %rpc_url, "Execution RPC is ready");
+    Ok(())
 }
 
 /// Wait for a consensus client RPC (kona-node) to be ready by polling with `optimism_syncStatus`.
 async fn wait_for_consensus_rpc_ready(rpc_url: &str, timeout_secs: u64) -> anyhow::Result<()> {
-    let start = std::time::Instant::now();
-    let max_duration = Duration::from_secs(timeout_secs);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -63,15 +73,13 @@ async fn wait_for_consensus_rpc_ready(rpc_url: &str, timeout_secs: u64) -> anyho
 
     tracing::debug!(rpc_url = %rpc_url, timeout_secs = %timeout_secs, "Waiting for consensus RPC to be ready");
 
-    loop {
-        if start.elapsed() > max_duration {
-            anyhow::bail!(
-                "Timeout waiting for consensus RPC at {} to be ready",
-                rpc_url
-            );
-        }
+    let max_retries = (timeout_secs * 1000) as usize / RPC_POLL_INTERVAL.as_millis() as usize;
+    let backoff = ConstantBuilder::default()
+        .with_delay(RPC_POLL_INTERVAL)
+        .with_max_times(max_retries);
 
-        let response = client
+    (|| async {
+        let resp = client
             .post(rpc_url)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
@@ -80,20 +88,31 @@ async fn wait_for_consensus_rpc_ready(rpc_url: &str, timeout_secs: u64) -> anyho
                 "id": 1
             }))
             .send()
-            .await;
+            .await
+            .context("request failed")?;
 
-        if let Ok(resp) = response
-            && let Ok(body) = resp.json::<serde_json::Value>().await
-        {
-            // Accept either a result or even an error - as long as we get a JSON-RPC response
-            if body.get("result").is_some() || body.get("error").is_some() {
-                tracing::debug!(rpc_url = %rpc_url, "Consensus RPC is ready");
-                return Ok(());
-            }
+        let body = resp
+            .json::<serde_json::Value>()
+            .await
+            .context("invalid json")?;
+        // Accept either a result or even an error - as long as we get a JSON-RPC response
+        if body.get("result").is_some() || body.get("error").is_some() {
+            Ok(())
+        } else {
+            anyhow::bail!("no JSON-RPC result or error in response")
         }
+    })
+    .retry(backoff)
+    .await
+    .with_context(|| {
+        format!(
+            "Timeout waiting for consensus RPC at {} to be ready",
+            rpc_url
+        )
+    })?;
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    tracing::debug!(rpc_url = %rpc_url, "Consensus RPC is ready");
+    Ok(())
 }
 
 use super::{

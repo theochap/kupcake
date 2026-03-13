@@ -17,8 +17,8 @@ pub mod op_reth;
 
 // Re-export commonly used types
 pub use anvil::{
-    AnvilAccounts, AnvilConfig, AnvilHandler, DEFAULT_DOCKER_IMAGE as ANVIL_DEFAULT_IMAGE,
-    DEFAULT_DOCKER_TAG as ANVIL_DEFAULT_TAG,
+    AnvilAccounts, AnvilConfig, AnvilHandler, AnvilInitMode,
+    DEFAULT_DOCKER_IMAGE as ANVIL_DEFAULT_IMAGE, DEFAULT_DOCKER_TAG as ANVIL_DEFAULT_TAG,
 };
 pub use grafana::{
     DEFAULT_GRAFANA_DOCKER_IMAGE as GRAFANA_DEFAULT_IMAGE,
@@ -47,7 +47,7 @@ pub use op_conductor::{
 };
 pub use op_deployer::{
     DEFAULT_DOCKER_IMAGE as OP_DEPLOYER_DEFAULT_IMAGE,
-    DEFAULT_DOCKER_TAG as OP_DEPLOYER_DEFAULT_TAG, OpDeployerConfig,
+    DEFAULT_DOCKER_TAG as OP_DEPLOYER_DEFAULT_TAG, OpDeployerConfig, anvil_accounts_from_infos,
 };
 pub use op_proposer::{
     DEFAULT_DOCKER_IMAGE as OP_PROPOSER_DEFAULT_IMAGE,

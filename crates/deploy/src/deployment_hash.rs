@@ -28,6 +28,8 @@ pub struct DeploymentConfigHash {
     pub eip1559_denominator: u64,
     pub eip1559_denominator_canyon: u64,
     pub eip1559_elasticity: u64,
+    /// Deployment target (live or genesis) - affects how contracts are deployed
+    pub deployment_target: crate::DeploymentTarget,
 }
 
 impl DeploymentConfigHash {
@@ -44,6 +46,7 @@ impl DeploymentConfigHash {
             eip1559_denominator: 50,
             eip1559_denominator_canyon: 250,
             eip1559_elasticity: 6,
+            deployment_target: deployer.deployment_target,
         }
     }
 
@@ -52,17 +55,17 @@ impl DeploymentConfigHash {
     /// The hash is deterministic - the same configuration always produces the same hash.
     /// The configuration is serialized to JSON (with sorted keys) before hashing to ensure
     /// consistent ordering.
-    pub fn compute_hash(&self) -> String {
+    pub fn compute_hash(&self) -> Result<String> {
         // Serialize to JSON with sorted keys for consistent hashing
-        let json = serde_json::to_string(self)
-            .expect("DeploymentConfigHash serialization should never fail");
+        let json =
+            serde_json::to_string(self).context("Failed to serialize DeploymentConfigHash")?;
 
         let mut hasher = Sha256::new();
         hasher.update(json.as_bytes());
         let result = hasher.finalize();
 
         // Return hex-encoded hash
-        hex::encode(result)
+        Ok(hex::encode(result))
     }
 }
 
@@ -85,15 +88,15 @@ impl DeploymentVersion {
     ///
     /// The timestamp is set to the current system time, and the kupcake_version is
     /// set from the CARGO_PKG_VERSION environment variable.
-    pub fn new(config_hash: String) -> Self {
-        Self {
+    pub fn new(config_hash: String) -> Result<Self> {
+        Ok(Self {
             config_hash,
             deployed_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .expect("System time should be after Unix epoch")
+                .context("System time is before Unix epoch")?
                 .as_secs(),
             kupcake_version: env!("CARGO_PKG_VERSION").to_string(),
-        }
+        })
     }
 
     /// Save this version metadata to a file.
@@ -147,10 +150,11 @@ mod tests {
             eip1559_denominator: 50,
             eip1559_denominator_canyon: 250,
             eip1559_elasticity: 6,
+            deployment_target: crate::DeploymentTarget::Live,
         };
 
-        let hash1 = config.compute_hash();
-        let hash2 = config.compute_hash();
+        let hash1 = config.compute_hash().unwrap();
+        let hash2 = config.compute_hash().unwrap();
 
         assert_eq!(hash1, hash2, "Hash should be deterministic");
         assert_eq!(hash1.len(), 64, "SHA-256 hash should be 64 hex characters");
@@ -167,14 +171,15 @@ mod tests {
             eip1559_denominator: 50,
             eip1559_denominator_canyon: 250,
             eip1559_elasticity: 6,
+            deployment_target: crate::DeploymentTarget::Live,
         };
 
         let mut config2 = config1.clone();
         config2.l1_chain_id = 1; // mainnet
 
         assert_ne!(
-            config1.compute_hash(),
-            config2.compute_hash(),
+            config1.compute_hash().unwrap(),
+            config2.compute_hash().unwrap(),
             "Hash should change when l1_chain_id changes"
         );
     }
@@ -190,14 +195,15 @@ mod tests {
             eip1559_denominator: 50,
             eip1559_denominator_canyon: 250,
             eip1559_elasticity: 6,
+            deployment_target: crate::DeploymentTarget::Live,
         };
 
         let mut config2 = config1.clone();
         config2.l2_chain_id = 12345;
 
         assert_ne!(
-            config1.compute_hash(),
-            config2.compute_hash(),
+            config1.compute_hash().unwrap(),
+            config2.compute_hash().unwrap(),
             "Hash should change when l2_chain_id changes"
         );
     }
@@ -213,14 +219,15 @@ mod tests {
             eip1559_denominator: 50,
             eip1559_denominator_canyon: 250,
             eip1559_elasticity: 6,
+            deployment_target: crate::DeploymentTarget::Live,
         };
 
         let mut config2 = config1.clone();
         config2.fork_url = Some("https://eth-mainnet.g.alchemy.com/v2/demo".to_string());
 
         assert_ne!(
-            config1.compute_hash(),
-            config2.compute_hash(),
+            config1.compute_hash().unwrap(),
+            config2.compute_hash().unwrap(),
             "Hash should change when fork_url changes"
         );
     }
@@ -236,14 +243,15 @@ mod tests {
             eip1559_denominator: 50,
             eip1559_denominator_canyon: 250,
             eip1559_elasticity: 6,
+            deployment_target: crate::DeploymentTarget::Live,
         };
 
         let mut config2 = config1.clone();
         config2.fork_block_number = Some(2000000);
 
         assert_ne!(
-            config1.compute_hash(),
-            config2.compute_hash(),
+            config1.compute_hash().unwrap(),
+            config2.compute_hash().unwrap(),
             "Hash should change when fork_block_number changes"
         );
     }
@@ -259,14 +267,15 @@ mod tests {
             eip1559_denominator: 50,
             eip1559_denominator_canyon: 250,
             eip1559_elasticity: 6,
+            deployment_target: crate::DeploymentTarget::Live,
         };
 
         let mut config2 = config1.clone();
         config2.timestamp = Some(1737320000);
 
         assert_ne!(
-            config1.compute_hash(),
-            config2.compute_hash(),
+            config1.compute_hash().unwrap(),
+            config2.compute_hash().unwrap(),
             "Hash should change when timestamp changes"
         );
     }
@@ -282,14 +291,15 @@ mod tests {
             eip1559_denominator: 50,
             eip1559_denominator_canyon: 250,
             eip1559_elasticity: 6,
+            deployment_target: crate::DeploymentTarget::Live,
         };
 
         let mut config2 = config1.clone();
         config2.eip1559_denominator = 100;
 
         assert_ne!(
-            config1.compute_hash(),
-            config2.compute_hash(),
+            config1.compute_hash().unwrap(),
+            config2.compute_hash().unwrap(),
             "Hash should change when EIP-1559 parameters change"
         );
     }
@@ -373,6 +383,7 @@ mod tests {
             detach: false,
             snapshot: None,
             copy_snapshot: false,
+            deployment_target: crate::DeploymentTarget::Live,
         };
 
         let config_hash = DeploymentConfigHash::from_deployer(&deployer);
