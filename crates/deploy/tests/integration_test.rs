@@ -3543,6 +3543,7 @@ async fn test_flashblocks_grafana_dashboard() -> Result<()> {
     let deployer = DeployerBuilder::new(ctx.l1_chain_id)
         .network_name(&ctx.network_name)
         .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .deployment_target(DeploymentTarget::Genesis)
         .l2_node_count(2) // 1 sequencer + 1 validator
         .sequencer_count(1)
         .block_time(2)
