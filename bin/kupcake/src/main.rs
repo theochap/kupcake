@@ -4,14 +4,16 @@ mod cli;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use cli::{
-    CleanupArgs, Cli, Commands, DeployArgs, FaucetArgs, HealthArgs, L1Source, OutData, SpamArgs,
+    BenchArgs, CleanupArgs, Cli, Commands, DeployArgs, FaucetArgs, HealthArgs, L1Source, OutData,
+    SpamArgs,
 };
 use kupcake_deploy::{
-    Deployer, DeployerBuilder, KupDocker, OutDataPath, SpamPreset, cleanup_by_prefix,
+    Deployer, DeployerBuilder, DeploymentResult, KupDocker, OutDataPath, SpamPreset,
+    cleanup_by_prefix,
 };
 
 #[tokio::main]
@@ -29,6 +31,7 @@ async fn main() -> Result<()> {
         Some(Commands::Faucet(args)) => run_faucet(args).await,
         Some(Commands::Health(args)) => run_health(args).await,
         Some(Commands::Spam(args)) => run_spam_cmd(args).await,
+        Some(Commands::Bench(args)) => run_bench(args).await,
         // Default to deploy with default args when no subcommand is provided
         None => run_deploy(DeployArgs::default()).await,
     }
@@ -141,6 +144,73 @@ async fn run_spam_cmd(args: SpamArgs) -> Result<()> {
     Ok(())
 }
 
+async fn run_bench(args: BenchArgs) -> Result<()> {
+    use kupcake_deploy::bench::{BenchConfig, run_bench as bench_run, to_toml};
+
+    let images = args.docker_images.clone();
+    let config = BenchConfig {
+        iterations: args.iterations,
+        warmup: args.warmup,
+        label: args.label,
+        deployment_target: args.deployment_target.into(),
+        l2_node_count: args.l2_nodes,
+        sequencer_count: args.sequencer_count,
+        block_time: args.block_time,
+        flashblocks: args.flashblocks,
+        no_proposer: args.no_proposer,
+        no_challenger: args.no_challenger,
+        deployer_customizer: Some(Box::new(move |builder| {
+            apply_image_overrides(builder, &images)
+        })),
+    };
+
+    tracing::info!(
+        iterations = config.iterations,
+        warmup = config.warmup,
+        deployment_target = %config.deployment_target,
+        "Starting benchmark..."
+    );
+
+    let result = bench_run(config).await?;
+    let toml_output = to_toml(&result)?;
+
+    if let Some(path) = args.output {
+        std::fs::write(&path, &toml_output)
+            .with_context(|| format!("Failed to write bench results to {path}"))?;
+        tracing::info!(path = %path, "Benchmark results written to file");
+    } else {
+        tracing::info!("Benchmark results:\n{toml_output}");
+    }
+
+    Ok(())
+}
+
+/// Apply Docker image overrides from CLI args to a DeployerBuilder.
+fn apply_image_overrides(
+    builder: DeployerBuilder,
+    images: &cli::DockerImageOverrides,
+) -> DeployerBuilder {
+    builder
+        .anvil_image(images.anvil_image.clone())
+        .anvil_tag(images.anvil_tag.clone())
+        .op_reth_image(images.op_reth_image.clone())
+        .op_reth_tag(images.op_reth_tag.clone())
+        .kona_node_image(images.kona_node_image.clone())
+        .kona_node_tag(images.kona_node_tag.clone())
+        .op_batcher_image(images.op_batcher_image.clone())
+        .op_batcher_tag(images.op_batcher_tag.clone())
+        .op_proposer_image(images.op_proposer_image.clone())
+        .op_proposer_tag(images.op_proposer_tag.clone())
+        .op_challenger_image(images.op_challenger_image.clone())
+        .op_challenger_tag(images.op_challenger_tag.clone())
+        .op_conductor_image(images.op_conductor_image.clone())
+        .op_conductor_tag(images.op_conductor_tag.clone())
+        .op_deployer_image(images.op_deployer_image.clone())
+        .op_deployer_tag(images.op_deployer_tag.clone())
+        .op_rbuilder_image(images.op_rbuilder_image.clone())
+        .op_rbuilder_tag(images.op_rbuilder_tag.clone())
+}
+
 async fn run_deploy(args: DeployArgs) -> Result<()> {
     // Parse spam preset early so we fail fast on invalid names
     let spam_preset = args
@@ -161,6 +231,9 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         })
         .transpose()?;
 
+    let metrics_file = args.metrics_file.as_ref().map(PathBuf::from);
+    let ports_file = args.ports_file.as_ref().map(PathBuf::from);
+
     // If a config file is provided, load it and deploy
     if let Some(config_path) = &args.config {
         let config_path = PathBuf::from(config_path);
@@ -178,13 +251,15 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
             let user_no_cleanup = deployer.docker.no_cleanup;
             deployer.docker.no_cleanup = true;
             let mut docker = KupDocker::new(deployer.docker.clone()).await?;
-            let _result = deployer.deploy(&mut docker, args.redeploy, false).await?;
+            let result = deployer.deploy(&mut docker, args.redeploy, false).await?;
+            write_output_files(&result, &metrics_file, &ports_file)?;
 
             return run_spam_after_deploy(&config_path, preset, user_no_cleanup).await;
         }
 
         let mut docker = KupDocker::new(deployer.docker.clone()).await?;
-        let _result = deployer.deploy(&mut docker, args.redeploy, true).await?;
+        let result = deployer.deploy(&mut docker, args.redeploy, true).await?;
+        write_output_files(&result, &metrics_file, &ports_file)?;
         return Ok(());
     }
 
@@ -286,13 +361,30 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
     if let Some(preset) = spam_preset {
         // Deploy without waiting, then run spam
         let mut docker = KupDocker::new(deployer.docker.clone()).await?;
-        let _result = deployer.deploy(&mut docker, args.redeploy, false).await?;
+        let result = deployer.deploy(&mut docker, args.redeploy, false).await?;
+        write_output_files(&result, &metrics_file, &ports_file)?;
         return run_spam_after_deploy(&config_path, preset, args.no_cleanup).await;
     }
 
     let mut docker = KupDocker::new(deployer.docker.clone()).await?;
-    let _result = deployer.deploy(&mut docker, args.redeploy, true).await?;
+    let result = deployer.deploy(&mut docker, args.redeploy, true).await?;
+    write_output_files(&result, &metrics_file, &ports_file)?;
 
+    Ok(())
+}
+
+/// Write metrics and/or ports files if their paths are set.
+fn write_output_files(
+    result: &DeploymentResult,
+    metrics_file: &Option<PathBuf>,
+    ports_file: &Option<PathBuf>,
+) -> Result<()> {
+    if let Some(path) = metrics_file {
+        result.metrics.write_to_file(path)?;
+    }
+    if let Some(path) = ports_file {
+        result.endpoints().write_to_file(path)?;
+    }
     Ok(())
 }
 

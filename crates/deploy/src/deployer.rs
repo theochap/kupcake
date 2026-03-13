@@ -1,12 +1,15 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::{
     AnvilConfig, AnvilHandler, DeploymentConfigHash, DeploymentTarget, DeploymentVersion,
     KupDocker, KupDockerConfig, L2StackBuilder, MetricsTarget, MonitoringConfig, OpBatcherBuilder,
     OpBatcherHandler, OpChallengerBuilder, OpChallengerHandler, OpDeployerConfig,
     OpProposerBuilder, OpProposerHandler, fs,
+    metrics::{DeploymentMetrics, ServiceMetrics, get_image_size},
     service::KupcakeService,
     services,
     services::MonitoringHandler,
@@ -38,6 +41,213 @@ pub struct DeploymentResult {
     pub anvil: AnvilHandler,
     /// Handlers for all L2 stack components.
     pub l2_stack: L2StackHandler,
+    /// Deployment metrics (per-service timings and image sizes).
+    pub metrics: DeploymentMetrics,
+    /// Monitoring stack handlers (if enabled).
+    pub monitoring: Option<MonitoringHandler>,
+}
+
+/// Endpoints for a single service.
+#[derive(Debug, Serialize)]
+pub struct ServiceEndpoints {
+    /// Endpoints on the internal Docker network.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub internal: BTreeMap<String, String>,
+    /// Host-accessible endpoints.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub host: BTreeMap<String, String>,
+}
+
+/// All deployment endpoints, keyed by service label.
+#[derive(Debug, Serialize)]
+pub struct DeploymentEndpoints {
+    pub services: BTreeMap<String, ServiceEndpoints>,
+}
+
+impl DeploymentEndpoints {
+    /// Write endpoints to a TOML file.
+    pub fn write_to_file(&self, path: &Path) -> Result<()> {
+        let content =
+            toml::to_string_pretty(self).context("Failed to serialize endpoints to TOML")?;
+        std::fs::write(path, content)
+            .with_context(|| format!("Failed to write endpoints to {}", path.display()))?;
+        tracing::info!(path = %path.display(), "Deployment endpoints written to file");
+        Ok(())
+    }
+}
+
+impl DeploymentResult {
+    /// Collect all endpoints from the deployment into a structured format.
+    pub fn endpoints(&self) -> DeploymentEndpoints {
+        let monitoring = self.monitoring.as_ref();
+        let mut services = BTreeMap::new();
+
+        // Anvil
+        {
+            let mut internal = BTreeMap::new();
+            let mut host = BTreeMap::new();
+            internal.insert("rpc".to_string(), self.anvil.l1_rpc_url.to_string());
+            if let Some(ref url) = self.anvil.l1_host_url {
+                host.insert("rpc".to_string(), url.to_string());
+            }
+            services.insert(
+                self.anvil.container_name.clone(),
+                ServiceEndpoints { internal, host },
+            );
+        }
+
+        // Sequencer nodes
+        for (i, node) in self.l2_stack.sequencers.iter().enumerate() {
+            let label = if i == 0 {
+                "sequencer".to_string()
+            } else {
+                format!("sequencer-{}", i)
+            };
+            Self::collect_l2_node_endpoints(&mut services, node, &label);
+        }
+
+        // Validator nodes
+        for (i, node) in self.l2_stack.validators.iter().enumerate() {
+            let label = format!("validator-{}", i + 1);
+            Self::collect_l2_node_endpoints(&mut services, node, &label);
+        }
+
+        // op-batcher
+        {
+            let mut internal = BTreeMap::new();
+            let mut host = BTreeMap::new();
+            internal.insert(
+                "rpc".to_string(),
+                self.l2_stack.op_batcher.rpc_url.to_string(),
+            );
+            if let Some(ref url) = self.l2_stack.op_batcher.rpc_host_url {
+                host.insert("rpc".to_string(), url.to_string());
+            }
+            services.insert(
+                self.l2_stack.op_batcher.container_name.clone(),
+                ServiceEndpoints { internal, host },
+            );
+        }
+
+        // op-proposer
+        if let Some(ref proposer) = self.l2_stack.op_proposer {
+            let mut internal = BTreeMap::new();
+            internal.insert("rpc".to_string(), proposer.rpc_url.to_string());
+            services.insert(
+                proposer.container_name.clone(),
+                ServiceEndpoints {
+                    internal,
+                    host: BTreeMap::new(),
+                },
+            );
+        }
+
+        // op-challenger
+        if let Some(ref challenger) = self.l2_stack.op_challenger {
+            let mut internal = BTreeMap::new();
+            internal.insert("metrics".to_string(), challenger.metrics_url.to_string());
+            services.insert(
+                challenger.container_name.clone(),
+                ServiceEndpoints {
+                    internal,
+                    host: BTreeMap::new(),
+                },
+            );
+        }
+
+        // Monitoring
+        if let Some(mon) = monitoring {
+            {
+                let mut internal = BTreeMap::new();
+                let mut host = BTreeMap::new();
+                internal.insert("url".to_string(), mon.prometheus.url.to_string());
+                if let Some(ref url) = mon.prometheus.host_url {
+                    host.insert("url".to_string(), url.to_string());
+                }
+                services.insert(
+                    mon.prometheus.container_name.clone(),
+                    ServiceEndpoints { internal, host },
+                );
+            }
+            {
+                let mut internal = BTreeMap::new();
+                let mut host = BTreeMap::new();
+                internal.insert("url".to_string(), mon.grafana.url.to_string());
+                if let Some(ref url) = mon.grafana.host_url {
+                    host.insert("url".to_string(), url.to_string());
+                }
+                services.insert(
+                    mon.grafana.container_name.clone(),
+                    ServiceEndpoints { internal, host },
+                );
+            }
+        }
+
+        DeploymentEndpoints { services }
+    }
+
+    /// Collect endpoints for an L2 node (op-reth + kona-node + optional op-conductor).
+    fn collect_l2_node_endpoints(
+        services: &mut BTreeMap<String, ServiceEndpoints>,
+        node: &L2NodeHandler,
+        _label: &str,
+    ) {
+        // op-reth
+        {
+            let mut internal = BTreeMap::new();
+            let mut host = BTreeMap::new();
+            internal.insert("http".to_string(), node.op_reth.http_rpc_url.to_string());
+            internal.insert("ws".to_string(), node.op_reth.ws_rpc_url.to_string());
+            internal.insert("authrpc".to_string(), node.op_reth.authrpc_url.to_string());
+            if let Some(ref url) = node.op_reth.http_host_url {
+                host.insert("http".to_string(), url.to_string());
+            }
+            if let Some(ref url) = node.op_reth.ws_host_url {
+                host.insert("ws".to_string(), url.to_string());
+            }
+            if let Some(ref url) = node.op_reth.flashblocks_ws_url {
+                internal.insert("flashblocks_ws".to_string(), url.to_string());
+            }
+            services.insert(
+                node.op_reth.container_name.clone(),
+                ServiceEndpoints { internal, host },
+            );
+        }
+
+        // kona-node
+        {
+            let mut internal = BTreeMap::new();
+            let mut host = BTreeMap::new();
+            internal.insert("rpc".to_string(), node.kona_node.rpc_url.to_string());
+            if let Some(ref url) = node.kona_node.rpc_host_url {
+                host.insert("rpc".to_string(), url.to_string());
+            }
+            if let Some(ref url) = node.kona_node.metrics_host_url {
+                host.insert("metrics".to_string(), url.to_string());
+            }
+            if let Some(ref url) = node.kona_node.flashblocks_relay_url {
+                internal.insert("flashblocks_relay".to_string(), url.to_string());
+            }
+            services.insert(
+                node.kona_node.container_name.clone(),
+                ServiceEndpoints { internal, host },
+            );
+        }
+
+        // op-conductor
+        if let Some(ref conductor) = node.op_conductor {
+            let mut internal = BTreeMap::new();
+            let mut host = BTreeMap::new();
+            internal.insert("rpc".to_string(), conductor.rpc_url.to_string());
+            if let Some(ref url) = conductor.rpc_host_url {
+                host.insert("rpc".to_string(), url.to_string());
+            }
+            services.insert(
+                conductor.container_name.clone(),
+                ServiceEndpoints { internal, host },
+            );
+        }
+    }
 }
 
 impl L2StackHandler {
@@ -293,7 +503,7 @@ impl Deployer {
         l2_chain_id: u64,
         force_deploy: bool,
         current_hash: &str,
-    ) -> Result<AnvilHandler> {
+    ) -> Result<(AnvilHandler, Duration)> {
         let accounts = Self::derive_accounts()?;
 
         let timestamp = match anvil_config.timestamp {
@@ -305,6 +515,8 @@ impl Deployer {
         };
 
         let deploy_accounts = accounts.clone();
+        let mut op_deployer_duration = Duration::ZERO;
+        let op_deployer_start = Instant::now();
         let deployed =
             Self::with_deployment_check(force_deploy, l2_nodes_data_path, current_hash, || async {
                 tracing::info!("Genesis deployment mode: deploying contracts at genesis...");
@@ -332,6 +544,8 @@ impl Deployer {
                 Ok(())
             })
             .await?;
+        // Capture contract deployment time (before Anvil starts)
+        op_deployer_duration += op_deployer_start.elapsed();
 
         if !deployed {
             tracing::info!("Genesis deployment: reusing existing deployment artifacts");
@@ -376,10 +590,12 @@ impl Deployer {
             .context("Failed to start Anvil with genesis state")?;
 
         if deployed {
+            let l2_config_start = Instant::now();
             op_deployer
                 .generate_l2_config_files(docker, l2_nodes_data_path, l2_chain_id)
                 .await
                 .context("Failed to generate L2 config files")?;
+            op_deployer_duration += l2_config_start.elapsed();
         }
 
         // Patch rollup.json with Anvil's actual genesis block hash.
@@ -395,7 +611,7 @@ impl Deployer {
             .await
             .context("Failed to patch rollup.json with actual L1 genesis hash")?;
 
-        Ok(anvil)
+        Ok((anvil, op_deployer_duration))
     }
 
     /// Start Anvil and deploy contracts to the live L1 (or restore from snapshot).
@@ -414,7 +630,7 @@ impl Deployer {
         snapshot: Option<&PathBuf>,
         copy_snapshot: bool,
         override_state: Option<&PathBuf>,
-    ) -> Result<AnvilHandler> {
+    ) -> Result<(AnvilHandler, Duration)> {
         let accounts = Self::derive_accounts()?;
 
         // Determine init mode for live deployment:
@@ -462,6 +678,7 @@ impl Deployer {
             )
             .await?;
 
+        let op_deployer_start = Instant::now();
         if let Some(snapshot_path) = snapshot {
             let sequencer_name = l2_stack.sequencers[0].op_reth.container_name.clone();
             Self::restore_from_snapshot(
@@ -486,8 +703,9 @@ impl Deployer {
             })
             .await?;
         }
+        let op_deployer_duration = op_deployer_start.elapsed();
 
-        Ok(anvil)
+        Ok((anvil, op_deployer_duration))
     }
 
     /// Build metrics targets for Prometheus scraping from L2 stack handlers.
@@ -788,6 +1006,8 @@ impl Deployer {
         force_deploy: bool,
         wait_for_exit: bool,
     ) -> Result<DeploymentResult> {
+        let deploy_start = Instant::now();
+        let mut metrics = DeploymentMetrics::default();
         tracing::info!("Starting deployment process...");
 
         // Genesis mode is incompatible with --override-state
@@ -814,7 +1034,11 @@ impl Deployer {
         // Deploy contracts and start Anvil. The order depends on the deployment target:
         // - Live: Start Anvil first, then deploy contracts to the live L1
         // - Genesis: Deploy contracts first (in-memory), extract L1 genesis, start Anvil with --init
-        let anvil = match self.deployment_target {
+        let anvil_docker_image = self.anvil.docker_image.clone();
+        let op_deployer_image = self.op_deployer.docker_image.clone();
+        let op_deployer_name = self.op_deployer.container_name.clone();
+        let anvil_start = Instant::now();
+        let (anvil, op_deployer_duration) = match self.deployment_target {
             DeploymentTarget::Genesis => {
                 Self::deploy_with_genesis_target(
                     docker,
@@ -848,6 +1072,25 @@ impl Deployer {
                 .await?
             }
         };
+
+        // Record Anvil metrics (subtract op-deployer time from Anvil total)
+        let anvil_total = anvil_start.elapsed().saturating_sub(op_deployer_duration);
+        let anvil_size = get_image_size(docker, &anvil.container_id).await;
+        metrics.record(
+            anvil.container_name.clone(),
+            ServiceMetrics::from_timings(
+                anvil_total,
+                &anvil.deploy_timings,
+                anvil_size,
+                &anvil_docker_image,
+            ),
+        );
+
+        // Record op-deployer metrics separately
+        metrics.record(
+            op_deployer_name,
+            ServiceMetrics::composite(op_deployer_duration, None, op_deployer_image.to_string()),
+        );
 
         // Write anvil.json so that faucet/spam commands can read account info.
         // We write this ourselves rather than using Anvil's --config-out flag
@@ -894,7 +1137,13 @@ impl Deployer {
 
         let l2_stack = self
             .l2_stack
-            .start(docker, l2_nodes_data_path.clone(), &anvil, self.l1_chain_id)
+            .start(
+                docker,
+                l2_nodes_data_path.clone(),
+                &anvil,
+                self.l1_chain_id,
+                &mut metrics,
+            )
             .await
             .context("Failed to start L2 stack")?;
 
@@ -905,20 +1154,46 @@ impl Deployer {
             let monitoring_data_path = self.outdata.join("monitoring");
             let metrics_targets = Self::build_metrics_targets(&l2_stack);
 
-            Some(
-                self.monitoring
-                    .start(
-                        docker,
-                        monitoring_data_path,
-                        metrics_targets,
-                        self.dashboards_path,
-                    )
-                    .await
-                    .context("Failed to start monitoring stack")?,
-            )
+            let mon_start = Instant::now();
+            let mon_handler = self
+                .monitoring
+                .start(
+                    docker,
+                    monitoring_data_path,
+                    metrics_targets,
+                    self.dashboards_path,
+                )
+                .await
+                .context("Failed to start monitoring stack")?;
+            let mon_total = mon_start.elapsed();
+
+            let prom_size = get_image_size(docker, &mon_handler.prometheus.container_id).await;
+            metrics.record(
+                mon_handler.prometheus.container_name.clone(),
+                ServiceMetrics::composite(
+                    mon_total,
+                    prom_size,
+                    self.monitoring.prometheus.docker_image.to_string(),
+                ),
+            );
+            let grafana_size = get_image_size(docker, &mon_handler.grafana.container_id).await;
+            metrics.record(
+                mon_handler.grafana.container_name.clone(),
+                ServiceMetrics::composite(
+                    mon_total,
+                    grafana_size,
+                    self.monitoring.grafana.docker_image.to_string(),
+                ),
+            );
+
+            Some(mon_handler)
         } else {
             None
         };
+
+        // Finalize and log deployment metrics
+        metrics.total = deploy_start.elapsed();
+        metrics.log_summary();
 
         tracing::info!("✓ Deployment complete!");
         tracing::info!("");
@@ -1049,6 +1324,11 @@ impl Deployer {
             }
         }
 
-        Ok(DeploymentResult { anvil, l2_stack })
+        Ok(DeploymentResult {
+            anvil,
+            l2_stack,
+            metrics,
+            monitoring,
+        })
     }
 }

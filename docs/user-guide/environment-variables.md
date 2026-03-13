@@ -117,6 +117,26 @@ kupcake
 # Deploys and exits immediately
 ```
 
+### `KUP_METRICS_FILE`
+
+Write deployment metrics to a TOML file after deployment completes.
+
+```bash
+export KUP_METRICS_FILE=metrics.toml
+kupcake
+# Per-service deploy timings and image sizes written to metrics.toml
+```
+
+### `KUP_PORTS_FILE`
+
+Write all deployment endpoints to a TOML file after deployment completes.
+
+```bash
+export KUP_PORTS_FILE=ports.toml
+kupcake
+# All service endpoints (internal + host) written to ports.toml
+```
+
 ### `KUP_DUMP_STATE`
 
 Dump Anvil L1 state to disk before cleanup via `anvil_dumpState` RPC.

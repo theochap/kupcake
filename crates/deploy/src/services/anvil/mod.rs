@@ -15,6 +15,7 @@ use crate::{
     AccountInfo,
     docker::{DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig},
     fs::FsHandler,
+    metrics::ContainerDeployTimings,
     service::{self, KupcakeService},
 };
 
@@ -191,6 +192,8 @@ pub struct AnvilHandler {
     pub l1_host_url: Option<Url>,
     /// Named accounts from Anvil matching the OP Stack participant roles.
     pub accounts: AnvilAccounts,
+    /// Deploy timings for metrics.
+    pub deploy_timings: ContainerDeployTimings,
 }
 
 /// Anvil listens on port 8545 inside the container.
@@ -262,7 +265,7 @@ impl KupcakeService for AnvilConfig {
             .ports(port_mappings)
             .bind(host_config_path, &container_config_path, "rw");
 
-        let mut handler = service::deploy_container(
+        let (mut handler, timings) = service::deploy_container(
             docker,
             &self.docker_image,
             &self.container_name,
@@ -314,6 +317,7 @@ impl KupcakeService for AnvilConfig {
             accounts: input.accounts,
             l1_rpc_url,
             l1_host_url,
+            deploy_timings: timings,
         })
     }
 }

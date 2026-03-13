@@ -10,6 +10,7 @@ use crate::{
     OpChallengerHandler, OpConductorBuilder, OpProposerBuilder, OpProposerHandler,
     deployer::L2StackHandler,
     fs,
+    metrics::{DeploymentMetrics, ServiceMetrics, get_image_info, get_image_size},
     service::KupcakeService,
     services::{
         OpBatcherInput, OpChallengerInput, OpProposerInput,
@@ -275,12 +276,14 @@ where
     /// * `host_config_path` - Path on host for config files
     /// * `anvil_handler` - Handler for the L1 Anvil instance
     /// * `l1_chain_id` - L1 chain ID (used to determine if we need a custom L1 config for kona-node)
+    /// * `metrics` - Deployment metrics to record per-service timings
     pub async fn start(
         &self,
         docker: &mut KupDocker,
         host_config_path: PathBuf,
         anvil_handler: &AnvilHandler,
         l1_chain_id: u64,
+        metrics: &mut DeploymentMetrics,
     ) -> Result<L2StackHandler, anyhow::Error> {
         if !host_config_path.exists() {
             fs::FsHandler::create_host_config_directory(&host_config_path)?;
@@ -323,6 +326,7 @@ where
                 );
             }
 
+            let node_start = std::time::Instant::now();
             let sequencer_handler = sequencer
                 .deploy(
                     docker,
@@ -341,6 +345,10 @@ where
                 )
                 .await
                 .with_context(|| format!("Failed to start sequencer node {}", i + 1))?;
+            let node_total = node_start.elapsed();
+
+            // Record per-child metrics from the deployed handlers
+            record_l2_node_metrics(docker, &sequencer_handler, node_total, metrics).await;
 
             // Collect enodes from the deployed handler for subsequent nodes
             op_reth_enodes.push(sequencer_handler.op_reth.enode());
@@ -363,6 +371,7 @@ where
         for (i, validator) in self.validators.iter().enumerate() {
             tracing::info!("Starting validator node {} (op-reth + kona-node)...", i + 1);
 
+            let node_start = std::time::Instant::now();
             let validator_handler = validator
                 .deploy(
                     docker,
@@ -381,6 +390,10 @@ where
                 )
                 .await
                 .with_context(|| format!("Failed to start validator node {}", i + 1))?;
+            let node_total = node_start.elapsed();
+
+            // Record per-child metrics from the deployed handlers
+            record_l2_node_metrics(docker, &validator_handler, node_total, metrics).await;
 
             // Collect enodes from the deployed handler for subsequent nodes
             op_reth_enodes.push(validator_handler.op_reth.enode());
@@ -407,6 +420,7 @@ where
         tracing::info!("Starting op-batcher...");
 
         // Start op-batcher (connects to primary sequencer)
+        let batcher_start = std::time::Instant::now();
         let op_batcher_handler = self
             .op_batcher
             .deploy(
@@ -420,22 +434,44 @@ where
                 },
             )
             .await?;
+        let batcher_total = batcher_start.elapsed();
+        let batcher_size = get_image_size(docker, &op_batcher_handler.container_id).await;
+        metrics.record(
+            op_batcher_handler.container_name.clone(),
+            ServiceMetrics::from_timings(
+                batcher_total,
+                &op_batcher_handler.deploy_timings,
+                batcher_size,
+                self.op_batcher.docker_image(),
+            ),
+        );
 
         let op_proposer_handler = if let Some(ref proposer_config) = self.op_proposer {
             tracing::info!("Starting op-proposer...");
-            Some(
-                proposer_config
-                    .deploy(
-                        docker,
-                        &host_config_path,
-                        OpProposerInput {
-                            l1_rpc_url: l1_rpc_url.to_string(),
-                            rollup_rpc_url: primary_sequencer.kona_node.rpc_url.to_string(),
-                            proposer_private_key: proposer_private_key.clone(),
-                        },
-                    )
-                    .await?,
-            )
+            let proposer_start = std::time::Instant::now();
+            let handler = proposer_config
+                .deploy(
+                    docker,
+                    &host_config_path,
+                    OpProposerInput {
+                        l1_rpc_url: l1_rpc_url.to_string(),
+                        rollup_rpc_url: primary_sequencer.kona_node.rpc_url.to_string(),
+                        proposer_private_key: proposer_private_key.clone(),
+                    },
+                )
+                .await?;
+            let proposer_total = proposer_start.elapsed();
+            let proposer_size = get_image_size(docker, &handler.container_id).await;
+            metrics.record(
+                handler.container_name.clone(),
+                ServiceMetrics::from_timings(
+                    proposer_total,
+                    &handler.deploy_timings,
+                    proposer_size,
+                    proposer_config.docker_image(),
+                ),
+            );
+            Some(handler)
         } else {
             tracing::info!("Skipping op-proposer (disabled)");
             None
@@ -443,20 +479,31 @@ where
 
         let op_challenger_handler = if let Some(ref challenger_config) = self.op_challenger {
             tracing::info!("Starting op-challenger...");
-            Some(
-                challenger_config
-                    .deploy(
-                        docker,
-                        &host_config_path,
-                        OpChallengerInput {
-                            l1_rpc_url: l1_rpc_url.to_string(),
-                            l2_rpc_url: primary_sequencer.op_reth.http_rpc_url.to_string(),
-                            rollup_rpc_url: primary_sequencer.kona_node.rpc_url.to_string(),
-                            challenger_private_key: challenger_private_key.clone(),
-                        },
-                    )
-                    .await?,
-            )
+            let challenger_start = std::time::Instant::now();
+            let handler = challenger_config
+                .deploy(
+                    docker,
+                    &host_config_path,
+                    OpChallengerInput {
+                        l1_rpc_url: l1_rpc_url.to_string(),
+                        l2_rpc_url: primary_sequencer.op_reth.http_rpc_url.to_string(),
+                        rollup_rpc_url: primary_sequencer.kona_node.rpc_url.to_string(),
+                        challenger_private_key: challenger_private_key.clone(),
+                    },
+                )
+                .await?;
+            let challenger_total = challenger_start.elapsed();
+            let challenger_size = get_image_size(docker, &handler.container_id).await;
+            metrics.record(
+                handler.container_name.clone(),
+                ServiceMetrics::from_timings(
+                    challenger_total,
+                    &handler.deploy_timings,
+                    challenger_size,
+                    challenger_config.docker_image(),
+                ),
+            );
+            Some(handler)
         } else {
             tracing::info!("Skipping op-challenger (disabled)");
             None
@@ -504,6 +551,56 @@ where
             op_proposer: op_proposer_handler,
             op_challenger: op_challenger_handler,
         })
+    }
+}
+
+/// Record per-child metrics for an L2 node handler (op-reth, kona-node, and optional op-conductor).
+///
+/// This works with concrete handler types (not generics), so it can access
+/// the per-child timings and container IDs directly. The Docker image reference
+/// is retrieved from the container inspect response.
+async fn record_l2_node_metrics(
+    docker: &KupDocker,
+    handler: &L2NodeHandler,
+    node_total: std::time::Duration,
+    metrics: &mut DeploymentMetrics,
+) {
+    // op-reth metrics
+    let op_reth_info = get_image_info(docker, &handler.op_reth.container_id).await;
+    metrics.record(
+        handler.op_reth.container_name.clone(),
+        ServiceMetrics::from_timings_with_ref(
+            node_total,
+            &handler.op_reth.deploy_timings,
+            op_reth_info.size,
+            op_reth_info.image_ref,
+        ),
+    );
+
+    // kona-node metrics
+    let kona_info = get_image_info(docker, &handler.kona_node.container_id).await;
+    metrics.record(
+        handler.kona_node.container_name.clone(),
+        ServiceMetrics::from_timings_with_ref(
+            node_total,
+            &handler.kona_node.deploy_timings,
+            kona_info.size,
+            kona_info.image_ref,
+        ),
+    );
+
+    // op-conductor metrics (if present)
+    if let Some(ref conductor) = handler.op_conductor {
+        let conductor_info = get_image_info(docker, &conductor.container_id).await;
+        metrics.record(
+            conductor.container_name.clone(),
+            ServiceMetrics::from_timings_with_ref(
+                node_total,
+                &conductor.deploy_timings,
+                conductor_info.size,
+                conductor_info.image_ref,
+            ),
+        );
     }
 }
 

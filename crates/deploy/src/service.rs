@@ -2,12 +2,14 @@
 
 use std::future::Future;
 use std::path::Path;
+use std::time::Instant;
 
 use anyhow::Result;
 
 use crate::docker::{
     CreateAndStartContainerOptions, DockerImage, KupDocker, ServiceConfig, ServiceHandler,
 };
+use crate::metrics::ContainerDeployTimings;
 
 /// Common interface for all deployable services in Kupcake.
 ///
@@ -46,18 +48,27 @@ pub trait KupcakeService: Send + Sync + 'static {
 /// Ensures the image is ready, then starts the container with the given config.
 /// Leaf services call this from their `deploy` implementation after building
 /// their `ServiceConfig`.
+///
+/// Returns the service handler along with timing data for the pull and setup phases.
 pub async fn deploy_container(
     docker: &mut KupDocker,
     image: &DockerImage,
     container_name: &str,
     service_config: ServiceConfig,
-) -> Result<ServiceHandler> {
+) -> Result<(ServiceHandler, ContainerDeployTimings)> {
+    let pull_start = Instant::now();
     docker.ensure_image_ready(image, container_name).await?;
-    docker
+    let pull = pull_start.elapsed();
+
+    let setup_start = Instant::now();
+    let handler = docker
         .start_service(
             container_name,
             service_config,
             CreateAndStartContainerOptions::default(),
         )
-        .await
+        .await?;
+    let setup = setup_start.elapsed();
+
+    Ok((handler, ContainerDeployTimings { pull, setup }))
 }

@@ -11,6 +11,7 @@ use url::Url;
 pub use cmd::OpProposerCmdBuilder;
 
 use crate::docker::{DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig};
+use crate::metrics::ContainerDeployTimings;
 use crate::service::{self, KupcakeService};
 
 /// Input parameters for deploying the op-proposer.
@@ -83,6 +84,8 @@ pub struct OpProposerHandler {
     pub container_name: String,
     /// The RPC URL for the op-proposer.
     pub rpc_url: Url,
+    /// Deploy timings for metrics.
+    pub deploy_timings: ContainerDeployTimings,
 }
 
 impl OpProposerBuilder {
@@ -147,7 +150,7 @@ impl KupcakeService for OpProposerBuilder {
             .expose(ExposedPort::tcp(self.metrics_port))
             .bind(host_config_path, &container_config_path, "rw");
 
-        let handler = service::deploy_container(
+        let (handler, timings) = service::deploy_container(
             docker,
             &self.docker_image,
             &self.container_name,
@@ -168,6 +171,7 @@ impl KupcakeService for OpProposerBuilder {
             container_id: handler.container_id,
             container_name: handler.container_name,
             rpc_url,
+            deploy_timings: timings,
         })
     }
 }

@@ -16,6 +16,7 @@ pub use cmd::KonaNodeCmdBuilder;
 use crate::{
     ExposedPort,
     docker::{DockerImage, KupDocker, PortMapping, ServiceConfig},
+    metrics::ContainerDeployTimings,
     service::{self, KupcakeService},
     services::kona_node::cmd::DEFAULT_P2P_PORT,
 };
@@ -341,6 +342,8 @@ pub struct KonaNodeHandler {
     pub metrics_host_url: Option<Url>,
     /// The flashblocks relay WebSocket URL (internal Docker network). None if not a sequencer relay.
     pub flashblocks_relay_url: Option<Url>,
+    /// Deploy timings for metrics.
+    pub deploy_timings: ContainerDeployTimings,
 }
 
 impl KonaNodeHandler {
@@ -521,7 +524,7 @@ impl KupcakeService for KonaNodeBuilder {
             service_config = service_config.expose(ExposedPort::tcp(relay_port));
         }
 
-        let handler = service::deploy_container(
+        let (handler, timings) = service::deploy_container(
             docker,
             &self.docker_image,
             &self.container_name,
@@ -560,6 +563,7 @@ impl KupcakeService for KonaNodeBuilder {
             rpc_host_url,
             metrics_host_url,
             flashblocks_relay_url,
+            deploy_timings: timings,
         })
     }
 }

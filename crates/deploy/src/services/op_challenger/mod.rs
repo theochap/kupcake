@@ -11,6 +11,7 @@ use url::Url;
 pub use cmd::OpChallengerCmdBuilder;
 
 use crate::docker::{DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig};
+use crate::metrics::ContainerDeployTimings;
 use crate::service::{self, KupcakeService};
 
 /// Input parameters for deploying the op-challenger.
@@ -76,6 +77,8 @@ pub struct OpChallengerHandler {
     pub container_name: String,
     /// The metrics URL for the op-challenger (op-challenger has no RPC server).
     pub metrics_url: Url,
+    /// Deploy timings for metrics.
+    pub deploy_timings: ContainerDeployTimings,
 }
 
 impl OpChallengerBuilder {
@@ -146,7 +149,7 @@ impl KupcakeService for OpChallengerBuilder {
             .expose(ExposedPort::tcp(self.metrics_port))
             .bind(host_config_path, &container_config_path, "rw");
 
-        let handler = service::deploy_container(
+        let (handler, timings) = service::deploy_container(
             docker,
             &self.docker_image,
             &self.container_name,
@@ -168,6 +171,7 @@ impl KupcakeService for OpChallengerBuilder {
             container_id: handler.container_id,
             container_name: handler.container_name,
             metrics_url,
+            deploy_timings: timings,
         })
     }
 }

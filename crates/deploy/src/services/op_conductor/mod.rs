@@ -14,6 +14,7 @@ use url::Url;
 pub use cmd::OpConductorCmdBuilder;
 
 use crate::docker::{DockerImage, ExposedPort, KupDocker, PortMapping, ServiceConfig};
+use crate::metrics::ContainerDeployTimings;
 use crate::service::{self, KupcakeService};
 
 /// Input parameters for deploying op-conductor.
@@ -107,6 +108,8 @@ pub struct OpConductorHandler {
     pub rpc_url: Url,
     /// The RPC URL accessible from host (if published). None if not published.
     pub rpc_host_url: Option<Url>,
+    /// Deploy timings for metrics.
+    pub deploy_timings: ContainerDeployTimings,
 }
 
 impl OpConductorBuilder {
@@ -178,7 +181,7 @@ impl KupcakeService for OpConductorBuilder {
             .expose(ExposedPort::tcp(self.consensus_port))
             .bind(host_config_path, &container_config_path, "rw");
 
-        let handler = service::deploy_container(
+        let (handler, timings) = service::deploy_container(
             docker,
             &self.docker_image,
             &self.container_name,
@@ -207,6 +210,7 @@ impl KupcakeService for OpConductorBuilder {
             container_name: handler.container_name,
             rpc_url,
             rpc_host_url,
+            deploy_timings: timings,
         })
     }
 }
