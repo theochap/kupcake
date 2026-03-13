@@ -3948,3 +3948,161 @@ async fn test_genesis_deployment_mode() -> Result<()> {
     tracing::info!("=== Test passed! Genesis deployment mode works correctly. ===");
     Ok(())
 }
+
+/// Query eth_getBalance on an L1 node and return the balance as a u128 (wei).
+async fn get_l1_balance(rpc_url: &str, address: &str) -> Result<u128> {
+    let client = rpc::create_client()?;
+    let balance_hex: String = rpc::json_rpc_call(
+        &client,
+        rpc_url,
+        "eth_getBalance",
+        vec![serde_json::json!(address), serde_json::json!("latest")],
+    )
+    .await
+    .context("Failed to get L1 balance")?;
+
+    u128::from_str_radix(balance_hex.trim_start_matches("0x"), 16)
+        .context("Failed to parse balance hex")
+}
+
+/// Test that Anvil L1 state is persisted across restarts via `anvil_dumpState` RPC.
+///
+/// This test:
+/// - Deploys in genesis mode with dump_state enabled
+/// - Sends ETH on L1 to a test address
+/// - Drops the docker handle (triggers RPC-based state dump)
+/// - Verifies `anvil/state.json` was written to disk
+/// - Redeploys from the saved config
+/// - Verifies the L1 balance persisted across the restart
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_genesis_anvil_state_persistence() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
+    init_test_tracing();
+
+    let ctx = TestContext::new("state-persist");
+
+    tracing::info!(
+        "=== Starting state persistence test with network: {} (L1 chain ID: {}) ===",
+        ctx.network_name,
+        ctx.l1_chain_id
+    );
+
+    // Build deployer in genesis mode with dump_state enabled
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(2)
+        .sequencer_count(1)
+        .block_time(2)
+        .detach(true)
+        .dump_state(true)
+        .deployment_target(DeploymentTarget::Genesis)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
+
+    let config_path = deployer.save_config()?;
+
+    // === First deployment ===
+    tracing::info!("=== Initial deployment... ===");
+    let (docker, _deployment) = ctx.deploy(deployer).await?;
+
+    // Get the L1 host URL from the docker state dump config
+    let l1_rpc_url = docker
+        .anvil_state_dump
+        .as_ref()
+        .context("anvil_state_dump should be configured")?
+        .rpc_url
+        .clone();
+
+    // The deployer account (Anvil account 0) is the sender
+    let deployer_address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+    // A random recipient address on L1
+    let recipient = "0x000000000000000000000000000000000000dEaD";
+
+    // Send 1 ETH from deployer to recipient on L1
+    let client = rpc::create_client()?;
+    let _tx_hash: String = rpc::json_rpc_call(
+        &client,
+        &l1_rpc_url,
+        "eth_sendTransaction",
+        vec![serde_json::json!({
+            "from": deployer_address,
+            "to": recipient,
+            "value": "0xde0b6b3a7640000" // 1 ETH in wei
+        })],
+    )
+    .await
+    .context("Failed to send L1 transaction")?;
+
+    // Mine a block so the transaction is included
+    let _: String = rpc::json_rpc_call(&client, &l1_rpc_url, "evm_mine", vec![])
+        .await
+        .context("Failed to mine block")?;
+
+    // Verify recipient received ETH
+    let balance_before = get_l1_balance(&l1_rpc_url, recipient).await?;
+    tracing::info!(
+        "L1 recipient balance after transfer: {} wei",
+        balance_before
+    );
+    assert!(
+        balance_before > 0,
+        "Recipient should have received ETH on L1"
+    );
+
+    // === Stop containers (triggers anvil_dumpState RPC in Drop) ===
+    tracing::info!("=== Stopping containers (triggers state dump)... ===");
+    drop(docker);
+    drop(_deployment);
+
+    // Verify state file was written
+    let state_path = ctx.outdata_path.join("anvil/state.json");
+    assert!(
+        state_path.exists(),
+        "anvil/state.json should exist after dump: {}",
+        state_path.display()
+    );
+    let state_size = std::fs::metadata(&state_path)?.len();
+    tracing::info!(
+        "State file written: {} ({} bytes)",
+        state_path.display(),
+        state_size
+    );
+    assert!(state_size > 0, "State file should not be empty");
+
+    // Wait before restart
+    sleep(Duration::from_secs(5)).await;
+
+    // === Restart from saved config ===
+    tracing::info!("=== Restarting from saved config... ===");
+    let loaded_deployer = kupcake_deploy::Deployer::load_from_file(&config_path)
+        .context("Failed to load deployer from config")?;
+
+    let (mut _docker2, _deployment2) = ctx.deploy(loaded_deployer).await?;
+
+    // Get the new L1 RPC URL
+    let l1_rpc_url_2 = _docker2
+        .anvil_state_dump
+        .as_ref()
+        .context("anvil_state_dump should be configured after restart")?
+        .rpc_url
+        .clone();
+
+    // Verify L1 balance persisted across restart
+    let balance_after = get_l1_balance(&l1_rpc_url_2, recipient).await?;
+    tracing::info!("L1 recipient balance after restart: {} wei", balance_after);
+
+    assert_eq!(
+        balance_before, balance_after,
+        "L1 balance should persist across restart (before: {}, after: {})",
+        balance_before, balance_after,
+    );
+
+    // Cleanup
+    tracing::info!("=== Cleaning up... ===");
+    cleanup_by_prefix(&ctx.network_name).await?;
+
+    tracing::info!("=== Test passed! Anvil state persisted across genesis mode restart. ===");
+    Ok(())
+}

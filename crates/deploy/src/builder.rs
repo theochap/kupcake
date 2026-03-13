@@ -118,6 +118,8 @@ pub struct DeployerBuilder {
     l1_rpc_url: Option<String>,
     /// Whether to skip cleanup of docker containers.
     no_cleanup: bool,
+    /// Whether to dump Anvil state via RPC before cleanup.
+    dump_state: bool,
     /// Whether to run in detached mode (exit after deployment).
     detach: bool,
     /// Whether to publish all exposed ports to random host ports.
@@ -146,6 +148,9 @@ pub struct DeployerBuilder {
     /// Deployment target (live or genesis).
     deployment_target: crate::DeploymentTarget,
 
+    /// Optional path to an external state file for Anvil to load via `--load-state`.
+    override_state: Option<PathBuf>,
+
     // Docker images
     anvil_docker: DockerImage,
     op_reth_docker: DockerImage,
@@ -170,6 +175,7 @@ impl DeployerBuilder {
             outdata: None,
             l1_rpc_url: None,
             no_cleanup: false,
+            dump_state: true,
             detach: false,
             publish_all_ports: false,
             dashboards_path: None,
@@ -182,6 +188,7 @@ impl DeployerBuilder {
             snapshot: None,
             copy_snapshot: false,
             deployment_target: crate::DeploymentTarget::default(),
+            override_state: None,
             anvil_docker: DockerImage::new(ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG),
             op_reth_docker: DockerImage::new(OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG),
             kona_node_docker: DockerImage::new(KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG),
@@ -366,6 +373,22 @@ impl DeployerBuilder {
     /// Set the deployment target (live or genesis).
     pub fn deployment_target(mut self, target: crate::DeploymentTarget) -> Self {
         self.deployment_target = target;
+        self
+    }
+
+    /// Set the path to an external Anvil state file to load via `--load-state`.
+    ///
+    /// Only valid in live deployment mode. Genesis mode will error if this is set.
+    pub fn override_state(mut self, path: impl Into<PathBuf>) -> Self {
+        self.override_state = Some(path.into());
+        self
+    }
+
+    /// Set the override state path if `Some`, otherwise do nothing.
+    pub fn maybe_override_state(mut self, path: Option<PathBuf>) -> Self {
+        if let Some(p) = path {
+            self.override_state = Some(p);
+        }
         self
     }
 
@@ -586,6 +609,15 @@ impl DeployerBuilder {
         self
     }
 
+    /// Set whether to dump Anvil state via RPC before cleanup.
+    ///
+    /// When enabled, `anvil_dumpState` is called before containers are stopped,
+    /// persisting L1 state to disk so it can be restored on next boot.
+    pub fn dump_state(mut self, dump_state: bool) -> Self {
+        self.dump_state = dump_state;
+        self
+    }
+
     /// Set detached mode (exit after deployment).
     pub fn detach(mut self, detach: bool) -> Self {
         self.detach = detach;
@@ -630,6 +662,12 @@ impl DeployerBuilder {
                 anyhow::bail!(
                     "Genesis deployment mode is incompatible with snapshots (--snapshot). \
                      Genesis mode always deploys fresh contracts."
+                );
+            }
+            if self.override_state.is_some() {
+                anyhow::bail!(
+                    "Genesis deployment mode is incompatible with --override-state. \
+                     Genesis mode boots Anvil from a generated L1 genesis, not an external state file."
                 );
             }
         }
@@ -888,6 +926,8 @@ impl DeployerBuilder {
             snapshot: self.snapshot,
             copy_snapshot: self.copy_snapshot,
             deployment_target: self.deployment_target,
+            dump_state: self.dump_state,
+            override_state: self.override_state,
         };
 
         Ok(deployer)

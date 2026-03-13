@@ -384,6 +384,8 @@ mod tests {
             snapshot: None,
             copy_snapshot: false,
             deployment_target: crate::DeploymentTarget::Live,
+            dump_state: true,
+            override_state: None,
         };
 
         let config_hash = DeploymentConfigHash::from_deployer(&deployer);

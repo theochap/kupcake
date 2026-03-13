@@ -195,16 +195,14 @@ impl AnvilConfig {
     /// * `docker` - Docker client
     /// * `host_config_path` - Path on host to store Anvil data
     /// * `chain_id` - Chain ID for Anvil
-    /// * `init_mode` - How Anvil should load initial state (`--init` or `--init-state`)
-    /// * `dump_state` - Optional path for `--dump-state` (Anvil writes state on exit)
+    /// * `init_mode` - How Anvil should load initial state (None for fresh/fork)
     /// * `accounts` - Pre-derived accounts from mnemonic
     pub async fn start(
         self,
         docker: &mut KupDocker,
         host_config_path: PathBuf,
         chain_id: u64,
-        init_mode: AnvilInitMode,
-        dump_state: Option<String>,
+        init_mode: Option<AnvilInitMode>,
         accounts: AnvilAccounts,
     ) -> Result<AnvilHandler, anyhow::Error> {
         if !host_config_path.exists() {
@@ -223,15 +221,14 @@ impl AnvilConfig {
             .block_time(self.block_time)
             .timestamp(self.timestamp)
             .fork_block_number(self.fork_block_number)
-            .init_mode(init_mode)
             .extra_args(self.extra_args.clone());
+
+        if let Some(mode) = init_mode {
+            cmd_builder = cmd_builder.init_mode(mode);
+        }
 
         if let Some(ref fork_url) = self.fork_url {
             cmd_builder = cmd_builder.fork_url(fork_url);
-        }
-
-        if let Some(ref dump_state) = dump_state {
-            cmd_builder = cmd_builder.dump_state(dump_state);
         }
 
         let cmd = cmd_builder.build();

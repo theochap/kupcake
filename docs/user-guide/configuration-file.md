@@ -44,7 +44,9 @@ sequencer_count = 2
 redeploy = false
 no_cleanup = false
 detach = false
+dump_state = true
 publish_all_ports = false
+# override_state = "/path/to/state.json"  # Optional: load external Anvil state (live mode only)
 
 [deployer.l1_source]
 # Sepolia fork

@@ -117,6 +117,28 @@ kupcake
 # Deploys and exits immediately
 ```
 
+### `KUP_DUMP_STATE`
+
+Dump Anvil L1 state to disk before cleanup via `anvil_dumpState` RPC.
+
+```bash
+export KUP_DUMP_STATE=false
+kupcake
+# State will not be persisted on exit
+```
+
+### `KUP_OVERRIDE_STATE`
+
+Load an external Anvil state file at startup (live mode only).
+
+```bash
+export KUP_OVERRIDE_STATE=/path/to/state.json
+kupcake
+# Equivalent to: kupcake --override-state /path/to/state.json
+```
+
+See [CLI Reference - --override-state](cli-reference.md#--override-state-path) for details.
+
 ### `KUP_PUBLISH_ALL_PORTS`
 
 Publish all exposed ports to random host ports.

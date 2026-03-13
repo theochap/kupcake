@@ -377,6 +377,18 @@ pub struct KupDockerConfig {
     pub publish_all_ports: bool,
 }
 
+/// Configuration for dumping Anvil state before cleanup.
+///
+/// When set on [`KupDocker`], the state is dumped via `anvil_dumpState` RPC
+/// before containers are stopped. This allows genesis mode (which uses `--init`
+/// and cannot use `--dump-state`) to persist L1 state across restarts.
+pub struct AnvilStateDumpConfig {
+    /// Host-accessible RPC URL for Anvil.
+    pub rpc_url: String,
+    /// Path to write the state dump file (e.g., `{outdata}/anvil/state.json`).
+    pub output_path: PathBuf,
+}
+
 /// Docker client wrapper for Foundry operations.
 #[derive(Deref)]
 pub struct KupDocker {
@@ -390,6 +402,9 @@ pub struct KupDocker {
     pub network_id: String,
 
     pub config: KupDockerConfig,
+
+    /// If set, dump Anvil state via RPC before stopping containers during cleanup.
+    pub anvil_state_dump: Option<AnvilStateDumpConfig>,
 }
 
 pub struct CreateAndStartContainerResult {
@@ -410,6 +425,22 @@ impl Drop for KupDocker {
         }
 
         tracing::debug!("Cleaning up {} container(s)...", self.containers.len());
+
+        // Dump Anvil state before stopping containers (genesis mode first boot).
+        if let Some(dump_config) = self.anvil_state_dump.take() {
+            let dump = async {
+                crate::rpc::anvil_dump_state(&dump_config.rpc_url, &dump_config.output_path).await
+            };
+
+            let result = match tokio::runtime::Handle::try_current() {
+                Ok(handle) => tokio::task::block_in_place(|| handle.block_on(dump)),
+                Err(_) => block_on(dump),
+            };
+
+            if let Err(e) = result {
+                tracing::warn!(error = %e, "Failed to dump Anvil state before cleanup");
+            }
+        }
 
         // Spawn a blocking task to stop all containers
         let docker = self.docker.clone();
@@ -924,6 +955,7 @@ ENTRYPOINT [\"/binary\"]
             config,
             network_id,
             containers: HashSet::new(),
+            anvil_state_dump: None,
         })
     }
 

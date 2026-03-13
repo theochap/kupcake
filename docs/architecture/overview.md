@@ -175,7 +175,7 @@ In live mode, Anvil starts first and contracts are deployed to the running L1 vi
 
 1. **Compute deployment configuration hash** (SHA-256 of deployment-relevant parameters)
 2. **Create Docker network**
-3. **Start Anvil** (L1, optionally forking a remote chain)
+3. **Start Anvil** (L1, optionally forking a remote chain; if `--override-state` is specified, loads the external state via `--load-state`; otherwise if a persisted `state.json` exists from a previous run, restores from it via `--load-state`)
 4. **Check deployment version** - Compare current hash with saved hash
    - If unchanged, skip contract deployment (saves 30-60s)
    - If changed, missing, or corrupted, redeploy contracts
@@ -187,14 +187,14 @@ In live mode, Anvil starts first and contracts are deployed to the running L1 vi
 
 In genesis mode, contracts are deployed into an in-memory L1 state, then Anvil boots from the resulting genesis. This is ~3-4x faster but only works with local Anvil (no fork).
 
-L1 state restoration is supported: if `anvil/state.json` exists and contracts haven't been redeployed, Anvil restores from the persisted state via `--init-state` instead of booting fresh from genesis. Note: Anvil's `--init` flag is incompatible with `--dump-state`, so the first genesis boot does not automatically persist state.
+L1 state restoration is supported: if `anvil/state.json` exists and contracts haven't been redeployed, Anvil restores from the persisted state via `--load-state` instead of booting fresh from genesis. State is persisted via `anvil_dumpState` RPC before cleanup (Anvil's `--init` flag is incompatible with `--dump-state`). Note: `--override-state` is not supported in genesis mode and will produce an error if specified.
 
 1. **Compute deployment configuration hash**
 2. **Create Docker network**
 3. **Check deployment version** - Compare current hash with saved hash
 4. **Deploy contracts in-memory** (op-deployer init + apply with `--l1-state-dump`) - Only if needed
 5. **Extract L1 genesis** from state dump
-6. **Start Anvil** - If persisted `state.json` exists (from a previous run), use `--init-state` to restore; otherwise use `--init` with L1 genesis and `--dump-state` to persist state on exit
+6. **Start Anvil** - If persisted `state.json` exists (from a previous run), use `--load-state` to restore; otherwise use `--init` with L1 genesis
 7. **Patch rollup.json** with Anvil's actual genesis block hash (workaround for [foundry-rs/foundry#7366](https://github.com/foundry-rs/foundry/issues/7366))
 8. **Save deployment version**
 
