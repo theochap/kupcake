@@ -783,7 +783,7 @@ impl Deployer {
     }
 
     pub async fn deploy(
-        self,
+        mut self,
         docker: &mut KupDocker,
         force_deploy: bool,
         wait_for_exit: bool,
@@ -868,14 +868,21 @@ impl Deployer {
             });
         }
 
-        let skip_proposer_challenger = self.snapshot.is_some();
+        // In snapshot mode, proposer and challenger are unavailable (no state.json)
+        if self.snapshot.is_some() {
+            self.l2_stack.op_proposer = None;
+            self.l2_stack.op_challenger = None;
+        }
 
         let node_count = self.l2_stack.node_count();
-        let services_label = if skip_proposer_challenger {
-            "op-batcher"
-        } else {
-            "op-batcher + op-proposer + op-challenger"
-        };
+        let mut services = vec!["op-batcher"];
+        if self.l2_stack.op_proposer.is_some() {
+            services.push("op-proposer");
+        }
+        if self.l2_stack.op_challenger.is_some() {
+            services.push("op-challenger");
+        }
+        let services_label = services.join(" + ");
         tracing::info!(
             node_count,
             sequencer_count = self.l2_stack.sequencers.len(),
@@ -887,13 +894,7 @@ impl Deployer {
 
         let l2_stack = self
             .l2_stack
-            .start(
-                docker,
-                l2_nodes_data_path.clone(),
-                &anvil,
-                self.l1_chain_id,
-                skip_proposer_challenger,
-            )
+            .start(docker, l2_nodes_data_path.clone(), &anvil, self.l1_chain_id)
             .await
             .context("Failed to start L2 stack")?;
 

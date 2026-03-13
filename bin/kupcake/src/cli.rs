@@ -430,6 +430,18 @@ pub struct DeployArgs {
     )]
     pub sequencer_count: usize,
 
+    /// Disable op-proposer deployment.
+    ///
+    /// When set, the op-proposer service will not be started as part of the L2 stack.
+    #[arg(long, env = "KUP_NO_PROPOSER")]
+    pub no_proposer: bool,
+
+    /// Disable op-challenger deployment.
+    ///
+    /// When set, the op-challenger service will not be started as part of the L2 stack.
+    #[arg(long, env = "KUP_NO_CHALLENGER")]
+    pub no_challenger: bool,
+
     /// Enable flashblocks support.
     ///
     /// When enabled, sequencer nodes use op-rbuilder (a fork of op-reth with
@@ -483,6 +495,8 @@ impl Default for DeployArgs {
             genesis_timestamp: None,
             l2_nodes: 5,
             sequencer_count: 2,
+            no_proposer: false,
+            no_challenger: false,
             flashblocks: false,
             deployment_target: DeploymentTargetArg::Live,
             config: None,

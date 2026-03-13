@@ -46,10 +46,12 @@ pub struct L2StackBuilder<
     pub validators: Vec<Node>,
     /// Configuration for op-batcher.
     pub op_batcher: B,
-    /// Configuration for op-proposer.
-    pub op_proposer: P,
-    /// Configuration for op-challenger.
-    pub op_challenger: C,
+    /// Configuration for op-proposer (None to skip deployment).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op_proposer: Option<P>,
+    /// Configuration for op-challenger (None to skip deployment).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op_challenger: Option<C>,
 }
 
 impl Default for L2StackBuilder {
@@ -58,8 +60,8 @@ impl Default for L2StackBuilder {
             sequencers: vec![L2NodeBuilder::sequencer()],
             validators: Vec::new(),
             op_batcher: OpBatcherBuilder::default(),
-            op_proposer: OpProposerBuilder::default(),
-            op_challenger: OpChallengerBuilder::default(),
+            op_proposer: Some(OpProposerBuilder::default()),
+            op_challenger: Some(OpChallengerBuilder::default()),
         }
     }
 }
@@ -112,8 +114,8 @@ impl L2StackBuilder {
             sequencers,
             validators,
             op_batcher: OpBatcherBuilder::default(),
-            op_proposer: OpProposerBuilder::default(),
-            op_challenger: OpChallengerBuilder::default(),
+            op_proposer: Some(OpProposerBuilder::default()),
+            op_challenger: Some(OpChallengerBuilder::default()),
         }
     }
 
@@ -215,15 +217,22 @@ impl L2StackBuilder {
 
     /// Set the binary path or source directory for op-proposer.
     pub fn set_op_proposer_binary(mut self, path: impl Into<PathBuf>) -> Self {
-        self.op_proposer.docker_image =
-            crate::docker::DockerImage::from_binary_with_name(path, "op-proposer");
+        if let Some(ref mut p) = self.op_proposer {
+            p.docker_image = crate::docker::DockerImage::from_binary_with_name(path, "op-proposer");
+        } else {
+            tracing::warn!("op-proposer binary path ignored: op-proposer is disabled");
+        }
         self
     }
 
     /// Set the binary path or source directory for op-challenger.
     pub fn set_op_challenger_binary(mut self, path: impl Into<PathBuf>) -> Self {
-        self.op_challenger.docker_image =
-            crate::docker::DockerImage::from_binary_with_name(path, "op-challenger");
+        if let Some(ref mut c) = self.op_challenger {
+            c.docker_image =
+                crate::docker::DockerImage::from_binary_with_name(path, "op-challenger");
+        } else {
+            tracing::warn!("op-challenger binary path ignored: op-challenger is disabled");
+        }
         self
     }
 
@@ -257,7 +266,7 @@ where
     /// Start all L2 node components.
     ///
     /// This starts sequencer nodes first (with their op-conductors if configured),
-    /// then validator nodes, then op-batcher, op-proposer, and op-challenger.
+    /// then validator nodes, then op-batcher, and optionally op-proposer and op-challenger.
     /// Each L2 node pair (op-reth + kona-node) generates its own JWT for authentication.
     /// P2P peer discovery is enabled by passing enodes between nodes.
     ///
@@ -266,15 +275,12 @@ where
     /// * `host_config_path` - Path on host for config files
     /// * `anvil_handler` - Handler for the L1 Anvil instance
     /// * `l1_chain_id` - L1 chain ID (used to determine if we need a custom L1 config for kona-node)
-    /// * `skip_proposer_challenger` - When true, op-proposer and op-challenger are not started
-    ///   (used in snapshot mode where state.json is unavailable)
     pub async fn start(
         &self,
         docker: &mut KupDocker,
         host_config_path: PathBuf,
         anvil_handler: &AnvilHandler,
         l1_chain_id: u64,
-        skip_proposer_challenger: bool,
     ) -> Result<L2StackHandler, anyhow::Error> {
         if !host_config_path.exists() {
             fs::FsHandler::create_host_config_directory(&host_config_path)?;
@@ -415,42 +421,45 @@ where
             )
             .await?;
 
-        let (op_proposer_handler, op_challenger_handler) = if skip_proposer_challenger {
-            tracing::info!("Skipping op-proposer and op-challenger (snapshot mode, no state.json)");
-            (None, None)
-        } else {
+        let op_proposer_handler = if let Some(ref proposer_config) = self.op_proposer {
             tracing::info!("Starting op-proposer...");
+            Some(
+                proposer_config
+                    .deploy(
+                        docker,
+                        &host_config_path,
+                        OpProposerInput {
+                            l1_rpc_url: l1_rpc_url.to_string(),
+                            rollup_rpc_url: primary_sequencer.kona_node.rpc_url.to_string(),
+                            proposer_private_key: proposer_private_key.clone(),
+                        },
+                    )
+                    .await?,
+            )
+        } else {
+            tracing::info!("Skipping op-proposer (disabled)");
+            None
+        };
 
-            let proposer = self
-                .op_proposer
-                .deploy(
-                    docker,
-                    &host_config_path,
-                    OpProposerInput {
-                        l1_rpc_url: l1_rpc_url.to_string(),
-                        rollup_rpc_url: primary_sequencer.kona_node.rpc_url.to_string(),
-                        proposer_private_key: proposer_private_key.clone(),
-                    },
-                )
-                .await?;
-
+        let op_challenger_handler = if let Some(ref challenger_config) = self.op_challenger {
             tracing::info!("Starting op-challenger...");
-
-            let challenger = self
-                .op_challenger
-                .deploy(
-                    docker,
-                    &host_config_path,
-                    OpChallengerInput {
-                        l1_rpc_url: l1_rpc_url.to_string(),
-                        l2_rpc_url: primary_sequencer.op_reth.http_rpc_url.to_string(),
-                        rollup_rpc_url: primary_sequencer.kona_node.rpc_url.to_string(),
-                        challenger_private_key: challenger_private_key.clone(),
-                    },
-                )
-                .await?;
-
-            (Some(proposer), Some(challenger))
+            Some(
+                challenger_config
+                    .deploy(
+                        docker,
+                        &host_config_path,
+                        OpChallengerInput {
+                            l1_rpc_url: l1_rpc_url.to_string(),
+                            l2_rpc_url: primary_sequencer.op_reth.http_rpc_url.to_string(),
+                            rollup_rpc_url: primary_sequencer.kona_node.rpc_url.to_string(),
+                            challenger_private_key: challenger_private_key.clone(),
+                        },
+                    )
+                    .await?,
+            )
+        } else {
+            tracing::info!("Skipping op-challenger (disabled)");
+            None
         };
 
         // Log all sequencer endpoints

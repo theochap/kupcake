@@ -56,6 +56,10 @@ impl TestContext {
     }
 
     /// Build a standard deployer for testing (uses genesis deployment mode for speed).
+    ///
+    /// By default, proposer, challenger, and monitoring are disabled to reduce
+    /// resource usage and speed up tests. Tests that need these services should
+    /// build their own deployer with the relevant options enabled.
     pub async fn build_deployer(&self) -> Result<kupcake_deploy::Deployer> {
         DeployerBuilder::new(self.l1_chain_id)
             .network_name(&self.network_name)
@@ -66,6 +70,9 @@ impl TestContext {
             .detach(true)
             .dump_state(false)
             .deployment_target(DeploymentTarget::Genesis)
+            .no_proposer(true)
+            .no_challenger(true)
+            .monitoring_enabled(false)
             .build()
             .await
             .context("Failed to build deployer")

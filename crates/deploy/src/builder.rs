@@ -148,6 +148,11 @@ pub struct DeployerBuilder {
     /// Deployment target (live or genesis).
     deployment_target: crate::DeploymentTarget,
 
+    /// Whether to skip op-proposer deployment.
+    no_proposer: bool,
+    /// Whether to skip op-challenger deployment.
+    no_challenger: bool,
+
     /// Optional path to an external state file for Anvil to load via `--load-state`.
     override_state: Option<PathBuf>,
 
@@ -188,6 +193,8 @@ impl DeployerBuilder {
             snapshot: None,
             copy_snapshot: false,
             deployment_target: crate::DeploymentTarget::default(),
+            no_proposer: false,
+            no_challenger: false,
             override_state: None,
             anvil_docker: DockerImage::new(ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG),
             op_reth_docker: DockerImage::new(OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG),
@@ -389,6 +396,18 @@ impl DeployerBuilder {
         if let Some(p) = path {
             self.override_state = Some(p);
         }
+        self
+    }
+
+    /// Disable op-proposer deployment.
+    pub fn no_proposer(mut self, no_proposer: bool) -> Self {
+        self.no_proposer = no_proposer;
+        self
+    }
+
+    /// Disable op-challenger deployment.
+    pub fn no_challenger(mut self, no_challenger: bool) -> Self {
+        self.no_challenger = no_challenger;
         self
     }
 
@@ -894,15 +913,23 @@ impl DeployerBuilder {
                         container_name: format!("{}-op-batcher", network_name),
                         ..Default::default()
                     },
-                    op_proposer: OpProposerBuilder {
-                        docker_image: self.op_proposer_docker,
-                        container_name: format!("{}-op-proposer", network_name),
-                        ..Default::default()
+                    op_proposer: if self.no_proposer {
+                        None
+                    } else {
+                        Some(OpProposerBuilder {
+                            docker_image: self.op_proposer_docker,
+                            container_name: format!("{}-op-proposer", network_name),
+                            ..Default::default()
+                        })
                     },
-                    op_challenger: OpChallengerBuilder {
-                        docker_image: self.op_challenger_docker,
-                        container_name: format!("{}-op-challenger", network_name),
-                        ..Default::default()
+                    op_challenger: if self.no_challenger {
+                        None
+                    } else {
+                        Some(OpChallengerBuilder {
+                            docker_image: self.op_challenger_docker,
+                            container_name: format!("{}-op-challenger", network_name),
+                            ..Default::default()
+                        })
                     },
                 }
             },

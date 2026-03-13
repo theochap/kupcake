@@ -41,6 +41,9 @@ async fn test_live_deployment_skipping() -> Result<()> {
         .block_time(2)
         .detach(true)
         .deployment_target(DeploymentTarget::Live)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer")?;
@@ -127,6 +130,9 @@ async fn test_live_local_deployment() -> Result<()> {
         .block_time(2)
         .detach(true)
         .deployment_target(DeploymentTarget::Live)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer in live mode")?;
@@ -203,6 +209,9 @@ async fn test_live_sepolia_fork_deployment() -> Result<()> {
         .block_time(2)
         .detach(true)
         .deployment_target(DeploymentTarget::Live)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
         .build()
         .await
         .context("Failed to build deployer with Sepolia fork")?;
