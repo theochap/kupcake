@@ -3146,6 +3146,29 @@ async fn test_spam_deploy_no_wait_then_reload_and_spam() -> Result<()> {
     Ok(())
 }
 
+/// Get the command args of a container via docker inspect.
+fn get_container_cmd(container_name: &str) -> Result<String> {
+    let output = Command::new("docker")
+        .args([
+            "inspect",
+            "--format",
+            "{{json .Config.Cmd}}",
+            container_name,
+        ])
+        .output()
+        .context("Failed to run docker inspect")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "docker inspect failed for {}: {}",
+            container_name,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Get the Docker image used by a container via docker inspect.
 fn get_container_image(container_name: &str) -> Result<String> {
     let output = Command::new("docker")
@@ -4170,5 +4193,340 @@ async fn test_genesis_anvil_state_persistence() -> Result<()> {
     cleanup_by_prefix(&ctx.network_name).await?;
 
     tracing::info!("=== Test passed! Anvil state persisted across genesis mode restart. ===");
+    Ok(())
+}
+
+/// Send an `eth_getProof` RPC call and return the JSON response.
+async fn eth_get_proof(rpc_url: &str, address: &str, block: &str) -> Result<Value> {
+    let client = rpc::create_client()?;
+    let response = client
+        .post(rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getProof",
+            "params": [address, [], block],
+            "id": 1
+        }))
+        .send()
+        .await
+        .context("Failed to send eth_getProof request")?;
+
+    let body: Value = response
+        .json()
+        .await
+        .context("Failed to parse eth_getProof response")?;
+
+    Ok(body)
+}
+
+/// Test proofs history deployment.
+///
+/// Deploys with `proofs_validators(1)` which adds one extra validator with proofs history.
+/// Verifies:
+/// - The proofs-enabled validator's op-reth has `--proofs-history` in its command args
+/// - The proofs storage directory exists on the host
+/// - The network is healthy (blocks advancing)
+/// - The proofs-enabled validator can serve `eth_getProof`
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_proofs_history_deployment() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
+    init_test_tracing();
+
+    let ctx = TestContext::new("proofs");
+    tracing::info!(
+        "=== Starting proofs history test with network: {} ===",
+        ctx.network_name
+    );
+
+    // Deploy with 1 sequencer + 1 regular validator + 1 proofs validator
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(2) // 1 sequencer + 1 regular validator
+        .sequencer_count(1)
+        .proofs_validators(1) // adds 1 extra validator with proofs
+        .block_time(2)
+        .detach(true)
+        .dump_state(false)
+        .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
+
+    deployer.save_config()?;
+
+    tracing::info!("=== Deploying network with proofs history... ===");
+    let (_docker, deployment) = ctx.deploy(deployer.clone()).await?;
+    tracing::info!("=== Deployment completed successfully ===");
+
+    // The proofs validator is validator-2 (the extra one)
+    let proofs_reth_name = format!("{}-op-reth-validator-2", ctx.network_name);
+
+    // Verify the proofs-enabled validator has --proofs-history in its command args
+    tracing::info!("=== Verifying proofs-enabled validator has --proofs-history flag... ===");
+    let cmd = get_container_cmd(&proofs_reth_name)?;
+    tracing::info!("Proofs validator cmd: {}", cmd);
+
+    if !cmd.contains("--proofs-history") {
+        anyhow::bail!(
+            "Expected proofs-enabled validator to have --proofs-history flag, got: {}",
+            cmd
+        );
+    }
+
+    // Verify the proofs storage directory exists on the host
+    tracing::info!("=== Verifying proofs storage directory exists... ===");
+    let proofs_dir = ctx
+        .outdata_path
+        .join("l2-stack")
+        .join(format!("proofs-{}", proofs_reth_name));
+    if !proofs_dir.exists() {
+        anyhow::bail!(
+            "Expected proofs storage directory to exist at: {}",
+            proofs_dir.display()
+        );
+    }
+
+    // Wait for nodes to be ready and verify the network is healthy
+    tracing::info!("=== Waiting for nodes to be ready... ===");
+    wait_for_all_nodes(&deployment).await;
+    wait_for_all_nodes_advancing(&deployer, 120).await?;
+
+    // Verify the proofs-enabled validator can serve eth_getProof
+    tracing::info!("=== Verifying eth_getProof on proofs-enabled validator... ===");
+    let proofs_validator = &deployment.l2_stack.validators[1]; // validator-2 (0-indexed)
+    let rpc_url = proofs_validator
+        .op_reth
+        .http_host_url
+        .as_ref()
+        .context("Proofs validator HTTP RPC not published to host")?;
+
+    // Use a known address (zero address) at the latest block
+    let proof_response = eth_get_proof(
+        rpc_url.as_str(),
+        "0x0000000000000000000000000000000000000000",
+        "latest",
+    )
+    .await?;
+    tracing::info!("eth_getProof response: {}", proof_response);
+
+    if proof_response.get("error").is_some() {
+        anyhow::bail!("eth_getProof returned error: {}", proof_response["error"]);
+    }
+
+    let result = &proof_response["result"];
+    if result.get("accountProof").is_none() {
+        anyhow::bail!(
+            "eth_getProof response missing accountProof field: {}",
+            proof_response
+        );
+    }
+
+    // Cleanup
+    tracing::info!("=== Cleaning up network... ===");
+    cleanup_by_prefix(&ctx.network_name).await?;
+
+    tracing::info!("=== Test passed! Proofs history deployment is working. ===");
+    Ok(())
+}
+
+/// Test that proofs history is only enabled on the additional validators, not on
+/// regular validators or sequencers.
+///
+/// Deploys with `l2_node_count(3)` (1 sequencer + 2 regular validators) and
+/// `proofs_validators(1)` (1 extra proofs validator = validator-3).
+/// Verifies:
+/// - validator-3's op-reth HAS `--proofs-history` in its args
+/// - validator-1 and validator-2's op-reth do NOT have `--proofs-history`
+/// - sequencer's op-reth does NOT have `--proofs-history`
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_proofs_history_only_on_specified_validators() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
+    init_test_tracing();
+
+    let ctx = TestContext::new("proofs-select");
+    tracing::info!(
+        "=== Starting proofs selection test with network: {} ===",
+        ctx.network_name
+    );
+
+    // 1 sequencer + 2 regular validators + 1 proofs validator
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(3) // 1 sequencer + 2 regular validators
+        .sequencer_count(1)
+        .proofs_validators(1) // adds 1 extra proofs validator (validator-3)
+        .block_time(2)
+        .detach(true)
+        .dump_state(false)
+        .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
+
+    deployer.save_config()?;
+
+    tracing::info!("=== Deploying network... ===");
+    let (_docker, _deployment) = ctx.deploy(deployer).await?;
+    tracing::info!("=== Deployment completed successfully ===");
+
+    // Verify proofs validator (validator-3) HAS --proofs-history
+    let proofs_reth_name = format!("{}-op-reth-validator-3", ctx.network_name);
+    let cmd = get_container_cmd(&proofs_reth_name)?;
+    tracing::info!("Proofs validator-3 cmd: {}", cmd);
+    if !cmd.contains("--proofs-history") {
+        anyhow::bail!(
+            "Expected validator-3 to have --proofs-history flag, got: {}",
+            cmd
+        );
+    }
+
+    // Verify regular validators do NOT have --proofs-history
+    for i in 1..=2 {
+        let name = format!("{}-op-reth-validator-{}", ctx.network_name, i);
+        let cmd = get_container_cmd(&name)?;
+        tracing::info!("validator-{} cmd: {}", i, cmd);
+        if cmd.contains("--proofs-history") {
+            anyhow::bail!(
+                "Expected validator-{} to NOT have --proofs-history flag, got: {}",
+                i,
+                cmd
+            );
+        }
+    }
+
+    // Verify sequencer does NOT have --proofs-history
+    let sequencer_name = format!("{}-op-reth", ctx.network_name);
+    let seq_cmd = get_container_cmd(&sequencer_name)?;
+    tracing::info!("Sequencer cmd: {}", seq_cmd);
+    if seq_cmd.contains("--proofs-history") {
+        anyhow::bail!(
+            "Expected sequencer to NOT have --proofs-history flag, got: {}",
+            seq_cmd
+        );
+    }
+
+    // Cleanup
+    tracing::info!("=== Cleaning up network... ===");
+    cleanup_by_prefix(&ctx.network_name).await?;
+
+    tracing::info!(
+        "=== Test passed! Proofs history correctly applied only to specified validators. ==="
+    );
+    Ok(())
+}
+
+/// Test that a proofs-enabled validator stays healthy and can serve eth_getProof
+/// with valid account proofs.
+///
+/// Deploys with `proofs_validators(1)` in genesis mode, waits for blocks to advance,
+/// then verifies `eth_getProof` returns valid `accountProof` and `balance` fields.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_proofs_history_network_health() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
+    init_test_tracing();
+
+    let ctx = TestContext::new("proofs-health");
+    tracing::info!(
+        "=== Starting proofs health test with network: {} ===",
+        ctx.network_name
+    );
+
+    // 1 sequencer + 1 proofs validator (no regular validators needed)
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(1) // 1 sequencer only
+        .sequencer_count(1)
+        .proofs_validators(1) // adds 1 extra proofs validator
+        .block_time(2)
+        .detach(true)
+        .dump_state(false)
+        .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
+        .build()
+        .await
+        .context("Failed to build deployer")?;
+
+    deployer.save_config()?;
+
+    tracing::info!("=== Deploying network with proofs history... ===");
+    let (_docker, deployment) = ctx.deploy(deployer.clone()).await?;
+    tracing::info!("=== Deployment completed successfully ===");
+
+    // Wait for blocks to advance on all nodes
+    tracing::info!("=== Waiting for blocks to advance... ===");
+    wait_for_all_nodes(&deployment).await;
+    wait_for_all_nodes_advancing(&deployer, 120).await?;
+
+    // Collect sync status from all nodes, verify all are syncing
+    tracing::info!("=== Collecting sync status... ===");
+    let statuses = collect_all_sync_status(&deployment).await;
+    for (label, status) in &statuses {
+        if status.unsafe_l2.number == 0 {
+            anyhow::bail!("{}: unsafe_l2 is still 0, node not syncing", label);
+        }
+    }
+
+    // Send eth_getProof to the proofs-enabled validator for a known address
+    tracing::info!("=== Verifying eth_getProof on proofs validator... ===");
+    let proofs_validator = &deployment.l2_stack.validators[0]; // the only validator
+    let rpc_url = proofs_validator
+        .op_reth
+        .http_host_url
+        .as_ref()
+        .context("Proofs validator HTTP RPC not published to host")?;
+
+    let proof_response = eth_get_proof(
+        rpc_url.as_str(),
+        "0x0000000000000000000000000000000000000000",
+        "latest",
+    )
+    .await?;
+
+    if proof_response.get("error").is_some() {
+        anyhow::bail!("eth_getProof returned error: {}", proof_response["error"]);
+    }
+
+    let result = &proof_response["result"];
+
+    // Verify accountProof field exists and is non-empty
+    let account_proof = result
+        .get("accountProof")
+        .context("eth_getProof response missing accountProof")?;
+    if !account_proof.is_array() || account_proof.as_array().unwrap().is_empty() {
+        anyhow::bail!(
+            "Expected non-empty accountProof array, got: {}",
+            account_proof
+        );
+    }
+
+    // Verify balance field exists
+    if result.get("balance").is_none() {
+        anyhow::bail!(
+            "eth_getProof response missing balance field: {}",
+            proof_response
+        );
+    }
+
+    tracing::info!(
+        "eth_getProof returned valid response with {} proof nodes",
+        account_proof.as_array().unwrap().len()
+    );
+
+    // Cleanup
+    tracing::info!("=== Cleaning up network... ===");
+    cleanup_by_prefix(&ctx.network_name).await?;
+
+    tracing::info!("=== Test passed! Proofs history network health verified. ===");
     Ok(())
 }

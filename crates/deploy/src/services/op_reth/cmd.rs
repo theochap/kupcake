@@ -33,6 +33,10 @@ pub struct OpRethCmdBuilder {
     flashblocks_enabled: bool,
     /// Port for the flashblocks WebSocket server.
     flashblocks_port: u16,
+    /// Whether historical proofs ExEx is enabled.
+    proofs_history: bool,
+    /// Storage path for historical proofs sidecar DB.
+    proofs_history_storage_path: Option<String>,
     extra_args: Vec<String>,
 }
 
@@ -64,6 +68,8 @@ impl OpRethCmdBuilder {
             log_format: "terminal".to_string(),
             flashblocks_enabled: false,
             flashblocks_port: 1111,
+            proofs_history: false,
+            proofs_history_storage_path: None,
             extra_args: Vec::new(),
         }
     }
@@ -196,6 +202,13 @@ impl OpRethCmdBuilder {
         self
     }
 
+    /// Enable historical proofs ExEx with the given storage path.
+    pub fn proofs_history(mut self, storage_path: impl Into<String>) -> Self {
+        self.proofs_history = true;
+        self.proofs_history_storage_path = Some(storage_path.into());
+        self
+    }
+
     /// Add extra arguments.
     pub fn extra_args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.extra_args.extend(args.into_iter().map(|s| s.into()));
@@ -290,6 +303,14 @@ impl OpRethCmdBuilder {
             cmd.push(self.flashblocks_port.to_string());
         }
 
+        if self.proofs_history {
+            cmd.push("--proofs-history".to_string());
+            if let Some(path) = self.proofs_history_storage_path {
+                cmd.push("--proofs-history.storage-path".to_string());
+                cmd.push(path);
+            }
+        }
+
         cmd.push("--log.stdout.format".to_string());
         cmd.push(self.log_format);
 
@@ -362,6 +383,29 @@ mod tests {
         assert!(
             !cmd.contains(&"--flashblocks.enabled".to_string()),
             "Should not contain flashblocks flags when not enabled"
+        );
+    }
+
+    #[test]
+    fn test_proofs_history_flags() {
+        let cmd = OpRethCmdBuilder::new("/data/genesis.json", "/data/reth-data")
+            .proofs_history("/data/proofs-test")
+            .build();
+
+        assert!(cmd.contains(&"--proofs-history".to_string()));
+        let path_pos = cmd
+            .iter()
+            .position(|s| s == "--proofs-history.storage-path");
+        assert!(path_pos.is_some());
+        assert_eq!(cmd[path_pos.unwrap() + 1], "/data/proofs-test");
+    }
+
+    #[test]
+    fn test_proofs_history_absent_by_default() {
+        let cmd = OpRethCmdBuilder::new("/data/genesis.json", "/data/reth-data").build();
+        assert!(
+            !cmd.contains(&"--proofs-history".to_string()),
+            "Should not contain proofs-history flags when not enabled"
         );
     }
 }
