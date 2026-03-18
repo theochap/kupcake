@@ -88,6 +88,37 @@ grafana_image = "grafana/grafana"
 grafana_tag = "latest"
 ```
 
+### Log Management
+
+The `[docker]` section in the generated `Kupcake.toml` supports log rotation and streaming:
+
+```toml
+[docker]
+net_name = "kup-my-network-network"
+no_cleanup = false
+publish_all_ports = false
+log_max_size = "10m"       # Docker log file max size
+log_max_file = "3"         # Max rotated log files
+stream_logs = false        # Stream container logs to tracing output
+```
+
+Per-service log levels are stored in their respective sections:
+
+```toml
+[anvil]
+quiet = true               # Suppress non-essential Anvil output
+
+[[l2_stack.sequencers]]
+[l2_stack.sequencers.op_reth]
+log_filter = "info"        # op-reth stdout log filter
+
+[l2_stack.sequencers.kona_node]
+verbosity = "-vvv"         # kona-node verbosity (-vvv = info, -vvvv = debug)
+
+[l2_stack.op_batcher]
+log_level = "INFO"         # op-batcher log level
+```
+
 ## Use Cases
 
 ### Resume a Deployment

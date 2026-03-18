@@ -2146,6 +2146,7 @@ async fn test_spam_rejects_empty_rpc_url() -> Result<()> {
         contender_tag: kupcake_deploy::spam::CONTENDER_DEFAULT_TAG.to_string(),
         rpc_url: String::new(),
         extra_args: vec![],
+        quiet: false,
     };
 
     let result = kupcake_deploy::spam::run_spam(&mut docker, &loaded_deployer, &spam_config).await;
@@ -2195,6 +2196,7 @@ async fn test_spam_transfers() -> Result<()> {
         contender_tag: kupcake_deploy::spam::CONTENDER_DEFAULT_TAG.to_string(),
         rpc_url: sequencer_rpc_url(&loaded_deployer),
         extra_args: vec![],
+        quiet: false,
     };
 
     // Run spam with a timeout
@@ -2543,6 +2545,7 @@ async fn test_spam_generates_l2_traffic() -> Result<()> {
         contender_tag: kupcake_deploy::spam::CONTENDER_DEFAULT_TAG.to_string(),
         rpc_url: sequencer_rpc_url(&loaded_deployer),
         extra_args: vec![],
+        quiet: false,
     };
 
     tracing::info!("=== Running spam (tps=2, duration=10s, accounts=2)... ===");
@@ -2701,6 +2704,7 @@ async fn test_spam_container_on_correct_network() -> Result<()> {
         contender_tag: kupcake_deploy::spam::CONTENDER_DEFAULT_TAG.to_string(),
         rpc_url: sequencer_rpc_url(&loaded_deployer_clone),
         extra_args: vec![],
+        quiet: false,
     };
     let spam_handle = tokio::spawn(async move {
         let mut spam_docker = KupDocker::new(loaded_deployer_clone.docker.clone()).await?;
@@ -3520,6 +3524,7 @@ async fn test_flashblocks_with_spam() -> Result<()> {
         contender_tag: kupcake_deploy::spam::CONTENDER_DEFAULT_TAG.to_string(),
         rpc_url: sequencer_rpc_url(&loaded_deployer),
         extra_args: vec![],
+        quiet: false,
     };
 
     tracing::info!("=== Running spam against flashblocks sequencer (tps=20, duration=10s)... ===");
@@ -4528,5 +4533,255 @@ async fn test_proofs_history_network_health() -> Result<()> {
     cleanup_by_prefix(&ctx.network_name).await?;
 
     tracing::info!("=== Test passed! Proofs history network health verified. ===");
+    Ok(())
+}
+
+// ==================== Log management tests ====================
+
+/// Get the Docker log config for a container via docker inspect.
+fn get_container_log_config(container_name: &str) -> Result<Value> {
+    let output = Command::new("docker")
+        .args([
+            "inspect",
+            "--format",
+            "{{json .HostConfig.LogConfig}}",
+            container_name,
+        ])
+        .output()
+        .context("Failed to run docker inspect")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "docker inspect failed for {}: {}",
+            container_name,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    serde_json::from_str(&json_str).context("Failed to parse log config JSON")
+}
+
+/// Test that --long-running / --quiet-services flags produce correct container
+/// configuration: Docker log rotation, quiet anvil, reduced log verbosity for
+/// all services, and correct Kupcake.toml serialization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_long_running_log_management() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
+    init_test_tracing();
+
+    let ctx = TestContext::new("long-run");
+
+    tracing::info!(
+        "=== Starting long-running log management test: {} (L1 chain ID: {}) ===",
+        ctx.network_name,
+        ctx.l1_chain_id
+    );
+
+    // Build deployer with quiet_services + log rotation (simulates --long-running)
+    let deployer = DeployerBuilder::new(ctx.l1_chain_id)
+        .network_name(&ctx.network_name)
+        .outdata(OutDataPath::Path(ctx.outdata_path.clone()))
+        .l2_node_count(2) // 1 sequencer + 1 validator
+        .sequencer_count(1)
+        .block_time(2)
+        .detach(true)
+        .dump_state(false)
+        .deployment_target(DeploymentTarget::Genesis)
+        .no_proposer(true)
+        .no_challenger(true)
+        .monitoring_enabled(false)
+        .quiet_services(true)
+        .log_max_size("10m")
+        .log_max_file("3")
+        .build()
+        .await
+        .context("Failed to build deployer")?;
+
+    // --- Verify deployer config before deployment ---
+
+    // Anvil should be quiet
+    assert!(
+        deployer.anvil.quiet,
+        "Anvil should have quiet=true when quiet_services is set"
+    );
+
+    // Docker config should have log rotation
+    assert_eq!(
+        deployer.docker.log_max_size.as_deref(),
+        Some("10m"),
+        "Docker log_max_size should be 10m"
+    );
+    assert_eq!(
+        deployer.docker.log_max_file.as_deref(),
+        Some("3"),
+        "Docker log_max_file should be 3"
+    );
+
+    // Sequencer op-reth should have log_filter=info
+    assert_eq!(
+        deployer.l2_stack.sequencers[0]
+            .op_reth
+            .log_filter
+            .as_deref(),
+        Some("info"),
+        "Sequencer op-reth log_filter should be 'info'"
+    );
+
+    // Sequencer kona-node should have reduced verbosity
+    assert_eq!(
+        deployer.l2_stack.sequencers[0]
+            .kona_node
+            .verbosity
+            .as_deref(),
+        Some("-vvv"),
+        "Sequencer kona-node verbosity should be '-vvv'"
+    );
+
+    // Validator op-reth should have log_filter=info
+    assert_eq!(
+        deployer.l2_stack.validators[0]
+            .op_reth
+            .log_filter
+            .as_deref(),
+        Some("info"),
+        "Validator op-reth log_filter should be 'info'"
+    );
+
+    // Validator kona-node should have reduced verbosity
+    assert_eq!(
+        deployer.l2_stack.validators[0]
+            .kona_node
+            .verbosity
+            .as_deref(),
+        Some("-vvv"),
+        "Validator kona-node verbosity should be '-vvv'"
+    );
+
+    // Op-batcher should have log_level=INFO
+    assert_eq!(
+        deployer.l2_stack.op_batcher.log_level.as_deref(),
+        Some("INFO"),
+        "Op-batcher log_level should be 'INFO'"
+    );
+
+    // --- Save and reload config to verify TOML round-trip ---
+    deployer.save_config()?;
+    let config_path = ctx.outdata_path.join("Kupcake.toml");
+    let reloaded = kupcake_deploy::Deployer::load_from_file(&config_path)?;
+
+    assert!(
+        reloaded.anvil.quiet,
+        "Reloaded anvil should still have quiet=true"
+    );
+    assert_eq!(
+        reloaded.docker.log_max_size.as_deref(),
+        Some("10m"),
+        "Reloaded docker log_max_size should survive round-trip"
+    );
+    assert_eq!(
+        reloaded.docker.log_max_file.as_deref(),
+        Some("3"),
+        "Reloaded docker log_max_file should survive round-trip"
+    );
+    assert_eq!(
+        reloaded.l2_stack.sequencers[0]
+            .op_reth
+            .log_filter
+            .as_deref(),
+        Some("info"),
+        "Reloaded sequencer op-reth log_filter should survive round-trip"
+    );
+    assert_eq!(
+        reloaded.l2_stack.sequencers[0]
+            .kona_node
+            .verbosity
+            .as_deref(),
+        Some("-vvv"),
+        "Reloaded kona-node verbosity should survive round-trip"
+    );
+
+    // --- Deploy and verify container configuration ---
+    tracing::info!("=== Deploying network with log management... ===");
+    let (_docker, _deployment) = ctx.deploy(deployer).await?;
+    tracing::info!("=== Deployment completed successfully ===");
+
+    // Verify Docker log config on containers
+    let anvil_name = format!("{}-anvil", ctx.network_name);
+    let reth_name = format!("{}-op-reth", ctx.network_name);
+    let kona_name = format!("{}-kona-node", ctx.network_name);
+    let batcher_name = format!("{}-op-batcher", ctx.network_name);
+
+    // Check log rotation on anvil container
+    let log_config = get_container_log_config(&anvil_name)?;
+    assert_eq!(
+        log_config["Type"].as_str(),
+        Some("json-file"),
+        "Anvil should use json-file log driver"
+    );
+    assert_eq!(
+        log_config["Config"]["max-size"].as_str(),
+        Some("10m"),
+        "Anvil log max-size should be 10m"
+    );
+    assert_eq!(
+        log_config["Config"]["max-file"].as_str(),
+        Some("3"),
+        "Anvil log max-file should be 3"
+    );
+
+    // Check log rotation on op-reth container
+    let log_config = get_container_log_config(&reth_name)?;
+    assert_eq!(
+        log_config["Type"].as_str(),
+        Some("json-file"),
+        "op-reth should use json-file log driver"
+    );
+    assert_eq!(
+        log_config["Config"]["max-size"].as_str(),
+        Some("10m"),
+        "op-reth log max-size should be 10m"
+    );
+
+    // Verify command args contain quiet/log-level flags
+    let anvil_cmd = get_container_cmd(&anvil_name)?;
+    assert!(
+        anvil_cmd.contains("--quiet"),
+        "Anvil should have --quiet flag, got: {}",
+        anvil_cmd
+    );
+
+    let reth_cmd = get_container_cmd(&reth_name)?;
+    assert!(
+        reth_cmd.contains("--log.stdout.filter") && reth_cmd.contains("info"),
+        "op-reth should have --log.stdout.filter info, got: {}",
+        reth_cmd
+    );
+
+    let kona_cmd = get_container_cmd(&kona_name)?;
+    // kona-node should have -vvv (info) instead of -vvvv (debug)
+    assert!(
+        kona_cmd.contains("-vvv"),
+        "kona-node should have -vvv verbosity, got: {}",
+        kona_cmd
+    );
+    assert!(
+        !kona_cmd.contains("-vvvv"),
+        "kona-node should NOT have -vvvv verbosity (should be -vvv), got: {}",
+        kona_cmd
+    );
+
+    let batcher_cmd = get_container_cmd(&batcher_name)?;
+    assert!(
+        batcher_cmd.contains("--log.level") && batcher_cmd.contains("INFO"),
+        "op-batcher should have --log.level INFO, got: {}",
+        batcher_cmd
+    );
+
+    // Cleanup
+    tracing::info!("=== Cleaning up network... ===");
+    cleanup_by_prefix(&ctx.network_name).await?;
+
+    tracing::info!("=== Test passed! Long-running log management verified. ===");
     Ok(())
 }

@@ -70,6 +70,7 @@ impl SpamPreset {
             contender_tag: CONTENDER_DEFAULT_TAG.to_string(),
             rpc_url: rpc_url.to_string(),
             extra_args: vec![],
+            quiet: false,
         }
     }
 }
@@ -102,6 +103,8 @@ pub struct SpamConfig {
     pub rpc_url: String,
     /// Extra arguments passed directly to contender.
     pub extra_args: Vec<String>,
+    /// Whether to suppress receipt logging (--ignore-receipts).
+    pub quiet: bool,
 }
 
 /// Run the Contender spammer against a deployed L2 network.
@@ -289,6 +292,10 @@ fn build_contender_cmd(config: &SpamConfig, scenario_arg: &str, private_key: &st
         cmd.push("--report".to_string());
     }
 
+    if config.quiet {
+        cmd.push("--ignore-receipts".to_string());
+    }
+
     cmd.extend(config.extra_args.iter().cloned());
 
     // Scenario subcommand or testfile goes last
@@ -350,6 +357,7 @@ mod tests {
             contender_tag: CONTENDER_DEFAULT_TAG.to_string(),
             rpc_url: "http://test-reth:9545/".to_string(),
             extra_args: vec![],
+            quiet: false,
         };
 
         let cmd = build_contender_cmd(&config, "transfers", "0xabc123");
@@ -397,6 +405,7 @@ mod tests {
             contender_tag: CONTENDER_DEFAULT_TAG.to_string(),
             rpc_url: "http://test-reth:9545/".to_string(),
             extra_args: vec![],
+            quiet: false,
         };
 
         let cmd = build_contender_cmd(&config, "transfers", "0xabc");
@@ -428,6 +437,7 @@ mod tests {
                 "--seed".to_string(),
                 "42".to_string(),
             ],
+            quiet: false,
         };
 
         let cmd = build_contender_cmd(&config, "transfers", "0xkey");
@@ -673,6 +683,9 @@ mod tests {
                 net_name: "kup-test-network".to_string(),
                 no_cleanup: false,
                 publish_all_ports: false,
+                log_max_size: None,
+                log_max_file: None,
+                stream_logs: false,
             },
             l2_stack: Default::default(),
             monitoring: Default::default(),

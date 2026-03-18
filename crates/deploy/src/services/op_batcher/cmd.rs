@@ -18,6 +18,7 @@ pub struct OpBatcherCmdBuilder {
     target_num_frames: Option<u64>,
     sub_safety_margin: Option<u64>,
     poll_interval: Option<String>,
+    log_level: Option<String>,
     extra_args: Vec<String>,
 }
 
@@ -45,6 +46,7 @@ impl OpBatcherCmdBuilder {
             target_num_frames: None,
             sub_safety_margin: None,
             poll_interval: None,
+            log_level: None,
             extra_args: Vec::new(),
         }
     }
@@ -102,6 +104,12 @@ impl OpBatcherCmdBuilder {
     /// Set the poll interval.
     pub fn poll_interval(mut self, interval: impl Into<String>) -> Self {
         self.poll_interval = Some(interval.into());
+        self
+    }
+
+    /// Set the log level.
+    pub fn log_level(mut self, level: impl Into<String>) -> Self {
+        self.log_level = Some(level.into());
         self
     }
 
@@ -175,6 +183,11 @@ impl OpBatcherCmdBuilder {
         if let Some(interval) = self.poll_interval {
             cmd.push("--poll-interval".to_string());
             cmd.push(interval);
+        }
+
+        if let Some(level) = self.log_level {
+            cmd.push("--log.level".to_string());
+            cmd.push(level);
         }
 
         cmd.extend(self.extra_args);

@@ -186,6 +186,9 @@ async fn run_single_iteration(
         net_name: format!("{prefix}-network"),
         no_cleanup: false,
         publish_all_ports: false,
+        log_max_size: None,
+        log_max_file: None,
+        stream_logs: false,
     };
 
     let mut docker = KupDocker::new(docker_config)

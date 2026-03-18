@@ -28,6 +28,7 @@ pub struct OpRethCmdBuilder {
     p2p_secret_key: Option<String>,
     /// Maximum number of concurrent RPC connections (HTTP + WS combined).
     rpc_max_connections: Option<u32>,
+    log_filter: Option<String>,
     log_format: String,
     /// Whether flashblocks support is enabled (op-rbuilder only).
     flashblocks_enabled: bool,
@@ -65,6 +66,7 @@ impl OpRethCmdBuilder {
             net_if: None,
             p2p_secret_key: None,
             rpc_max_connections: None,
+            log_filter: None,
             log_format: "terminal".to_string(),
             flashblocks_enabled: false,
             flashblocks_port: 1111,
@@ -189,6 +191,12 @@ impl OpRethCmdBuilder {
         self
     }
 
+    /// Set the stdout log filter (e.g., "info", "debug").
+    pub fn log_filter(mut self, filter: impl Into<String>) -> Self {
+        self.log_filter = Some(filter.into());
+        self
+    }
+
     /// Set the log format.
     pub fn log_format(mut self, format: impl Into<String>) -> Self {
         self.log_format = format.into();
@@ -309,6 +317,11 @@ impl OpRethCmdBuilder {
                 cmd.push("--proofs-history.storage-path".to_string());
                 cmd.push(path);
             }
+        }
+
+        if let Some(filter) = self.log_filter {
+            cmd.push("--log.stdout.filter".to_string());
+            cmd.push(filter);
         }
 
         cmd.push("--log.stdout.format".to_string());

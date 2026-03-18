@@ -75,6 +75,9 @@ pub struct OpConductorBuilder {
     pub healthcheck_unsafe_interval: String,
     /// Minimum number of peers required to be considered healthy.
     pub healthcheck_min_peer_count: String,
+    /// Log level for op-conductor (e.g., "INFO", "DEBUG").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
     /// Extra arguments to pass to op-conductor.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -93,6 +96,7 @@ impl Default for OpConductorBuilder {
             healthcheck_interval: "5".to_string(),
             healthcheck_unsafe_interval: "600".to_string(),
             healthcheck_min_peer_count: "1".to_string(),
+            log_level: None,
             extra_args: Vec::new(),
         }
     }
@@ -138,6 +142,7 @@ impl OpConductorBuilder {
         .healthcheck_interval(&self.healthcheck_interval)
         .healthcheck_unsafe_interval(&self.healthcheck_unsafe_interval)
         .healthcheck_min_peer_count(&self.healthcheck_min_peer_count)
+        .log_level(self.log_level.as_deref().unwrap_or("DEBUG"))
         .extra_args(self.extra_args.clone())
         .build())
     }

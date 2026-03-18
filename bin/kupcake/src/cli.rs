@@ -298,6 +298,10 @@ pub struct SpamArgs {
     #[arg(long, default_value_t = 0)]
     pub target_node: usize,
 
+    /// Suppress receipt logging in contender.
+    #[arg(long, env = "KUP_QUIET_SERVICES")]
+    pub quiet_services: bool,
+
     /// Extra arguments to pass directly to contender (after --).
     #[arg(last = true)]
     pub extra_args: Vec<String>,
@@ -335,6 +339,7 @@ impl SpamArgs {
             contender_tag: self.contender_tag,
             rpc_url,
             extra_args: self.extra_args,
+            quiet: self.quiet_services,
         })
     }
 }
@@ -517,6 +522,28 @@ pub struct DeployArgs {
     #[arg(long, env = "KUP_PROOFS_VALIDATORS", default_value_t = 0)]
     pub proofs_validators: usize,
 
+    /// Docker log file max size (e.g., "10m"). Enables json-file log driver with rotation.
+    #[arg(long, env = "KUP_LOG_MAX_SIZE")]
+    pub log_max_size: Option<String>,
+
+    /// Max number of rotated Docker log files.
+    #[arg(long, env = "KUP_LOG_MAX_FILE")]
+    pub log_max_file: Option<String>,
+
+    /// Quiet verbose services: suppress anvil output, set services to INFO log level.
+    #[arg(long, env = "KUP_QUIET_SERVICES")]
+    pub quiet_services: bool,
+
+    /// Stream container logs to tracing::debug!() in background.
+    #[arg(long, env = "KUP_STREAM_LOGS")]
+    pub stream_logs: bool,
+
+    /// Shorthand for long-running sessions: --log-max-size=10m --log-max-file=3 --quiet-services.
+    ///
+    /// Explicit flags override the defaults set by --long-running.
+    #[arg(long, env = "KUP_LONG_RUNNING")]
+    pub long_running: bool,
+
     /// Deployment target for OP Stack contracts.
     ///
     /// - "live" (default): Anvil starts first, then op-deployer deploys contracts to the live L1.
@@ -582,6 +609,11 @@ impl Default for DeployArgs {
             no_challenger: false,
             flashblocks: false,
             proofs_validators: 0,
+            log_max_size: None,
+            log_max_file: None,
+            quiet_services: false,
+            stream_logs: false,
+            long_running: false,
             deployment_target: DeploymentTargetArg::Live,
             config: None,
             docker_images: DockerImageOverrides::default(),

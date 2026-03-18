@@ -548,6 +548,67 @@ docker ps  # Verify containers running
 
 Use `kupcake cleanup <network-name>` to stop later.
 
+#### `--log-max-size <SIZE>`
+
+Docker log file max size (e.g., `"10m"`). Enables json-file log driver with rotation.
+
+**Environment Variable**: `KUP_LOG_MAX_SIZE`
+
+**Example**:
+```bash
+kupcake --log-max-size 10m
+```
+
+#### `--log-max-file <COUNT>`
+
+Max number of rotated Docker log files.
+
+**Environment Variable**: `KUP_LOG_MAX_FILE`
+
+**Example**:
+```bash
+kupcake --log-max-size 10m --log-max-file 3
+```
+
+#### `--quiet-services`
+
+Quiet verbose services: suppress Anvil output (`--quiet`), set op-reth/kona-node/op-batcher/op-proposer/op-challenger/op-conductor to INFO log level, and reduce kona-node verbosity from debug (`-vvvv`) to info (`-vvv`).
+
+**Default**: `false`
+**Environment Variable**: `KUP_QUIET_SERVICES`
+
+**Example**:
+```bash
+kupcake --quiet-services
+```
+
+#### `--stream-logs`
+
+Stream container logs to `tracing::debug!()` in the background.
+
+**Default**: `false`
+**Environment Variable**: `KUP_STREAM_LOGS`
+
+**Example**:
+```bash
+kupcake --stream-logs -v debug
+```
+
+#### `--long-running`
+
+Shorthand for long-running sessions. Sets `--log-max-size=10m --log-max-file=3 --quiet-services`.
+
+Explicit flags override the defaults set by `--long-running`. `--stream-logs` is opt-in regardless.
+
+**Default**: `false`
+**Environment Variable**: `KUP_LONG_RUNNING`
+
+**Example**:
+```bash
+kupcake --long-running
+kupcake --long-running --log-max-size 50m  # Override log size
+```
+
 #### `--metrics-file <PATH>`
 
 Write deployment metrics to a TOML file after deployment completes.

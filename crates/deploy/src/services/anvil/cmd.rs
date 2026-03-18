@@ -25,6 +25,7 @@ pub struct AnvilCmdBuilder {
     config_out: Option<String>,
     timestamp: Option<u64>,
     fork_block_number: Option<u64>,
+    quiet: bool,
     extra_args: Vec<String>,
 }
 
@@ -41,6 +42,7 @@ impl AnvilCmdBuilder {
             config_out: None,
             timestamp: None,
             fork_block_number: None,
+            quiet: false,
             extra_args: Vec::new(),
         }
     }
@@ -90,6 +92,12 @@ impl AnvilCmdBuilder {
     /// Set the fork block number.
     pub fn fork_block_number(mut self, block_number: Option<u64>) -> Self {
         self.fork_block_number = block_number;
+        self
+    }
+
+    /// Suppress non-essential Anvil output.
+    pub fn quiet(mut self, quiet: bool) -> Self {
+        self.quiet = quiet;
         self
     }
 
@@ -155,6 +163,10 @@ impl AnvilCmdBuilder {
         if let Some(config_out) = self.config_out {
             cmd.push("--config-out".to_string());
             cmd.push(config_out);
+        }
+
+        if self.quiet {
+            cmd.push("--quiet".to_string());
         }
 
         cmd.extend(self.extra_args);

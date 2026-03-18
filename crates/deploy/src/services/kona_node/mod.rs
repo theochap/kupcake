@@ -295,6 +295,9 @@ pub struct KonaNodeBuilder {
     /// Port for the flashblocks relay server (sequencer kona-node only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flashblocks_relay_port: Option<u16>,
+    /// Verbosity flag (e.g., "-vvv" for info, "-vvvv" for debug).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<String>,
     /// Extra arguments to pass to kona-node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -319,6 +322,7 @@ impl Default for KonaNodeBuilder {
             p2p_secret_key: None,
             flashblocks_enabled: false,
             flashblocks_relay_port: None,
+            verbosity: None,
             extra_args: Vec::new(),
         }
     }
@@ -399,6 +403,7 @@ impl KonaNodeBuilder {
         .discovery(true)
         .bootnodes(input.bootnodes.clone())
         .p2p_priv_key(&p2p_keypair.private_key)
+        .verbosity(self.verbosity.as_deref().unwrap_or("-vvvv"))
         .extra_args(self.extra_args.clone());
 
         // For local/custom chains, add the L1 config file path.

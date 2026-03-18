@@ -28,6 +28,7 @@ pub struct KonaNodeCmdBuilder {
     conductor_rpc: Option<String>,
     /// Start sequencer in stopped state (for conductor-managed sequencers)
     sequencer_stopped: bool,
+    verbosity: String,
     extra_args: Vec<String>,
     /// Path to L1 chain config file (for custom/local L1 chains)
     l1_config_file: Option<String>,
@@ -69,6 +70,7 @@ impl KonaNodeCmdBuilder {
             unsafe_block_signer_key: None,
             conductor_rpc: None,
             sequencer_stopped: false,
+            verbosity: "-vvvv".to_string(),
             extra_args: Vec::new(),
             l1_config_file: None,
             flashblocks_enabled: false,
@@ -173,6 +175,12 @@ impl KonaNodeCmdBuilder {
     pub fn flashblocks_relay(mut self, host: impl Into<String>, port: u16) -> Self {
         self.flashblocks_host = Some(host.into());
         self.flashblocks_port = Some(port);
+        self
+    }
+
+    /// Set the verbosity flag (e.g., "-vvv" for info, "-vvvv" for debug).
+    pub fn verbosity(mut self, v: impl Into<String>) -> Self {
+        self.verbosity = v.into();
         self
     }
 
@@ -301,7 +309,7 @@ impl KonaNodeCmdBuilder {
             cmd.push(port.to_string());
         }
 
-        cmd.push("-vvvv".to_string());
+        cmd.push(self.verbosity);
         cmd.extend(self.extra_args);
 
         cmd

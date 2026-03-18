@@ -99,6 +99,9 @@ pub struct OpRethBuilder {
     /// Whether historical proofs ExEx is enabled.
     #[serde(default)]
     pub proofs_history: bool,
+    /// Log filter for stdout (e.g., "info", "debug").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_filter: Option<String>,
     /// Extra arguments to pass to op-reth.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -141,6 +144,7 @@ impl Default for OpRethBuilder {
             flashblocks_enabled: false,
             flashblocks_port: None,
             proofs_history: false,
+            log_filter: None,
             extra_args: Vec::new(),
         }
     }
@@ -235,6 +239,10 @@ impl OpRethBuilder {
         if self.proofs_history {
             let proofs_path = format!("/data/proofs-{}", self.container_name);
             cmd_builder = cmd_builder.proofs_history(proofs_path);
+        }
+
+        if let Some(ref filter) = self.log_filter {
+            cmd_builder = cmd_builder.log_filter(filter);
         }
 
         Ok(cmd_builder.build())

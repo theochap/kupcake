@@ -49,6 +49,9 @@ pub struct OpProposerBuilder {
     pub metrics_host_port: Option<u16>,
     /// Proposal interval.
     pub proposal_interval: String,
+    /// Log level for op-proposer (e.g., "INFO", "DEBUG").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
     /// Extra arguments to pass to op-proposer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -71,6 +74,7 @@ impl Default for OpProposerBuilder {
             rpc_host_port: None,
             metrics_host_port: None,
             proposal_interval: "12s".to_string(),
+            log_level: None,
             extra_args: Vec::new(),
         }
     }
@@ -97,7 +101,7 @@ impl OpProposerBuilder {
     ) -> Result<Vec<String>, anyhow::Error> {
         let dgf_address = super::read_dgf_address(host_config_path)?;
 
-        Ok(OpProposerCmdBuilder::new(
+        let mut cmd_builder = OpProposerCmdBuilder::new(
             input.l1_rpc_url.to_string(),
             input.rollup_rpc_url.to_string(),
             input.proposer_private_key.to_string(),
@@ -107,8 +111,13 @@ impl OpProposerBuilder {
         .proposal_interval(&self.proposal_interval)
         .rpc_port(self.rpc_port)
         .metrics(true, "0.0.0.0", self.metrics_port)
-        .extra_args(self.extra_args.clone())
-        .build())
+        .extra_args(self.extra_args.clone());
+
+        if let Some(ref level) = self.log_level {
+            cmd_builder = cmd_builder.log_level(level);
+        }
+
+        Ok(cmd_builder.build())
     }
 }
 

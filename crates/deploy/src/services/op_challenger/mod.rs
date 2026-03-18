@@ -45,6 +45,9 @@ pub struct OpChallengerBuilder {
     /// Host port for metrics. If None, not published to host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metrics_host_port: Option<u16>,
+    /// Log level for op-challenger (e.g., "INFO", "DEBUG").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
     /// Extra arguments to pass to op-challenger.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -64,6 +67,7 @@ impl Default for OpChallengerBuilder {
             host: "0.0.0.0".to_string(),
             metrics_port: DEFAULT_METRICS_PORT,
             metrics_host_port: Some(0),
+            log_level: None,
             extra_args: Vec::new(),
         }
     }
@@ -92,7 +96,7 @@ impl OpChallengerBuilder {
 
         let dgf_address = super::read_dgf_address(host_config_path)?;
 
-        Ok(OpChallengerCmdBuilder::new(
+        let mut cmd_builder = OpChallengerCmdBuilder::new(
             input.l1_rpc_url.to_string(),
             input.l2_rpc_url.to_string(),
             input.rollup_rpc_url.to_string(),
@@ -107,8 +111,13 @@ impl OpChallengerBuilder {
         .trace_type("permissioned")
         .game_allowlist([254]) // Permissioned game type
         .metrics(true, "0.0.0.0", self.metrics_port)
-        .extra_args(self.extra_args.clone())
-        .build())
+        .extra_args(self.extra_args.clone());
+
+        if let Some(ref level) = self.log_level {
+            cmd_builder = cmd_builder.log_level(level);
+        }
+
+        Ok(cmd_builder.build())
     }
 }
 
