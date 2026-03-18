@@ -15,9 +15,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use kupcake_deploy::{
-    DeployerBuilder, DeploymentTarget, KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG, KupDocker,
-    OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG, OutDataPath, cleanup_by_prefix, faucet, health,
-    rpc, services::SyncStatus,
+    CreateAndStartContainerOptions, DeployerBuilder, DeploymentTarget, DockerImage,
+    KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG, KupDocker, OP_RETH_DEFAULT_IMAGE,
+    OP_RETH_DEFAULT_TAG, OutDataPath, ServiceConfig, cleanup_by_prefix, faucet, health, rpc,
+    services::SyncStatus,
 };
 use serde_json::Value;
 use tokio::time::{sleep, timeout};
@@ -4783,5 +4784,106 @@ async fn test_long_running_log_management() -> Result<()> {
     cleanup_by_prefix(&ctx.network_name).await?;
 
     tracing::info!("=== Test passed! Long-running log management verified. ===");
+    Ok(())
+}
+
+/// Regression test: dropping a secondary KupDocker (e.g. from `kupcake spam`)
+/// must NOT tear down the devnet containers or remove the shared Docker network.
+///
+/// Previously, the Drop impl on KupDocker would call `ensure_containers_removed`
+/// which force-removed ALL containers on the network (not just the ones it started),
+/// and then removed the network itself — causing the entire devnet to fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_secondary_docker_drop_preserves_devnet() -> Result<()> {
+    let _permit = TEST_SEMAPHORE.acquire().await.context("test semaphore")?;
+    init_test_tracing();
+
+    let ctx = TestContext::new("drop-preserve");
+    tracing::info!(
+        "=== Starting secondary docker drop test with network: {} ===",
+        ctx.network_name
+    );
+
+    // Phase 1: Deploy a devnet
+    let deployer = ctx.build_deployer().await?;
+    deployer.save_config()?;
+
+    let (docker, deployment) = ctx.deploy(deployer).await?;
+
+    tracing::info!("=== Deployment complete. Waiting for nodes... ===");
+    wait_for_all_nodes(&deployment).await;
+
+    // Get L2 RPC URL and verify blocks are advancing
+    let l2_rpc_url = deployment.l2_stack.sequencers[0]
+        .op_reth
+        .http_host_url
+        .as_ref()
+        .context("Sequencer HTTP host URL not available")?
+        .to_string();
+    let block_before = get_block_number(&l2_rpc_url).await?;
+    tracing::info!(block_before, "Block number before secondary docker drop");
+
+    // Phase 2: Create a secondary KupDocker on the same network and drop it.
+    // This simulates what happens when `kupcake spam` finishes and its KupDocker
+    // is dropped — it should only remove the container it started, not the
+    // devnet containers or the network.
+    {
+        let reloaded =
+            kupcake_deploy::Deployer::load_from_file(&ctx.outdata_path.join("Kupcake.toml"))?;
+
+        let mut spam_docker = KupDocker::new(reloaded.docker.clone()).await?;
+
+        // Start a lightweight container (alpine sleep) to simulate the contender
+        let sidecar_name = format!("{}-sidecar", ctx.network_name);
+        let sidecar_config = ServiceConfig::new(DockerImage::new("alpine", "latest"))
+            .cmd(vec!["sleep".to_string(), "3600".to_string()]);
+        spam_docker
+            .start_service(
+                &sidecar_name,
+                sidecar_config,
+                CreateAndStartContainerOptions::default(),
+            )
+            .await
+            .context("Failed to start sidecar container")?;
+
+        tracing::info!("=== Dropping secondary KupDocker (sidecar)... ===");
+        // spam_docker is dropped here — must NOT tear down the devnet
+    }
+
+    // Phase 3: Verify the devnet is still alive
+    tracing::info!("=== Verifying devnet survived secondary docker drop... ===");
+
+    // Wait a few seconds for blocks to advance
+    sleep(Duration::from_secs(10)).await;
+
+    let block_after = get_block_number(&l2_rpc_url)
+        .await
+        .context("Sequencer RPC should still be reachable after secondary docker drop")?;
+
+    tracing::info!(block_before, block_after, "Block numbers before/after drop");
+
+    assert!(
+        block_after > block_before,
+        "Devnet should still be producing blocks after secondary docker drop \
+         (before: {}, after: {})",
+        block_before,
+        block_after,
+    );
+
+    // Verify the sidecar container was removed (the secondary docker DID clean it up)
+    let sidecar_check = Command::new("docker")
+        .args(["inspect", &format!("{}-sidecar", ctx.network_name)])
+        .output()?;
+    assert!(
+        !sidecar_check.status.success(),
+        "Sidecar container should have been removed by secondary docker drop"
+    );
+
+    // Cleanup
+    tracing::info!("=== Cleaning up... ===");
+    drop(docker);
+    cleanup_by_prefix(&ctx.network_name).await?;
+
+    tracing::info!("=== Test passed! Secondary docker drop preserved devnet. ===");
     Ok(())
 }

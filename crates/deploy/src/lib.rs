@@ -36,8 +36,9 @@ pub mod spam;
 pub use spam::SpamPreset;
 
 pub use docker::{
-    AnvilStateDumpConfig, CleanupResult, DockerImage, ExposedPort, KupDocker, KupDockerConfig,
-    PortMapping, PortProtocol, ServiceConfig, ServiceHandler, cleanup_by_prefix,
+    AnvilStateDumpConfig, CleanupResult, CreateAndStartContainerOptions, DockerImage, ExposedPort,
+    KupDocker, KupDockerConfig, PortMapping, PortProtocol, ServiceConfig, ServiceHandler,
+    cleanup_by_prefix,
 };
 pub use services::{
     // Docker image defaults
