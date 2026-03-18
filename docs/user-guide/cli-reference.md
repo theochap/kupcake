@@ -250,11 +250,16 @@ Determines:
 - Docker network name (`<NAME>-network`)
 - Data directory name (`./data-<NAME>/`)
 
+If `./data-<NAME>/Kupcake.toml` already exists, the saved configuration is loaded automatically (equivalent to `--config data-<NAME>/Kupcake.toml`). This allows redeploying an existing network by name without needing the `--config` flag.
+
 **Examples**:
 ```bash
 kupcake --network my-testnet
 kupcake -n production-l2
 export KUP_NETWORK_NAME=my-network && kupcake
+
+# Redeploy an existing network by name
+kupcake deploy --network my-testnet  # auto-loads ./data-my-testnet/Kupcake.toml
 ```
 
 #### `--l1 <SOURCE>`
