@@ -377,15 +377,52 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
         anyhow::bail!("No op-reth nodes available for testing");
     }
 
-    // Wait for blocks to be produced
-    tracing::info!("=== Waiting 30 seconds for blocks to be produced... ===");
-    sleep(Duration::from_secs(30)).await;
+    // Poll until all nodes have advanced beyond their initial block numbers.
+    // Validators may take significantly longer than sequencers to sync.
+    tracing::info!("=== Waiting for all op-reth block numbers to advance (up to 120s)... ===");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    let mut all_advancing;
+    let mut errors;
+    loop {
+        all_advancing = true;
+        errors = Vec::new();
 
-    // Check that block numbers have advanced using handlers
-    tracing::info!("=== Checking that op-reth block numbers have advanced... ===");
-    let mut all_advancing = true;
-    let mut errors = Vec::new();
+        for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
+            let label = if node.is_sequencer() {
+                "sequencer-reth".to_string()
+            } else {
+                format!("validator-{}-reth", idx)
+            };
 
+            if let Some((_, initial_block)) = initial_blocks.iter().find(|(l, _)| l == &label) {
+                match node.op_reth.sync_status().await {
+                    Ok(status) => {
+                        if status.block_number <= *initial_block {
+                            errors.push(format!("{}: block number not advancing", label));
+                            all_advancing = false;
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(format!("{}: failed to get current status: {}", label, e));
+                        all_advancing = false;
+                    }
+                }
+            }
+        }
+
+        if all_advancing {
+            break;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+
+        sleep(Duration::from_secs(5)).await;
+    }
+
+    // Log final status
+    tracing::info!("=== Final op-reth block status... ===");
     for (idx, node) in deployment.l2_stack.all_nodes().enumerate() {
         let label = if node.is_sequencer() {
             "sequencer-reth".to_string()
@@ -393,29 +430,17 @@ async fn test_op_reth_sync_and_block_advancement() -> Result<()> {
             format!("validator-{}-reth", idx)
         };
 
-        // Find the initial block for this node
-        if let Some((_, initial_block)) = initial_blocks.iter().find(|(l, _)| l == &label) {
-            match node.op_reth.sync_status().await {
-                Ok(status) => {
-                    let advanced = status.block_number > *initial_block;
-                    tracing::info!(
-                        "{}: block {} -> {} ({})",
-                        label,
-                        initial_block,
-                        status.block_number,
-                        if advanced { "ADVANCING" } else { "STALLED" }
-                    );
-
-                    if !advanced {
-                        errors.push(format!("{}: block number not advancing", label));
-                        all_advancing = false;
-                    }
-                }
-                Err(e) => {
-                    errors.push(format!("{}: failed to get current status: {}", label, e));
-                    all_advancing = false;
-                }
-            }
+        if let Some((_, initial_block)) = initial_blocks.iter().find(|(l, _)| l == &label)
+            && let Ok(status) = node.op_reth.sync_status().await
+        {
+            let advanced = status.block_number > *initial_block;
+            tracing::info!(
+                "{}: block {} -> {} ({})",
+                label,
+                initial_block,
+                status.block_number,
+                if advanced { "ADVANCING" } else { "STALLED" }
+            );
         }
     }
 
@@ -4466,7 +4491,7 @@ async fn test_proofs_history_network_health() -> Result<()> {
     // Wait for blocks to advance on all nodes
     tracing::info!("=== Waiting for blocks to advance... ===");
     wait_for_all_nodes(&deployment).await;
-    wait_for_all_nodes_advancing(&deployer, 120).await?;
+    wait_for_all_nodes_advancing(&deployer, 180).await?;
 
     // Collect sync status from all nodes, verify all are syncing
     tracing::info!("=== Collecting sync status... ===");

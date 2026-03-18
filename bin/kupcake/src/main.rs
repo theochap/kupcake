@@ -211,6 +211,38 @@ fn apply_image_overrides(
         .op_rbuilder_tag(images.op_rbuilder_tag.clone())
 }
 
+/// Resolve the config path for a deploy command.
+///
+/// Priority:
+/// 1. Explicit `--config` flag → use that path directly
+/// 2. `--network` name with an existing `data-{name}/Kupcake.toml` → auto-load it
+/// 3. Neither → returns `None` (new deployment)
+fn resolve_deploy_config(config: Option<&str>, network: Option<&str>) -> Option<PathBuf> {
+    if let Some(config) = config {
+        return Some(PathBuf::from(config));
+    }
+
+    // When --network is given without --config, check if a saved config exists
+    network.and_then(|name| {
+        let candidate = resolve_config_path(name);
+        let config_file = if candidate.is_dir() {
+            candidate.join("Kupcake.toml")
+        } else {
+            candidate
+        };
+        if config_file.exists() {
+            tracing::info!(
+                network = %name,
+                config = %config_file.display(),
+                "Found existing deployment, loading saved configuration"
+            );
+            Some(config_file)
+        } else {
+            None
+        }
+    })
+}
+
 async fn run_deploy(args: DeployArgs) -> Result<()> {
     // Parse spam preset early so we fail fast on invalid names
     let spam_preset = args
@@ -234,9 +266,10 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
     let metrics_file = args.metrics_file.as_ref().map(PathBuf::from);
     let ports_file = args.ports_file.as_ref().map(PathBuf::from);
 
-    // If a config file is provided, load it and deploy
-    if let Some(config_path) = &args.config {
-        let config_path = PathBuf::from(config_path);
+    // If a config file is provided, or a --network name matches an existing deployment, load it
+    let resolved_config = resolve_deploy_config(args.config.as_deref(), args.network.as_deref());
+
+    if let Some(config_path) = resolved_config {
         let mut deployer = Deployer::load_from_file(&config_path)?;
 
         tracing::info!(
@@ -490,4 +523,56 @@ async fn fetch_chain_id(rpc_url: &str) -> Result<u64> {
         .context("Failed to parse chain ID from hex")?;
 
     Ok(chain_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_resolve_deploy_config_explicit_config() {
+        // --config always wins, even if the file doesn't exist
+        let result = resolve_deploy_config(Some("./my-config.toml"), None);
+        assert_eq!(result, Some(PathBuf::from("./my-config.toml")));
+    }
+
+    #[test]
+    fn test_resolve_deploy_config_explicit_config_over_network() {
+        // --config takes priority over --network
+        let result = resolve_deploy_config(Some("./my-config.toml"), Some("my-network"));
+        assert_eq!(result, Some(PathBuf::from("./my-config.toml")));
+    }
+
+    #[test]
+    fn test_resolve_deploy_config_network_no_existing_dir() {
+        // --network with no existing data directory returns None (new deployment)
+        let result = resolve_deploy_config(None, Some("nonexistent-network-12345"));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_deploy_config_network_with_existing_config() {
+        // --network with an existing data-{name}/Kupcake.toml auto-loads it
+        let network_name = format!("test-kupcake-{}", std::process::id());
+
+        // Create a data-{name} directory with a Kupcake.toml in the current dir
+        let data_dir = PathBuf::from(format!("data-{}", network_name));
+        fs::create_dir_all(&data_dir).unwrap();
+        let config_file = data_dir.join("Kupcake.toml");
+        fs::write(&config_file, "# placeholder").unwrap();
+
+        let result = resolve_deploy_config(None, Some(&network_name));
+        assert_eq!(result, Some(config_file));
+
+        // Cleanup
+        fs::remove_dir_all(&data_dir).unwrap();
+    }
+
+    #[test]
+    fn test_resolve_deploy_config_none_when_no_args() {
+        // No --config and no --network returns None
+        let result = resolve_deploy_config(None, None);
+        assert_eq!(result, None);
+    }
 }
