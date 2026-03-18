@@ -508,6 +508,15 @@ pub struct DeployArgs {
     #[arg(long, env = "KUP_FLASHBLOCKS")]
     pub flashblocks: bool,
 
+    /// Number of validators with historical proofs ExEx enabled.
+    ///
+    /// The first N validators will have the proofs history ExEx enabled,
+    /// which stores versioned trie nodes in a sidecar MDBX database for
+    /// fast `eth_getProof` on recent historical blocks.
+    /// Requires op-reth v1.11.3+.
+    #[arg(long, env = "KUP_PROOFS_VALIDATORS", default_value_t = 0)]
+    pub proofs_validators: usize,
+
     /// Deployment target for OP Stack contracts.
     ///
     /// - "live" (default): Anvil starts first, then op-deployer deploys contracts to the live L1.
@@ -572,6 +581,7 @@ impl Default for DeployArgs {
             no_proposer: false,
             no_challenger: false,
             flashblocks: false,
+            proofs_validators: 0,
             deployment_target: DeploymentTargetArg::Live,
             config: None,
             docker_images: DockerImageOverrides::default(),

@@ -228,6 +228,16 @@ kupcake
 # Sequencers use op-rbuilder instead of op-reth
 ```
 
+### `KUP_PROOFS_VALIDATORS`
+
+Number of additional validators with the historical proofs ExEx enabled.
+
+```bash
+export KUP_PROOFS_VALIDATORS=1
+kupcake
+# One extra validator with --proofs-history enabled
+```
+
 ### `KUP_CONFIG`
 
 Path to configuration file.

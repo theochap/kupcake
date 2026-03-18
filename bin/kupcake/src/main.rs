@@ -315,6 +315,7 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         .no_proposer(args.no_proposer)
         .no_challenger(args.no_challenger)
         .flashblocks(args.flashblocks)
+        .proofs_validators(args.proofs_validators)
         .maybe_snapshot(args.snapshot.map(PathBuf::from))
         .copy_snapshot(args.copy_snapshot)
         .op_rbuilder_image(args.docker_images.op_rbuilder_image)

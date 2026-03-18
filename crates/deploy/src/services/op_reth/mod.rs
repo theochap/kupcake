@@ -96,6 +96,9 @@ pub struct OpRethBuilder {
     /// Port for the flashblocks WebSocket server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flashblocks_port: Option<u16>,
+    /// Whether historical proofs ExEx is enabled.
+    #[serde(default)]
+    pub proofs_history: bool,
     /// Extra arguments to pass to op-reth.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -137,6 +140,7 @@ impl Default for OpRethBuilder {
             rpc_max_connections: Some(1_000_000),
             flashblocks_enabled: false,
             flashblocks_port: None,
+            proofs_history: false,
             extra_args: Vec::new(),
         }
     }
@@ -228,6 +232,11 @@ impl OpRethBuilder {
             cmd_builder = cmd_builder.flashblocks(flashblocks_port);
         }
 
+        if self.proofs_history {
+            let proofs_path = format!("/data/proofs-{}", self.container_name);
+            cmd_builder = cmd_builder.proofs_history(proofs_path);
+        }
+
         Ok(cmd_builder.build())
     }
 }
@@ -259,6 +268,63 @@ impl KupcakeService for OpRethBuilder {
             node_id = %p2p_keypair.node_id,
             "Using P2P keypair for op-reth"
         );
+
+        // Run proofs history initialization if enabled
+        if self.proofs_history {
+            let container_config_path_str = container_config_path.display().to_string();
+            let chain_path = format!("{}/genesis.json", container_config_path_str);
+            let datadir = format!(
+                "{}/reth-data-{}",
+                container_config_path_str, self.container_name
+            );
+            let proofs_path = format!(
+                "{}/proofs-{}",
+                container_config_path_str, self.container_name
+            );
+
+            // Step 1: `op-reth init` — create reth DB from genesis
+            tracing::info!(
+                container_name = %self.container_name,
+                "Initializing reth DB from genesis for proofs history"
+            );
+            let init_config = ServiceConfig::new(self.docker_image.clone())
+                .cmd(vec![
+                    "init".to_string(),
+                    "--chain".to_string(),
+                    chain_path.clone(),
+                    "--datadir".to_string(),
+                    datadir.clone(),
+                ])
+                .bind(host_config_path, &container_config_path, "rw");
+
+            docker
+                .run_command(init_config)
+                .await
+                .context("Failed to run `op-reth init` for proofs history")?;
+
+            // Step 2: `op-reth proofs init` — snapshot genesis state into proofs sidecar DB
+            tracing::info!(
+                container_name = %self.container_name,
+                "Initializing proofs history sidecar DB"
+            );
+            let proofs_init_config = ServiceConfig::new(self.docker_image.clone())
+                .cmd(vec![
+                    "proofs".to_string(),
+                    "init".to_string(),
+                    "--chain".to_string(),
+                    chain_path,
+                    "--datadir".to_string(),
+                    datadir,
+                    "--proofs-history.storage-path".to_string(),
+                    proofs_path,
+                ])
+                .bind(host_config_path, &container_config_path, "rw");
+
+            docker
+                .run_command(proofs_init_config)
+                .await
+                .context("Failed to run `op-reth proofs init` for proofs history")?;
+        }
 
         let cmd = self.build_cmd(host_config_path, &input)?;
 

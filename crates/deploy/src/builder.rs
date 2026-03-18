@@ -140,6 +140,9 @@ pub struct DeployerBuilder {
     /// Whether flashblocks support is enabled.
     flashblocks: bool,
 
+    /// Number of validators with historical proofs ExEx enabled.
+    proofs_validators: usize,
+
     /// Path to a snapshot directory for restoring from an existing op-reth database.
     snapshot: Option<PathBuf>,
     /// When true, copy the snapshot reth database instead of symlinking it.
@@ -190,6 +193,7 @@ impl DeployerBuilder {
             l2_node_count: 1,
             sequencer_count: 1,
             flashblocks: false,
+            proofs_validators: 0,
             snapshot: None,
             copy_snapshot: false,
             deployment_target: crate::DeploymentTarget::default(),
@@ -354,6 +358,15 @@ impl DeployerBuilder {
     /// Enable or disable flashblocks support.
     pub fn flashblocks(mut self, enabled: bool) -> Self {
         self.flashblocks = enabled;
+        self
+    }
+
+    /// Set the number of validators with historical proofs ExEx enabled.
+    ///
+    /// The first `count` validators will have proofs history enabled.
+    /// Defaults to 0 (no validators with proofs history).
+    pub fn proofs_validators(mut self, count: usize) -> Self {
+        self.proofs_validators = count;
         self
     }
 
@@ -874,7 +887,7 @@ impl DeployerBuilder {
                 }
 
                 // Build validator nodes (no conductors)
-                let mut validators = Vec::with_capacity(validator_count);
+                let mut validators = Vec::with_capacity(validator_count + self.proofs_validators);
                 for i in 0..validator_count {
                     validators.push(L2NodeBuilder {
                         role: L2NodeRole::Validator,
@@ -898,6 +911,34 @@ impl DeployerBuilder {
                                 None
                             },
                             // Validators consume flashblocks but don't relay them
+                            flashblocks_enabled: self.flashblocks,
+                            ..Default::default()
+                        },
+                        op_conductor: None,
+                    });
+                }
+
+                // Build additional validator nodes with proofs history ExEx enabled
+                for i in 0..self.proofs_validators {
+                    let idx = validator_count + i + 1;
+                    validators.push(L2NodeBuilder {
+                        role: L2NodeRole::Validator,
+                        op_reth: OpRethBuilder {
+                            docker_image: self.op_reth_docker.clone(),
+                            container_name: format!("{}-op-reth-validator-{}", network_name, idx),
+                            proofs_history: true,
+                            ..Default::default()
+                        },
+                        kona_node: KonaNodeBuilder {
+                            docker_image: self.kona_node_docker.clone(),
+                            container_name: format!("{}-kona-node-validator-{}", network_name, idx),
+                            l1_slot_duration: self.block_time,
+                            rpc_host_port: Some(0),
+                            metrics_host_port: if self.publish_all_ports {
+                                Some(0)
+                            } else {
+                                None
+                            },
                             flashblocks_enabled: self.flashblocks,
                             ..Default::default()
                         },

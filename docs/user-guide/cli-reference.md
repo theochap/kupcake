@@ -793,6 +793,27 @@ kupcake --flashblocks --l2-nodes 3 --sequencer-count 1
 kupcake --flashblocks --op-rbuilder-tag v0.4.0
 ```
 
+#### `--proofs-validators <N>`
+
+Number of additional validators with the historical proofs ExEx enabled.
+
+**Default**: `0`
+**Environment Variable**: `KUP_PROOFS_VALIDATORS`
+
+**Behavior**:
+- Adds N new validator nodes with `--proofs-history` enabled on their op-reth instances
+- Before starting each proofs-enabled validator, two init containers run:
+  1. `op-reth init` — creates the reth DB from genesis
+  2. `op-reth proofs init` — snapshots current DB state into the proofs sidecar MDBX database
+- The proofs-enabled validators can serve fast `eth_getProof` for recent historical blocks
+- Requires op-reth v1.11.3+
+
+**Examples**:
+```bash
+kupcake --proofs-validators 1
+kupcake --proofs-validators 2 --l2-nodes 3
+```
+
 ### Configuration File
 
 #### `--config <PATH>`
