@@ -158,6 +158,9 @@ pub struct AnvilConfig {
     pub timestamp: Option<u64>,
     /// Fork block number.
     pub fork_block_number: Option<u64>,
+    /// Suppress non-essential Anvil output.
+    #[serde(default)]
+    pub quiet: bool,
     /// Extra arguments to pass to Anvil.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
@@ -175,6 +178,7 @@ impl Default for AnvilConfig {
             fork_url: None,
             timestamp: None,
             fork_block_number: None,
+            quiet: false,
             extra_args: Vec::new(),
         }
     }
@@ -212,6 +216,7 @@ impl AnvilConfig {
             .block_time(self.block_time)
             .timestamp(self.timestamp)
             .fork_block_number(self.fork_block_number)
+            .quiet(self.quiet)
             .extra_args(self.extra_args.clone());
 
         if let Some(ref mode) = input.init_mode {

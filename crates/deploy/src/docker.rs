@@ -389,6 +389,15 @@ pub struct KupDockerConfig {
     /// Whether to publish all exposed ports to random host ports.
     #[serde(default)]
     pub publish_all_ports: bool,
+    /// Docker log file max size (e.g., "10m"). When set, uses json-file driver with rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_max_size: Option<String>,
+    /// Max number of rotated log files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_max_file: Option<String>,
+    /// Stream container logs to tracing::debug!() in background.
+    #[serde(default)]
+    pub stream_logs: bool,
 }
 
 /// Configuration for dumping Anvil state before cleanup.
@@ -1361,6 +1370,24 @@ ENTRYPOINT [\"/binary\"]
         Ok(bound_ports)
     }
 
+    /// Build Docker log configuration for container log rotation.
+    fn build_log_config(&self) -> Option<bollard::models::HostConfigLogConfig> {
+        if self.config.log_max_size.is_none() && self.config.log_max_file.is_none() {
+            return None;
+        }
+        let mut config = HashMap::new();
+        if let Some(ref size) = self.config.log_max_size {
+            config.insert("max-size".to_string(), size.clone());
+        }
+        if let Some(ref file) = self.config.log_max_file {
+            config.insert("max-file".to_string(), file.clone());
+        }
+        Some(bollard::models::HostConfigLogConfig {
+            typ: Some("json-file".to_string()),
+            config: Some(config),
+        })
+    }
+
     /// Build Docker container configuration from a ServiceConfig.
     fn build_container_config(
         &self,
@@ -1414,6 +1441,7 @@ ENTRYPOINT [\"/binary\"]
             network_mode: Some(self.network_id.clone()),
             auto_remove: options.auto_remove.then_some(true),
             publish_all_ports: self.config.publish_all_ports.then_some(true),
+            log_config: self.build_log_config(),
             ..Default::default()
         };
 

@@ -17,6 +17,7 @@ pub struct OpChallengerCmdBuilder {
     metrics_enabled: bool,
     metrics_addr: String,
     metrics_port: u16,
+    log_level: Option<String>,
     extra_args: Vec<String>,
 }
 
@@ -46,6 +47,7 @@ impl OpChallengerCmdBuilder {
             metrics_enabled: true,
             metrics_addr: "0.0.0.0".to_string(),
             metrics_port: 7303,
+            log_level: None,
             extra_args: Vec::new(),
         }
     }
@@ -78,6 +80,12 @@ impl OpChallengerCmdBuilder {
         self.metrics_enabled = enabled;
         self.metrics_addr = addr.into();
         self.metrics_port = port;
+        self
+    }
+
+    /// Set the log level.
+    pub fn log_level(mut self, level: impl Into<String>) -> Self {
+        self.log_level = Some(level.into());
         self
     }
 
@@ -132,6 +140,11 @@ impl OpChallengerCmdBuilder {
             cmd.push(self.metrics_addr);
             cmd.push("--metrics.port".to_string());
             cmd.push(self.metrics_port.to_string());
+        }
+
+        if let Some(level) = self.log_level {
+            cmd.push("--log.level".to_string());
+            cmd.push(level);
         }
 
         cmd.extend(self.extra_args);

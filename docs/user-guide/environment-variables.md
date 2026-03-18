@@ -117,6 +117,51 @@ kupcake
 # Deploys and exits immediately
 ```
 
+### `KUP_LOG_MAX_SIZE`
+
+Docker log file max size (e.g., "10m"). Enables json-file log driver with rotation.
+
+```bash
+export KUP_LOG_MAX_SIZE=10m
+kupcake
+```
+
+### `KUP_LOG_MAX_FILE`
+
+Max number of rotated Docker log files.
+
+```bash
+export KUP_LOG_MAX_FILE=3
+kupcake
+```
+
+### `KUP_QUIET_SERVICES`
+
+Quiet verbose services: suppress Anvil output, set services to INFO log level.
+
+```bash
+export KUP_QUIET_SERVICES=true
+kupcake
+```
+
+### `KUP_STREAM_LOGS`
+
+Stream container logs to tracing::debug!() in background.
+
+```bash
+export KUP_STREAM_LOGS=true
+kupcake -v debug
+```
+
+### `KUP_LONG_RUNNING`
+
+Shorthand for long-running sessions: --log-max-size=10m --log-max-file=3 --quiet-services.
+
+```bash
+export KUP_LONG_RUNNING=true
+kupcake
+```
+
 ### `KUP_METRICS_FILE`
 
 Write deployment metrics to a TOML file after deployment completes.

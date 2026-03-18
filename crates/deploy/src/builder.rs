@@ -159,6 +159,15 @@ pub struct DeployerBuilder {
     /// Optional path to an external state file for Anvil to load via `--load-state`.
     override_state: Option<PathBuf>,
 
+    /// Docker log file max size (e.g., "10m").
+    log_max_size: Option<String>,
+    /// Max number of rotated log files.
+    log_max_file: Option<String>,
+    /// Whether to quiet verbose services.
+    quiet_services: bool,
+    /// Whether to stream container logs to tracing::debug!().
+    stream_logs: bool,
+
     // Docker images
     anvil_docker: DockerImage,
     op_reth_docker: DockerImage,
@@ -200,6 +209,10 @@ impl DeployerBuilder {
             no_proposer: false,
             no_challenger: false,
             override_state: None,
+            log_max_size: None,
+            log_max_file: None,
+            quiet_services: false,
+            stream_logs: false,
             anvil_docker: DockerImage::new(ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG),
             op_reth_docker: DockerImage::new(OP_RETH_DEFAULT_IMAGE, OP_RETH_DEFAULT_TAG),
             kona_node_docker: DockerImage::new(KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG),
@@ -421,6 +434,46 @@ impl DeployerBuilder {
     /// Disable op-challenger deployment.
     pub fn no_challenger(mut self, no_challenger: bool) -> Self {
         self.no_challenger = no_challenger;
+        self
+    }
+
+    /// Set Docker log file max size (e.g., "10m").
+    pub fn log_max_size(mut self, size: impl Into<String>) -> Self {
+        self.log_max_size = Some(size.into());
+        self
+    }
+
+    /// Set Docker log file max size if `Some`, otherwise do nothing.
+    pub fn maybe_log_max_size(mut self, size: Option<String>) -> Self {
+        if let Some(s) = size {
+            self.log_max_size = Some(s);
+        }
+        self
+    }
+
+    /// Set max number of rotated log files.
+    pub fn log_max_file(mut self, file: impl Into<String>) -> Self {
+        self.log_max_file = Some(file.into());
+        self
+    }
+
+    /// Set max number of rotated log files if `Some`, otherwise do nothing.
+    pub fn maybe_log_max_file(mut self, file: Option<String>) -> Self {
+        if let Some(f) = file {
+            self.log_max_file = Some(f);
+        }
+        self
+    }
+
+    /// Set quiet mode for verbose services.
+    pub fn quiet_services(mut self, quiet: bool) -> Self {
+        self.quiet_services = quiet;
+        self
+    }
+
+    /// Set whether to stream container logs to tracing::debug!().
+    pub fn stream_logs(mut self, stream: bool) -> Self {
+        self.stream_logs = stream;
         self
     }
 
@@ -802,6 +855,7 @@ impl DeployerBuilder {
                 timestamp: genesis_timestamp,
                 fork_block_number,
                 block_time: self.block_time,
+                quiet: self.quiet_services,
                 ..Default::default()
             },
 
@@ -809,6 +863,9 @@ impl DeployerBuilder {
                 net_name: format!("{}-network", network_name),
                 no_cleanup: self.no_cleanup,
                 publish_all_ports: self.publish_all_ports,
+                log_max_size: self.log_max_size,
+                log_max_file: self.log_max_file,
+                stream_logs: self.stream_logs,
             },
 
             op_deployer: OpDeployerConfig {
@@ -844,6 +901,7 @@ impl DeployerBuilder {
                                 "{}-op-conductor{}",
                                 network_name, conductor_suffix
                             ),
+                            log_level: self.quiet_services.then(|| "INFO".to_string()),
                             ..Default::default()
                         })
                     } else {
@@ -864,6 +922,7 @@ impl DeployerBuilder {
                             container_name: format!("{}-op-reth{}", network_name, suffix),
                             flashblocks_enabled: self.flashblocks,
                             flashblocks_port: self.flashblocks.then_some(DEFAULT_FLASHBLOCKS_PORT),
+                            log_filter: self.quiet_services.then(|| "info".to_string()),
                             ..Default::default()
                         },
                         kona_node: KonaNodeBuilder {
@@ -880,6 +939,7 @@ impl DeployerBuilder {
                             flashblocks_relay_port: self
                                 .flashblocks
                                 .then_some(DEFAULT_FLASHBLOCKS_RELAY_PORT),
+                            verbosity: self.quiet_services.then(|| "-vvv".to_string()),
                             ..Default::default()
                         },
                         op_conductor,
@@ -894,6 +954,7 @@ impl DeployerBuilder {
                         op_reth: OpRethBuilder {
                             docker_image: self.op_reth_docker.clone(),
                             container_name: format!("{}-op-reth-validator-{}", network_name, i + 1),
+                            log_filter: self.quiet_services.then(|| "info".to_string()),
                             ..Default::default()
                         },
                         kona_node: KonaNodeBuilder {
@@ -912,6 +973,7 @@ impl DeployerBuilder {
                             },
                             // Validators consume flashblocks but don't relay them
                             flashblocks_enabled: self.flashblocks,
+                            verbosity: self.quiet_services.then(|| "-vvv".to_string()),
                             ..Default::default()
                         },
                         op_conductor: None,
@@ -927,6 +989,7 @@ impl DeployerBuilder {
                             docker_image: self.op_reth_docker.clone(),
                             container_name: format!("{}-op-reth-validator-{}", network_name, idx),
                             proofs_history: true,
+                            log_filter: self.quiet_services.then(|| "info".to_string()),
                             ..Default::default()
                         },
                         kona_node: KonaNodeBuilder {
@@ -940,6 +1003,7 @@ impl DeployerBuilder {
                                 None
                             },
                             flashblocks_enabled: self.flashblocks,
+                            verbosity: self.quiet_services.then(|| "-vvv".to_string()),
                             ..Default::default()
                         },
                         op_conductor: None,
@@ -952,6 +1016,7 @@ impl DeployerBuilder {
                     op_batcher: OpBatcherBuilder {
                         docker_image: self.op_batcher_docker,
                         container_name: format!("{}-op-batcher", network_name),
+                        log_level: self.quiet_services.then(|| "INFO".to_string()),
                         ..Default::default()
                     },
                     op_proposer: if self.no_proposer {
@@ -960,6 +1025,7 @@ impl DeployerBuilder {
                         Some(OpProposerBuilder {
                             docker_image: self.op_proposer_docker,
                             container_name: format!("{}-op-proposer", network_name),
+                            log_level: self.quiet_services.then(|| "INFO".to_string()),
                             ..Default::default()
                         })
                     },
@@ -969,6 +1035,7 @@ impl DeployerBuilder {
                         Some(OpChallengerBuilder {
                             docker_image: self.op_challenger_docker,
                             container_name: format!("{}-op-challenger", network_name),
+                            log_level: self.quiet_services.then(|| "INFO".to_string()),
                             ..Default::default()
                         })
                     },

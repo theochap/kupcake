@@ -279,6 +279,16 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
     // Force no_cleanup when spam (containers stay alive during spam) or detach mode
     let no_cleanup = spam_preset.is_some() || args.no_cleanup || args.detach;
 
+    // Resolve --long-running defaults (explicit flags override)
+    let log_max_size = args
+        .log_max_size
+        .or_else(|| args.long_running.then(|| "10m".into()));
+    let log_max_file = args
+        .log_max_file
+        .or_else(|| args.long_running.then(|| "3".into()));
+    let quiet_services = args.quiet_services || args.long_running;
+    let stream_logs = args.stream_logs;
+
     // Create a new deployment from CLI arguments
     let mut deployer_builder = DeployerBuilder::new(l1_chain_id)
         .maybe_l2_chain_id(args.l2_chain.map(|c| c.chain_id()))
@@ -297,6 +307,10 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         .maybe_genesis_timestamp(args.genesis_timestamp)
         .l2_node_count(args.l2_nodes)
         .sequencer_count(args.sequencer_count)
+        .maybe_log_max_size(log_max_size)
+        .maybe_log_max_file(log_max_file)
+        .quiet_services(quiet_services)
+        .stream_logs(stream_logs)
         // Docker images
         .anvil_image(args.docker_images.anvil_image)
         .anvil_tag(args.docker_images.anvil_tag)
