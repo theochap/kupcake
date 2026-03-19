@@ -220,6 +220,9 @@ impl AnvilConfig {
             .extra_args(self.extra_args.clone());
 
         if let Some(ref mode) = input.init_mode {
+            if matches!(mode, AnvilInitMode::LoadState(_)) {
+                cmd_builder = cmd_builder.no_mining(true);
+            }
             cmd_builder = cmd_builder.init_mode(mode.clone());
         }
 
@@ -315,6 +318,43 @@ impl KupcakeService for AnvilConfig {
             ?l1_host_url,
             "Anvil container started"
         );
+
+        // When restoring state, align Anvil's clock to the chain tip and start mining.
+        // Without this, the first block after restore would have a large timestamp gap
+        // (wall-clock time vs last block time), causing L2 derivation stalls.
+        if matches!(input.init_mode, Some(AnvilInitMode::LoadState(_)))
+            && let Some(ref host_url) = l1_host_url
+        {
+            let url_str = host_url.as_str();
+
+            // Wait for Anvil to finish loading state and start serving RPC.
+            // Port binding happens before state is fully loaded, so we must poll.
+            crate::rpc::wait_until_ready("Anvil (state restore)", 60, || async {
+                crate::rpc::get_latest_block_timestamp(url_str)
+                    .await
+                    .map(|_| ())
+            })
+            .await
+            .context("Anvil RPC not ready after state restore")?;
+
+            let latest_timestamp = crate::rpc::get_latest_block_timestamp(url_str)
+                .await
+                .context("Failed to get latest block timestamp for clock alignment")?;
+
+            crate::rpc::anvil_set_time(url_str, latest_timestamp)
+                .await
+                .context("Failed to align Anvil clock after state restore")?;
+
+            crate::rpc::evm_set_interval_mining(url_str, self.block_time)
+                .await
+                .context("Failed to enable interval mining after state restore")?;
+
+            tracing::info!(
+                latest_timestamp,
+                block_time = self.block_time,
+                "Aligned Anvil clock and started mining after state restore"
+            );
+        }
 
         Ok(AnvilHandler {
             container_id: handler.container_id,
