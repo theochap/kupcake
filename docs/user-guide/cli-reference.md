@@ -216,6 +216,103 @@ kupcake cleanup <PREFIX>
 kupcake cleanup my-network
 ```
 
+### `node`
+
+Manage L2 nodes on a running network. Add, remove, pause, unpause, or restart individual L2 nodes without restarting the entire stack.
+
+```bash
+kupcake node <CONFIG> <ACTION>
+```
+
+**Arguments**:
+- `<CONFIG>` - Network name or path to `Kupcake.toml` / outdata directory
+
+**Actions**:
+
+#### `node add`
+
+Add a new validator node to the network. The new node connects to existing peers via P2P and begins syncing from the sequencer. Updates `Kupcake.toml` with the new node configuration.
+
+```bash
+kupcake node my-network add
+```
+
+#### `node remove <IDENTIFIER>`
+
+Remove a node from the network. Stops and removes the node's containers and updates `Kupcake.toml`. The primary sequencer cannot be removed.
+
+```bash
+kupcake node my-network remove validator-1
+kupcake node my-network remove validator-2 --cleanup-data  # Also remove data directories
+```
+
+**Options**:
+- `--cleanup-data` - Also remove the node's reth data directory and JWT file
+
+#### `node pause <IDENTIFIER>`
+
+Pause a node using Docker pause (freezes the process in place). No config changes.
+
+```bash
+kupcake node my-network pause validator-1
+```
+
+#### `node unpause <IDENTIFIER>`
+
+Unpause a previously paused node.
+
+```bash
+kupcake node my-network unpause validator-1
+```
+
+#### `node restart <IDENTIFIER>`
+
+Restart a node using Docker restart (stop + start). No config changes.
+
+```bash
+kupcake node my-network restart validator-1
+```
+
+**Node Identifiers**:
+- `sequencer` — the primary sequencer (index 0)
+- `sequencer-N` — sequencer at index N (0-based)
+- `validator-N` — validator at index N (1-based)
+
+### `status`
+
+Show the status of a deployed network. Lists all containers and their current Docker state (running, paused, stopped, not found).
+
+```bash
+kupcake status <CONFIG>
+```
+
+**Arguments**:
+- `<CONFIG>` - Network name or path to `Kupcake.toml` / outdata directory
+
+**Example**:
+```bash
+kupcake status my-network
+```
+
+**Output**:
+```
+Network: my-network
+
+=== L1 ===
+  [ok] anvil (my-network-anvil)
+
+=== L2 Nodes ===
+  [sequencer] (sequencer)
+    [ok] op-reth (my-network-op-reth)
+    [ok] kona-node (my-network-kona-node)
+  [validator-1] (validator)
+    [ok] op-reth (my-network-op-reth-validator-1)
+    [ok] kona-node (my-network-kona-node-validator-1)
+
+=== Services ===
+  [ok] op-batcher (my-network-op-batcher)
+```
+
 ## Global Options
 
 ### `-v, --verbosity <LEVEL>`

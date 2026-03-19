@@ -476,7 +476,7 @@ impl Deployer {
     }
 
     /// Derive Anvil accounts from the default mnemonic.
-    fn derive_accounts() -> Result<crate::AnvilAccounts> {
+    pub fn derive_accounts() -> Result<crate::AnvilAccounts> {
         let account_infos = crate::derive_accounts_from_mnemonic(
             crate::ANVIL_DEFAULT_MNEMONIC,
             crate::services::anvil::DEFAULT_ACCOUNT_COUNT,
@@ -1146,6 +1146,24 @@ impl Deployer {
             )
             .await
             .context("Failed to start L2 stack")?;
+
+        // Persist P2P keys from handlers back to builders so they survive restarts
+        // and can be used to compute enodes for adding nodes to a running network.
+        self.l2_stack.persist_p2p_keys(&l2_stack);
+
+        // Re-save the config with P2P keys by loading and patching.
+        // We cannot call self.save_config() because self.anvil has been moved.
+        {
+            let config_path = outdata.join(KUPCONF_FILENAME);
+            if config_path.exists()
+                && let Ok(mut saved) = Deployer::load_from_file(&config_path)
+            {
+                saved.l2_stack = self.l2_stack.clone();
+                if let Err(e) = saved.save_to_file(&config_path) {
+                    tracing::warn!(error = %e, "Failed to re-save config with P2P keys");
+                }
+            }
+        }
 
         // Start monitoring stack if enabled
         let monitoring = if self.monitoring.enabled {

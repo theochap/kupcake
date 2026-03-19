@@ -149,6 +149,86 @@ pub enum Commands {
     /// Deploys a devnet N times, collects per-service metrics per iteration,
     /// and outputs aggregate statistics (min/max/mean/median/p95/stddev) in TOML.
     Bench(BenchArgs),
+
+    /// Manage L2 nodes on a running network.
+    ///
+    /// Add, remove, pause, unpause, or restart individual L2 nodes
+    /// on a deployed network without restarting the entire stack.
+    Node(NodeArgs),
+
+    /// Show the status of a deployed network.
+    ///
+    /// Lists all containers and their current state (running, paused, stopped).
+    Status(StatusArgs),
+}
+
+/// Arguments for managing L2 nodes on a running network.
+#[derive(Parser)]
+pub struct NodeArgs {
+    /// Network name or path to Kupcake.toml / outdata directory.
+    ///
+    /// If a network name is given (e.g. "kup-nutty-songs"), loads
+    /// the config from the default path: ./data-<name>/Kupcake.toml
+    /// Otherwise treats the argument as a file/directory path.
+    #[arg(required = true)]
+    pub config: String,
+
+    /// The node management action to perform.
+    #[command(subcommand)]
+    pub action: NodeAction,
+}
+
+/// Node management actions.
+#[derive(Subcommand)]
+pub enum NodeAction {
+    /// Add a new validator node to the network.
+    ///
+    /// The new node will connect to existing peers via P2P
+    /// and begin syncing from the sequencer.
+    Add,
+
+    /// Remove a node from the network.
+    ///
+    /// Stops and removes the node's containers and updates the config.
+    /// The primary sequencer cannot be removed.
+    Remove {
+        /// Node identifier (e.g., "validator-1", "sequencer-2").
+        identifier: String,
+
+        /// Also remove the node's data directory and JWT file.
+        #[arg(long)]
+        cleanup_data: bool,
+    },
+
+    /// Pause a node (Docker pause — freezes the process in place).
+    Pause {
+        /// Node identifier (e.g., "validator-1", "sequencer").
+        identifier: String,
+    },
+
+    /// Unpause a previously paused node.
+    Unpause {
+        /// Node identifier (e.g., "validator-1", "sequencer").
+        identifier: String,
+    },
+
+    /// Restart a node (Docker restart — stop + start).
+    Restart {
+        /// Node identifier (e.g., "validator-1", "sequencer").
+        identifier: String,
+    },
+}
+
+/// Arguments for the status command.
+#[derive(Parser)]
+pub struct StatusArgs {
+    /// Network name or path to Kupcake.toml / outdata directory.
+    ///
+    /// If a network name is given (e.g. "kup-nutty-songs"), loads
+    /// the config from the default path: ./data-<name>/Kupcake.toml
+    /// Otherwise treats the argument as a file/directory path.
+    #[arg(required = true)]
+    pub config: String,
 }
 
 /// Arguments for the bench command.

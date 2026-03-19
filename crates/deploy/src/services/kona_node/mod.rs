@@ -18,7 +18,6 @@ use crate::{
     docker::{DockerImage, KupDocker, PortMapping, ServiceConfig},
     metrics::ContainerDeployTimings,
     service::{self, KupcakeService},
-    services::kona_node::cmd::DEFAULT_P2P_PORT,
 };
 
 use super::l2_node::L2NodeRole;
@@ -174,7 +173,7 @@ async fn generate_local_l1_config_from_rpc(
 }
 
 /// P2P keypair for kona-node identity.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct P2pKeypair {
     /// Private key (32 bytes hex-encoded, without 0x prefix)
     pub private_key: String,
@@ -261,6 +260,8 @@ impl P2pKeypair {
 /// Default ports for kona-node.
 pub const DEFAULT_RPC_PORT: u16 = 7545;
 pub const DEFAULT_METRICS_PORT: u16 = 7300;
+/// Default P2P discovery port for kona-node.
+pub const DEFAULT_P2P_PORT: u16 = cmd::DEFAULT_P2P_PORT;
 /// Default port for the flashblocks relay server.
 pub const DEFAULT_FLASHBLOCKS_RELAY_PORT: u16 = 1112;
 
@@ -471,7 +472,9 @@ impl KupcakeService for KonaNodeBuilder {
 
         // For local/custom chains, generate the L1 config file before building the command.
         // build_cmd adds the --l1-config-file flag; this generates the actual file.
-        if !is_known_l1_chain(input.l1_chain_id) {
+        // Skip if the config already exists (e.g., when adding a node to a running network).
+        let l1_config_path = host_config_path.join("l1-config.json");
+        if !is_known_l1_chain(input.l1_chain_id) && !l1_config_path.exists() {
             let l1_rpc_for_host = input.l1_host_url.as_deref().unwrap_or(&input.l1_rpc_url);
 
             generate_local_l1_config_from_rpc(

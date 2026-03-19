@@ -185,6 +185,9 @@ pub struct L2NodeInput {
     pub conductor_context: ConductorContext,
     /// Optional flashblocks relay URL from the sequencer's kona-node.
     pub sequencer_flashblocks_relay_url: Option<Url>,
+    /// Optional pre-generated P2P keypair for op-reth.
+    /// If None, a random keypair will be generated.
+    pub op_reth_p2p_secret_key: Option<String>,
 }
 
 /// Configuration for an L2 node (op-reth + kona-node pair).
@@ -295,8 +298,12 @@ where
 
         tracing::debug!(path = ?jwt_path, %node_id, "JWT secret written for L2 node");
 
-        // Generate P2P keypair for op-reth
-        let op_reth_p2p_keypair = P2pKeypair::generate();
+        // Use persisted P2P keypair if available, otherwise generate fresh
+        let op_reth_p2p_keypair = match &input.op_reth_p2p_secret_key {
+            Some(key) => P2pKeypair::from_private_key(key)
+                .context("Failed to create P2P keypair from op-reth p2p_secret_key")?,
+            None => P2pKeypair::generate(),
+        };
 
         // Start op-reth first, passing existing op-reth enodes as bootnodes
         let op_reth_handler = self
