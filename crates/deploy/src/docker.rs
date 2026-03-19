@@ -470,7 +470,7 @@ impl Drop for KupDocker {
         let containers = mem::take(&mut self.containers);
 
         let cleanup = async {
-            // Stop and remove containers first
+            // Stop and remove only containers that this instance started
             let results = containers
                 .into_iter()
                 .map(async |container_id| {
@@ -483,17 +483,45 @@ impl Drop for KupDocker {
                 .into_iter()
                 .collect::<Result<Vec<_>>>()?;
 
-            // Ensure all containers are fully removed before removing the network
-            Self::ensure_containers_removed(&docker, &self.network_id).await?;
-
-            // Remove network (ignore if already removed)
-            tracing::trace!(self.network_id, "Removing network");
-            match docker.remove_network(&self.network_id).await {
-                Ok(_) => tracing::trace!(self.network_id, "Network removed"),
+            // Only remove the network if no other containers are still using it.
+            // This prevents a secondary KupDocker instance (e.g. from `kupcake spam`)
+            // from tearing down the network that the devnet containers rely on.
+            let network_still_in_use = match docker
+                .inspect_network::<String>(&self.network_id, None)
+                .await
+            {
+                Ok(info) => {
+                    let remaining = info.containers.unwrap_or_default();
+                    if !remaining.is_empty() {
+                        tracing::debug!(
+                            network_id = %self.network_id,
+                            remaining = remaining.len(),
+                            "Network still has active containers, skipping network removal"
+                        );
+                        true
+                    } else {
+                        false
+                    }
+                }
                 Err(e) => {
                     let msg = e.to_string();
-                    if !msg.contains("No such network") && !msg.contains("not found") {
-                        anyhow::bail!("Failed to remove network: {}", e);
+                    if msg.contains("No such network") || msg.contains("not found") {
+                        // Network already gone, nothing to do
+                        return Ok(());
+                    }
+                    anyhow::bail!("Failed to inspect network: {}", e);
+                }
+            };
+
+            if !network_still_in_use {
+                tracing::trace!(self.network_id, "Removing network");
+                match docker.remove_network(&self.network_id).await {
+                    Ok(_) => tracing::trace!(self.network_id, "Network removed"),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if !msg.contains("No such network") && !msg.contains("not found") {
+                            anyhow::bail!("Failed to remove network: {}", e);
+                        }
                     }
                 }
             }
