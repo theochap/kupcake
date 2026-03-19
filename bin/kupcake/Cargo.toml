@@ -19,3 +19,10 @@ rand.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+kupcake-deploy.workspace = true
+tempdir.workspace = true
+tokio = { workspace = true, features = ["full"] }
+rand.workspace = true
+anyhow.workspace = true
+
