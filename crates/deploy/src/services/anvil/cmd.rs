@@ -27,6 +27,7 @@ pub struct AnvilCmdBuilder {
     fork_block_number: Option<u64>,
     quiet: bool,
     extra_args: Vec<String>,
+    no_mining: bool,
 }
 
 impl AnvilCmdBuilder {
@@ -44,6 +45,7 @@ impl AnvilCmdBuilder {
             fork_block_number: None,
             quiet: false,
             extra_args: Vec::new(),
+            no_mining: false,
         }
     }
 
@@ -107,6 +109,13 @@ impl AnvilCmdBuilder {
         self
     }
 
+    /// When true, omit `--block-time` so Anvil starts in mine-on-demand mode.
+    /// Used when restoring state to prevent blocks being mined before the clock is aligned.
+    pub fn no_mining(mut self, no_mining: bool) -> Self {
+        self.no_mining = no_mining;
+        self
+    }
+
     /// Build the command as a vector of strings.
     ///
     /// NOTE: `--init` / `--load-state` MUST appear before `--host` in the argument
@@ -137,8 +146,13 @@ impl AnvilCmdBuilder {
             self.port.to_string(),
             "--chain-id".to_string(),
             self.chain_id.to_string(),
-            "--block-time".to_string(),
-            self.block_time.to_string(),
+        ]);
+
+        if !self.no_mining {
+            cmd.extend(["--block-time".to_string(), self.block_time.to_string()]);
+        }
+
+        cmd.extend([
             "--accounts".to_string(),
             super::DEFAULT_ACCOUNT_COUNT.to_string(),
             "-j".to_string(),
@@ -189,6 +203,32 @@ mod tests {
         assert!(cmd.contains(&"--load-state".to_string()));
         assert!(cmd.contains(&"/data/state.json".to_string()));
         assert!(!cmd.contains(&"--init".to_string()));
+    }
+
+    #[test]
+    fn test_anvil_cmd_builder_no_mining_omits_block_time() {
+        let cmd = AnvilCmdBuilder::new(11155111)
+            .port(8545)
+            .no_mining(true)
+            .init_mode(AnvilInitMode::LoadState("/data/state.json".to_string()))
+            .build();
+
+        assert!(cmd.contains(&"--load-state".to_string()));
+        assert!(
+            !cmd.contains(&"--block-time".to_string()),
+            "block-time should be omitted when no_mining is true"
+        );
+    }
+
+    #[test]
+    fn test_anvil_cmd_builder_normal_includes_block_time() {
+        let cmd = AnvilCmdBuilder::new(11155111)
+            .port(8545)
+            .block_time(12)
+            .build();
+
+        assert!(cmd.contains(&"--block-time".to_string()));
+        assert!(cmd.contains(&"12".to_string()));
     }
 
     #[test]

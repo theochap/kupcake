@@ -324,6 +324,13 @@ impl OpRethCmdBuilder {
             cmd.push(filter);
         }
 
+        // Increase state root task timeout to avoid spurious fallbacks under resource pressure.
+        // The default 1s is too tight when running multiple op-reth instances simultaneously.
+        // Only set for standard op-reth; op-rbuilder may not support this flag.
+        if !self.flashblocks_enabled {
+            cmd.push("--engine.state-root-task-timeout".to_string());
+            cmd.push("30s".to_string());
+        }
         cmd.push("--log.stdout.format".to_string());
         cmd.push(self.log_format);
 
@@ -364,6 +371,30 @@ mod tests {
         let pos = cmd.iter().position(|s| s == "--rpc.max-connections");
         assert!(pos.is_some(), "Should contain --rpc.max-connections flag");
         assert_eq!(cmd[pos.unwrap() + 1], "1000");
+    }
+
+    #[test]
+    fn test_state_root_task_timeout_set_for_op_reth() {
+        let cmd = OpRethCmdBuilder::new("/data/genesis.json", "/data/reth-data").build();
+        let pos = cmd
+            .iter()
+            .position(|s| s == "--engine.state-root-task-timeout");
+        assert!(
+            pos.is_some(),
+            "Should contain --engine.state-root-task-timeout for standard op-reth"
+        );
+        assert_eq!(cmd[pos.unwrap() + 1], "30s");
+    }
+
+    #[test]
+    fn test_state_root_task_timeout_omitted_for_flashblocks() {
+        let cmd = OpRethCmdBuilder::new("/data/genesis.json", "/data/reth-data")
+            .flashblocks(1111)
+            .build();
+        assert!(
+            !cmd.contains(&"--engine.state-root-task-timeout".to_string()),
+            "Should not contain --engine.state-root-task-timeout when flashblocks is enabled"
+        );
     }
 
     #[test]

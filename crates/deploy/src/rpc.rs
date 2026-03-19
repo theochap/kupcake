@@ -74,6 +74,61 @@ pub async fn json_rpc_call<T: DeserializeOwned>(
         .with_context(|| format!("Failed to deserialize {} result", method))
 }
 
+/// Get the timestamp of the latest block from an Ethereum JSON-RPC endpoint.
+pub async fn get_latest_block_timestamp(rpc_url: &str) -> Result<u64, anyhow::Error> {
+    let client = create_client()?;
+    let block: serde_json::Value = json_rpc_call(
+        &client,
+        rpc_url,
+        "eth_getBlockByNumber",
+        vec![serde_json::json!("latest"), serde_json::json!(false)],
+    )
+    .await
+    .context("Failed to fetch latest block")?;
+
+    let timestamp_hex = block
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .context("Latest block missing timestamp field")?;
+
+    u64::from_str_radix(timestamp_hex.trim_start_matches("0x"), 16)
+        .context("Failed to parse block timestamp")
+}
+
+/// Set Anvil's internal clock to the given Unix timestamp.
+///
+/// Adjusts Anvil's time offset so subsequent blocks continue from
+/// the restored chain tip rather than wall-clock time.
+pub async fn anvil_set_time(rpc_url: &str, timestamp: u64) -> Result<(), anyhow::Error> {
+    let client = create_client()?;
+    let _: serde_json::Value = json_rpc_call(
+        &client,
+        rpc_url,
+        "anvil_setTime",
+        vec![serde_json::json!(timestamp)],
+    )
+    .await
+    .context("anvil_setTime RPC failed")?;
+    Ok(())
+}
+
+/// Enable interval mining on Anvil at the given block time (seconds).
+///
+/// Used after restoring state and aligning the clock to resume
+/// block production without timestamp gaps.
+pub async fn evm_set_interval_mining(rpc_url: &str, block_time: u64) -> Result<(), anyhow::Error> {
+    let client = create_client()?;
+    let _: serde_json::Value = json_rpc_call(
+        &client,
+        rpc_url,
+        "evm_setIntervalMining",
+        vec![serde_json::json!(block_time)],
+    )
+    .await
+    .context("evm_setIntervalMining RPC failed")?;
+    Ok(())
+}
+
 /// Dump Anvil state via `anvil_dumpState` RPC and write to disk.
 ///
 /// Called before cleanup to persist Anvil L1 state via RPC. The returned hex
@@ -156,4 +211,22 @@ where
     .retry(backoff)
     .await
     .with_context(|| format!("Timeout waiting for {} to be ready", name))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_parse_block_timestamp_hex() {
+        let block: serde_json::Value = serde_json::json!({
+            "timestamp": "0x6613fa00",
+            "number": "0x64",
+            "hash": "0xabc123"
+        });
+
+        let timestamp_hex = block.get("timestamp").and_then(|t| t.as_str()).unwrap();
+
+        let timestamp = u64::from_str_radix(timestamp_hex.trim_start_matches("0x"), 16).unwrap();
+
+        assert_eq!(timestamp, 0x6613fa00);
+    }
 }
