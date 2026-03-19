@@ -96,9 +96,9 @@ All services follow consistent patterns:
 ### Configuration
 
 Each service has:
-- **Builder type** - Configuration before deployment (e.g., `OpRethBuilder`)
-- **Config type** - Serializable configuration (e.g., `OpRethConfig`)
-- **Handler type** - Runtime handle to container (e.g., `OpRethHandler`)
+- **Builder type** - Configuration before deployment, implements `KupcakeService` (e.g., `OpRethBuilder`)
+- **Input type** - Deploy-time parameters using owned data, decoupled from handler types (e.g., `OpRethInput`)
+- **Handler type** - Runtime handle to running container(s), returned by `deploy()` (e.g., `OpRethHandler`)
 
 ### Docker Images
 

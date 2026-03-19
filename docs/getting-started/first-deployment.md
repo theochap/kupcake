@@ -9,10 +9,10 @@ This guide walks you through your first deployment with detailed explanations of
 ## Overview
 
 You'll deploy a complete OP Stack L2 network that includes:
-- A local L1 (Anvil fork of Sepolia)
+- A local L1 (Anvil in local mode by default, or fork Sepolia/Mainnet with `--l1`)
 - OP Stack smart contracts deployed on L1
 - Multiple L2 nodes (sequencers and validators)
-- Transaction batching and state root proposals
+- Transaction batching and state root proposals (op-proposer and op-challenger are optional via `--no-proposer`/`--no-challenger`)
 - Monitoring infrastructure
 
 ## Step-by-Step Deployment
@@ -108,6 +108,10 @@ Monitoring stack is ready!
 #### Check Container Status
 
 ```bash
+# Using Kupcake's built-in status command
+kupcake status my-first-l2
+
+# Or using Docker directly
 docker ps --filter name=my-first-l2
 ```
 

@@ -21,7 +21,7 @@ cargo build --release
 ```
 
 That's it! Kupcake will:
-- Fork Ethereum Sepolia (by default)
+- Start a local L1 (Anvil, no fork by default)
 - Generate a random L2 chain ID
 - Deploy all OP Stack contracts
 - Start 2 sequencers + 3 validators
@@ -48,7 +48,7 @@ Kupcake deployed a complete OP Stack network with:
 
 | Component | Count | Purpose |
 |-----------|-------|---------|
-| Anvil (L1 Fork) | 1 | Forked Sepolia for local L1 |
+| Anvil (L1) | 1 | Local L1 chain (or forked L1 with `--l1`) |
 | op-reth | 5 | L2 execution clients (2 sequencers, 3 validators) |
 | kona-node | 5 | L2 consensus clients |
 | op-batcher | 1 | Batches L2 transactions to L1 |

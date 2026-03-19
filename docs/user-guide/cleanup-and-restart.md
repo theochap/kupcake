@@ -144,6 +144,8 @@ kupcake --config ./data-my-network/Kupcake.toml
 
 Resumes using saved configuration. Contracts are NOT redeployed (unless `--redeploy`).
 
+**Clock Alignment**: When restoring Anvil from a persisted state, Kupcake automatically aligns the L1 clock to prevent L2 stalls. Anvil starts in no-mining mode, then Kupcake sets its internal clock to the latest block's timestamp and re-enables interval mining. This ensures L2 derivation resumes correctly without a large timestamp gap.
+
 ### Resume and Redeploy Contracts
 
 ```bash
@@ -170,6 +172,75 @@ rm -rf ./data-my-network
 # Start fresh
 kupcake --network my-network
 ```
+
+## Checking Network Status
+
+Use the `status` command to see the state of all containers in a deployment:
+
+```bash
+kupcake status my-network
+```
+
+**Output**:
+```
+Network: my-network
+
+=== L1 ===
+  [ok] anvil (my-network-anvil)
+
+=== L2 Nodes ===
+  [sequencer] (sequencer)
+    [ok] op-reth (my-network-op-reth)
+    [ok] kona-node (my-network-kona-node)
+  [validator-1] (validator)
+    [ok] op-reth (my-network-op-reth-validator-1)
+    [ok] kona-node (my-network-kona-node-validator-1)
+
+=== Services ===
+  [ok] op-batcher (my-network-op-batcher)
+```
+
+**Container States**: `[ok]` (running), `[PAUSED]` (frozen), `[STOPPED]` (exited), `[RESTARTING]`, `[NOT FOUND]`.
+
+## Managing Individual Nodes
+
+Use the `node` command to manage L2 nodes on a running network without restarting the entire stack.
+
+### Add a Validator
+
+```bash
+kupcake node my-network add
+```
+
+Adds a new validator that syncs from existing peers. Updates `Kupcake.toml`.
+
+### Remove a Node
+
+```bash
+kupcake node my-network remove validator-1
+kupcake node my-network remove validator-2 --cleanup-data  # Also delete data
+```
+
+The primary sequencer cannot be removed.
+
+### Pause / Unpause a Node
+
+```bash
+kupcake node my-network pause validator-1    # Freeze in place
+kupcake node my-network unpause validator-1  # Resume
+```
+
+### Restart a Node
+
+```bash
+kupcake node my-network restart validator-1
+```
+
+### Node Identifiers
+
+- `sequencer` or `sequencer-0` — primary sequencer
+- `sequencer-N` — sequencer at index N (0-based)
+- `validator-N` — validator at index N (1-based)
 
 ## Partial Cleanup
 
@@ -256,12 +327,16 @@ rm -rf ./data-ci-test
 ### Long-Running
 
 ```bash
-# Keep containers running
-kupcake --no-cleanup --network prod-test
+# Use --long-running for log rotation and quieter services
+kupcake --long-running --no-cleanup --network prod-test
 # Press Ctrl+C
+# Check status later
+kupcake status prod-test
 # Manually stop when needed
 docker stop $(docker ps -q --filter name=prod-test)
 ```
+
+The `--long-running` flag automatically sets `--log-max-size=10m`, `--log-max-file=3`, and `--quiet-services` to prevent unbounded log growth.
 
 ### Debugging
 
