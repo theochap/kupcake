@@ -257,6 +257,60 @@ impl<Node, B, P, C> L2StackBuilder<Node, B, P, C> {
     }
 }
 
+// Concrete-type methods for P2P key persistence and enode computation.
+impl L2StackBuilder {
+    /// Persist P2P secret keys from deployed handlers back into the builders.
+    ///
+    /// This ensures `Kupcake.toml` contains the P2P keys so that enodes can be
+    /// computed from config alone (needed for adding nodes to a running network).
+    pub fn persist_p2p_keys(&mut self, handlers: &L2StackHandler) {
+        for (builder, handler) in self.sequencers.iter_mut().zip(handlers.sequencers.iter()) {
+            builder.op_reth.p2p_secret_key = Some(handler.op_reth.p2p_keypair.private_key.clone());
+            builder.kona_node.p2p_secret_key =
+                Some(handler.kona_node.p2p_keypair.private_key.clone());
+        }
+        for (builder, handler) in self.validators.iter_mut().zip(handlers.validators.iter()) {
+            builder.op_reth.p2p_secret_key = Some(handler.op_reth.p2p_keypair.private_key.clone());
+            builder.kona_node.p2p_secret_key =
+                Some(handler.kona_node.p2p_keypair.private_key.clone());
+        }
+    }
+
+    /// Compute all op-reth enodes from persisted P2P keys in the config.
+    ///
+    /// Returns enodes for all nodes (sequencers + validators) that have
+    /// persisted P2P secret keys. Nodes without keys are skipped.
+    pub fn compute_op_reth_enodes(&self) -> Vec<String> {
+        self.sequencers
+            .iter()
+            .chain(self.validators.iter())
+            .filter_map(|node| {
+                let key = node.op_reth.p2p_secret_key.as_ref()?;
+                let keypair = crate::services::kona_node::P2pKeypair::from_private_key(key).ok()?;
+                Some(keypair.to_enode(&node.op_reth.container_name, node.op_reth.discovery_port))
+            })
+            .collect()
+    }
+
+    /// Compute all kona-node enodes from persisted P2P keys in the config.
+    ///
+    /// Returns enodes for all nodes (sequencers + validators) that have
+    /// persisted P2P secret keys. Nodes without keys are skipped.
+    pub fn compute_kona_node_enodes(&self) -> Vec<String> {
+        use crate::services::kona_node::DEFAULT_P2P_PORT;
+
+        self.sequencers
+            .iter()
+            .chain(self.validators.iter())
+            .filter_map(|node| {
+                let key = node.kona_node.p2p_secret_key.as_ref()?;
+                let keypair = crate::services::kona_node::P2pKeypair::from_private_key(key).ok()?;
+                Some(keypair.to_enode(&node.kona_node.container_name, DEFAULT_P2P_PORT))
+            })
+            .collect()
+    }
+}
+
 impl<Node, B, P, C> L2StackBuilder<Node, B, P, C>
 where
     Node: KupcakeService<Input = L2NodeInput, Output = L2NodeHandler>,
@@ -341,6 +395,7 @@ where
                         l1_chain_id,
                         conductor_context,
                         sequencer_flashblocks_relay_url: None,
+                        op_reth_p2p_secret_key: None,
                     },
                 )
                 .await
@@ -386,6 +441,7 @@ where
                         l1_chain_id,
                         conductor_context: ConductorContext::None,
                         sequencer_flashblocks_relay_url: sequencer_flashblocks_relay_url.clone(),
+                        op_reth_p2p_secret_key: None,
                     },
                 )
                 .await

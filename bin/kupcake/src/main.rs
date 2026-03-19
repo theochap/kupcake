@@ -8,8 +8,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use cli::{
-    BenchArgs, CleanupArgs, Cli, Commands, DeployArgs, FaucetArgs, HealthArgs, L1Source, OutData,
-    SpamArgs,
+    BenchArgs, CleanupArgs, Cli, Commands, DeployArgs, FaucetArgs, HealthArgs, L1Source,
+    NodeAction, NodeArgs, OutData, SpamArgs, StatusArgs,
 };
 use kupcake_deploy::{
     Deployer, DeployerBuilder, DeploymentResult, KupDocker, OutDataPath, SpamPreset,
@@ -32,6 +32,8 @@ async fn main() -> Result<()> {
         Some(Commands::Health(args)) => run_health(args).await,
         Some(Commands::Spam(args)) => run_spam_cmd(args).await,
         Some(Commands::Bench(args)) => run_bench(args).await,
+        Some(Commands::Node(args)) => run_node(args).await,
+        Some(Commands::Status(args)) => run_status(args).await,
         // Default to deploy with default args when no subcommand is provided
         None => run_deploy(DeployArgs::default()).await,
     }
@@ -91,6 +93,73 @@ async fn run_health(args: HealthArgs) -> Result<()> {
     if !report.healthy {
         std::process::exit(1);
     }
+
+    Ok(())
+}
+
+async fn run_node(args: NodeArgs) -> Result<()> {
+    let config_path = resolve_config_path(&args.config);
+    let mut deployer = Deployer::load_from_file(&config_path)?;
+
+    // Create Docker client with no_cleanup (we're managing individual containers)
+    let mut docker = KupDocker::new(kupcake_deploy::KupDockerConfig {
+        no_cleanup: true,
+        ..deployer.docker.clone()
+    })
+    .await?;
+
+    match args.action {
+        NodeAction::Add => {
+            tracing::info!(config = %config_path.display(), "Adding new validator node...");
+            let handler =
+                kupcake_deploy::node_lifecycle::add_validator(&mut deployer, &mut docker).await?;
+
+            tracing::info!("New validator added successfully:");
+            if let Some(ref url) = handler.op_reth.http_host_url {
+                tracing::info!("  op-reth HTTP: {}", url);
+            }
+            if let Some(ref url) = handler.kona_node.rpc_host_url {
+                tracing::info!("  kona-node RPC: {}", url);
+            }
+        }
+        NodeAction::Remove {
+            identifier,
+            cleanup_data,
+        } => {
+            tracing::info!(
+                config = %config_path.display(),
+                node = %identifier,
+                "Removing node..."
+            );
+            kupcake_deploy::node_lifecycle::remove_node(
+                &mut deployer,
+                &docker,
+                &identifier,
+                cleanup_data,
+            )
+            .await?;
+            tracing::info!("Node '{}' removed successfully", identifier);
+        }
+        NodeAction::Pause { identifier } => {
+            kupcake_deploy::node_lifecycle::pause_node(&deployer, &docker, &identifier).await?;
+        }
+        NodeAction::Unpause { identifier } => {
+            kupcake_deploy::node_lifecycle::unpause_node(&deployer, &docker, &identifier).await?;
+        }
+        NodeAction::Restart { identifier } => {
+            kupcake_deploy::node_lifecycle::restart_node(&deployer, &docker, &identifier).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_status(args: StatusArgs) -> Result<()> {
+    let config_path = resolve_config_path(&args.config);
+    let deployer = Deployer::load_from_file(&config_path)?;
+
+    let status = kupcake_deploy::status::network_status(&deployer).await?;
+    println!("{}", status);
 
     Ok(())
 }

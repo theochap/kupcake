@@ -32,6 +32,33 @@ use url::Url;
 /// Timeout for shutting down docker and cleaning up containers.
 const DOCKER_DROP_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// State of a Docker container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerState {
+    /// Container is running normally.
+    Running,
+    /// Container is paused (frozen).
+    Paused,
+    /// Container is stopped (exited, dead, or created but not started).
+    Stopped,
+    /// Container is restarting.
+    Restarting,
+    /// Container does not exist.
+    NotFound,
+}
+
+impl std::fmt::Display for ContainerState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ContainerState::Running => write!(f, "running"),
+            ContainerState::Paused => write!(f, "paused"),
+            ContainerState::Stopped => write!(f, "stopped"),
+            ContainerState::Restarting => write!(f, "restarting"),
+            ContainerState::NotFound => write!(f, "not found"),
+        }
+    }
+}
+
 /// Protocol for port mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PortProtocol {
@@ -1334,6 +1361,50 @@ ENTRYPOINT [\"/binary\"]
         }
 
         Ok(())
+    }
+
+    /// Get the state of a container.
+    pub async fn get_container_state(&self, container_name: &str) -> ContainerState {
+        match self.inspect_container(container_name, None).await {
+            Ok(info) => {
+                let Some(state) = info.state else {
+                    return ContainerState::NotFound;
+                };
+                let status = state.status.map(|s| s.to_string()).unwrap_or_default();
+                match status.as_str() {
+                    "running" => ContainerState::Running,
+                    "paused" => ContainerState::Paused,
+                    "restarting" => ContainerState::Restarting,
+                    "exited" | "dead" | "created" => ContainerState::Stopped,
+                    _ => ContainerState::Stopped,
+                }
+            }
+            Err(_) => ContainerState::NotFound,
+        }
+    }
+
+    /// Pause a running container.
+    pub async fn pause_container(&self, container_name: &str) -> Result<()> {
+        self.docker
+            .pause_container(container_name)
+            .await
+            .with_context(|| format!("Failed to pause container '{}'", container_name))
+    }
+
+    /// Unpause a paused container.
+    pub async fn unpause_container(&self, container_name: &str) -> Result<()> {
+        self.docker
+            .unpause_container(container_name)
+            .await
+            .with_context(|| format!("Failed to unpause container '{}'", container_name))
+    }
+
+    /// Restart a container (stop + start).
+    pub async fn restart_container(&self, container_name: &str) -> Result<()> {
+        self.docker
+            .restart_container(container_name, None)
+            .await
+            .with_context(|| format!("Failed to restart container '{}'", container_name))
     }
 
     /// Check if a container is running.

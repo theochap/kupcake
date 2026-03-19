@@ -30,15 +30,17 @@ mod docker;
 pub mod faucet;
 mod fs;
 pub mod health;
+pub mod node_lifecycle;
 pub mod rpc;
 pub mod services;
 pub mod spam;
+pub mod status;
 pub use spam::SpamPreset;
 
 pub use docker::{
-    AnvilStateDumpConfig, CleanupResult, CreateAndStartContainerOptions, DockerImage, ExposedPort,
-    KupDocker, KupDockerConfig, PortMapping, PortProtocol, ServiceConfig, ServiceHandler,
-    cleanup_by_prefix,
+    AnvilStateDumpConfig, CleanupResult, ContainerState, CreateAndStartContainerOptions,
+    DockerImage, ExposedPort, KupDocker, KupDockerConfig, PortMapping, PortProtocol, ServiceConfig,
+    ServiceHandler, cleanup_by_prefix,
 };
 pub use services::{
     // Docker image defaults
