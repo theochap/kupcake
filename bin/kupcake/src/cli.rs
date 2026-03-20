@@ -160,6 +160,20 @@ pub enum Commands {
     ///
     /// Lists all containers and their current state (running, paused, stopped).
     Status(StatusArgs),
+
+    /// List all tracked devnets.
+    List,
+
+    /// Remove all stopped devnets and their data directories.
+    Prune(PruneArgs),
+}
+
+/// Arguments for the prune command.
+#[derive(Parser)]
+pub struct PruneArgs {
+    /// Skip confirmation prompt.
+    #[arg(long, short)]
+    pub yes: bool,
 }
 
 /// Arguments for managing L2 nodes on a running network.
@@ -1025,5 +1039,29 @@ mod tests {
             L1Source::Custom(custom_url.to_string()).rpc_url(),
             custom_url
         );
+    }
+
+    #[test]
+    fn test_list_parses() {
+        let cli = parse_cli(&["list"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::List)));
+    }
+
+    #[test]
+    fn test_prune_parses() {
+        let cli = parse_cli(&["prune"]).unwrap();
+        match cli.command {
+            Some(Commands::Prune(args)) => assert!(!args.yes),
+            _ => panic!("Expected Prune command"),
+        }
+    }
+
+    #[test]
+    fn test_prune_yes_flag() {
+        let cli = parse_cli(&["prune", "--yes"]).unwrap();
+        match cli.command {
+            Some(Commands::Prune(args)) => assert!(args.yes),
+            _ => panic!("Expected Prune command"),
+        }
     }
 }

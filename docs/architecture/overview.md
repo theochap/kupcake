@@ -421,9 +421,24 @@ Excluded from hash (runtime-only):
 - Missing/corrupted version file triggers redeployment
 - Logs both hashes when configuration changes
 
+### Devnet Registry
+
+Kupcake maintains a global registry at `~/.kupcake/devnets.toml` that tracks all deployed devnets:
+
+- **Registration**: When a deployment completes successfully, the devnet is registered with state=Running
+- **Cleanup tracking**: When containers are cleaned up (Drop or explicit cleanup), state is set to Stopped
+- **Concurrency**: File locking (`fs2`) ensures safe concurrent access from multiple kupcake processes
+- **CLI commands**: `kupcake list` shows all tracked devnets; `kupcake prune` removes stopped devnets and their data directories
+
+The registry uses advisory file locking via `~/.kupcake/devnets.lock` for atomic read-modify-write operations.
+
 ### File System Structure
 
 ```
+~/.kupcake/
+├── devnets.toml              # Global devnet registry
+└── devnets.lock              # Lock file for concurrent access
+
 ./data-<network-name>/
 ├── Kupcake.toml              # Saved configuration
 ├── anvil/

@@ -39,3 +39,6 @@ alloy-signer-local = { version = "1", features = ["mnemonic"] }
 flate2 = "1.1"
 base64 = "0.22"
 backon = "1.5"
+fs2 = "0.4"
+dirs = "6.0"
+chrono = { version = "0.4", default-features = false, features = ["now"] }
