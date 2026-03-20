@@ -354,6 +354,45 @@ kupcake prune
 kupcake prune --yes
 ```
 
+### `completions`
+
+Generate shell completion scripts with dynamic devnet name suggestions.
+
+```bash
+kupcake completions <SHELL>
+```
+
+**Arguments**:
+- `<SHELL>` — Shell to generate completions for: `bash`, `zsh`, or `fish`
+
+**Setup**:
+
+Add one of the following to your shell profile:
+
+```bash
+# Bash (~/.bashrc)
+eval "$(kupcake completions bash)"
+
+# Zsh (~/.zshrc)
+eval "$(kupcake completions zsh)"
+
+# Fish (~/.config/fish/config.fish)
+kupcake completions fish | source
+```
+
+**Behavior**:
+- When tab-completing, the shell reinvokes `kupcake` with a special `COMPLETE` env var
+- The binary reads the devnet registry and returns matching network names as candidates
+- Commands operating on running networks (`health`, `faucet`, `spam`, `node`, `status`) suggest only **Running** devnets
+- The `cleanup` command suggests **all** devnets (Running and Stopped)
+- Standard subcommand and flag completions also work
+
+**Examples**:
+```bash
+# After deploying a network called "my-testnet":
+kupcake health <TAB>    # suggests "my-testnet"
+kupcake cleanup <TAB>   # suggests "my-testnet" (even if stopped)
+```
 ## Global Options
 
 ### `-v, --verbosity <LEVEL>`
