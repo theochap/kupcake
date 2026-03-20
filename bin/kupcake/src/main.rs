@@ -9,7 +9,7 @@ use clap::Parser;
 
 use cli::{
     BenchArgs, CleanupArgs, Cli, Commands, DeployArgs, FaucetArgs, HealthArgs, L1Source,
-    NodeAction, NodeArgs, OutData, SpamArgs, StatusArgs,
+    NodeAction, NodeArgs, OutData, PruneArgs, SpamArgs, StatusArgs,
 };
 use kupcake_deploy::{
     Deployer, DeployerBuilder, DeploymentResult, KupDocker, OutDataPath, SpamPreset,
@@ -34,6 +34,8 @@ async fn main() -> Result<()> {
         Some(Commands::Bench(args)) => run_bench(args).await,
         Some(Commands::Node(args)) => run_node(args).await,
         Some(Commands::Status(args)) => run_status(args).await,
+        Some(Commands::List) => run_list().await,
+        Some(Commands::Prune(args)) => run_prune(args).await,
         // Default to deploy with default args when no subcommand is provided
         None => run_deploy(DeployArgs::default()).await,
     }
@@ -486,6 +488,73 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
     let mut docker = KupDocker::new(deployer.docker.clone()).await?;
     let result = deployer.deploy(&mut docker, args.redeploy, true).await?;
     write_output_files(&result, &metrics_file, &ports_file)?;
+
+    Ok(())
+}
+
+async fn run_list() -> Result<()> {
+    let registry = kupcake_deploy::DevnetRegistry::new()?;
+    let entries = registry.list()?;
+
+    if entries.is_empty() {
+        println!("No tracked devnets.");
+        return Ok(());
+    }
+
+    let header = format!(
+        "{:<30} {:<10} {:<50} {}",
+        "NAME", "STATE", "DATADIR", "CREATED"
+    );
+    println!("{header}");
+    println!("{}", "-".repeat(100));
+    for entry in &entries {
+        println!(
+            "{:<30} {:<10} {:<50} {}",
+            entry.name,
+            entry.state,
+            entry.datadir.display(),
+            entry.created_at,
+        );
+    }
+
+    Ok(())
+}
+
+async fn run_prune(args: PruneArgs) -> Result<()> {
+    let registry = kupcake_deploy::DevnetRegistry::new()?;
+    let entries = registry.list()?;
+    let stopped: Vec<_> = entries
+        .iter()
+        .filter(|e| e.state == kupcake_deploy::DevnetState::Stopped)
+        .collect();
+
+    if stopped.is_empty() {
+        println!("No stopped devnets to prune.");
+        return Ok(());
+    }
+
+    println!("The following stopped devnets will be removed:");
+    for entry in &stopped {
+        println!("  - {} ({})", entry.name, entry.datadir.display());
+    }
+
+    if !args.yes {
+        use std::io::Write;
+        print!("\nProceed? [y/N] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    let removed = registry.prune()?;
+    println!("Pruned {} devnet(s):", removed.len());
+    for entry in &removed {
+        println!("  - {} (removed {})", entry.name, entry.datadir.display());
+    }
 
     Ok(())
 }

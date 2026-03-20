@@ -1325,6 +1325,19 @@ impl Deployer {
 
         tracing::info!("");
 
+        // Register devnet in the global registry
+        let network_name = docker
+            .config
+            .net_name
+            .strip_suffix("-network")
+            .unwrap_or(&docker.config.net_name);
+        if let Err(e) =
+            crate::DevnetRegistry::new().and_then(|r| r.register(network_name, &outdata))
+        {
+            tracing::warn!(error = %e, "Failed to register devnet in registry");
+        }
+        docker.registry_name = Some(network_name.to_string());
+
         if wait_for_exit {
             if detach {
                 // Detached mode: print management info and exit

@@ -28,6 +28,9 @@ mod l1_genesis;
 
 mod docker;
 pub mod faucet;
+
+pub mod registry;
+pub use registry::{DevnetEntry, DevnetRegistry, DevnetState};
 mod fs;
 pub mod health;
 pub mod node_lifecycle;

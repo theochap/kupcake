@@ -157,6 +157,7 @@ Deployer
 │   ├── OpChallengerBuilder/Handler
 │   └── OpConductorBuilder/Handler (optional, if sequencer_count > 1)
 ├── NodeLifecycle (add/remove/pause/unpause/restart nodes on live network)
+├── DevnetRegistry (~/.kupcake/devnets.toml — global tracking of deployed devnets)
 └── MonitoringConfig
     ├── PrometheusConfig
     └── GrafanaConfig
@@ -229,6 +230,10 @@ Kupcake implements a configuration hash-based versioning system to avoid unneces
 ### File System Structure
 
 ```
+~/.kupcake/
+├── devnets.toml              # Global devnet registry (name, state, datadir, timestamps)
+└── devnets.lock              # Lock file for concurrent access
+
 {outdata}/
 ├── Kupcake.toml              # Saved deployment configuration
 ├── anvil/

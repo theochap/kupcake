@@ -455,6 +455,9 @@ pub struct KupDocker {
 
     /// If set, dump Anvil state via RPC before stopping containers during cleanup.
     pub anvil_state_dump: Option<AnvilStateDumpConfig>,
+
+    /// Network name for devnet registry tracking (set after successful deployment).
+    pub registry_name: Option<String>,
 }
 
 pub struct CreateAndStartContainerResult {
@@ -570,6 +573,12 @@ impl Drop for KupDocker {
         }
 
         tracing::info!("✓ Cleanup completed successfully");
+
+        if let Some(ref name) = self.registry_name
+            && let Err(e) = crate::DevnetRegistry::new().and_then(|r| r.mark_stopped(name))
+        {
+            tracing::warn!(error = %e, "Failed to update devnet registry");
+        }
     }
 }
 
@@ -1034,6 +1043,7 @@ ENTRYPOINT [\"/binary\"]
             network_id,
             containers: HashSet::new(),
             anvil_state_dump: None,
+            registry_name: None,
         })
     }
 
@@ -1822,6 +1832,10 @@ pub async fn cleanup_by_prefix(prefix: &str) -> Result<CleanupResult> {
                 tracing::debug!("Network '{}' does not exist", network_name);
             }
         }
+    }
+
+    if let Err(e) = crate::DevnetRegistry::new().and_then(|r| r.remove(prefix)) {
+        tracing::warn!(error = %e, "Failed to remove devnet from registry");
     }
 
     Ok(result)

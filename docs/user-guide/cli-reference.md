@@ -313,6 +313,47 @@ Network: my-network
   [ok] op-batcher (my-network-op-batcher)
 ```
 
+### `list`
+
+List all tracked devnets from the global registry (`~/.kupcake/devnets.toml`).
+
+```bash
+kupcake list
+```
+
+**Output**:
+```
+NAME                           STATE      DATADIR                                            CREATED
+----------------------------------------------------------------------------------------------------
+kup-happy-turtle               running    /Users/theo/kupcake-2/data-kup-happy-turtle         2026-03-20T10:30:00Z
+kup-nutty-songs                stopped    /Users/theo/data-kup-nutty-songs                    2026-03-19T14:00:00Z
+```
+
+### `prune`
+
+Remove all stopped devnets and their data directories.
+
+```bash
+kupcake prune [OPTIONS]
+```
+
+**Options**:
+- `--yes, -y` — Skip confirmation prompt
+
+**Behavior**:
+1. Lists all stopped devnets from the registry
+2. Prompts for confirmation (unless `--yes` is passed)
+3. Removes the registry entries and deletes their data directories
+
+**Examples**:
+```bash
+# Interactive confirmation
+kupcake prune
+
+# Skip confirmation
+kupcake prune --yes
+```
+
 ## Global Options
 
 ### `-v, --verbosity <LEVEL>`
