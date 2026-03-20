@@ -348,6 +348,12 @@ providers:
     ) -> Result<PrometheusHandler, anyhow::Error> {
         let container_config_path = PathBuf::from("/etc/prometheus");
 
+        // Create host directory for Prometheus TSDB data persistence.
+        // Prometheus runs as `nobody` (uid 65534) inside the container, so the
+        // directory must be world-writable for the bind mount to work on Linux.
+        let tsdb_host_path = host_config_path.join("prometheus-data");
+        FsHandler::create_host_config_directory(&tsdb_host_path.clone())?;
+
         // Build the Prometheus command
         let cmd = vec![
             "--config.file=/etc/prometheus/prometheus.yml".to_string(),
@@ -372,7 +378,8 @@ providers:
                 "{}:{}:ro",
                 host_config_path.join("prometheus.yml").display(),
                 container_config_path.join("prometheus.yml").display()
-            ));
+            ))
+            .bind(&tsdb_host_path, Path::new("/prometheus"), "rw");
 
         let handler = docker
             .start_service(
@@ -476,6 +483,32 @@ providers:
             url,
             host_url,
         })
+    }
+
+    /// Restart the Prometheus container with an updated configuration.
+    ///
+    /// This is called after node topology changes (add/remove). It regenerates
+    /// the config, stops the old container, and starts a fresh one so the new
+    /// scrape targets are guaranteed to be picked up (avoids VirtioFS caching
+    /// issues with hot-reload on Docker Desktop).
+    pub async fn restart_prometheus(
+        &self,
+        docker: &mut KupDocker,
+        host_config_path: &Path,
+        targets: &[MetricsTarget],
+    ) -> Result<PrometheusHandler, anyhow::Error> {
+        self.generate_prometheus_config(host_config_path, targets)
+            .await?;
+
+        docker
+            .stop_and_remove_container(&self.prometheus.container_name)
+            .await
+            .context("Failed to stop old Prometheus container")?;
+
+        let handler = self.start_prometheus(docker, host_config_path).await?;
+
+        tracing::info!("Prometheus restarted with updated scrape targets");
+        Ok(handler)
     }
 
     /// Start the complete monitoring stack (Prometheus + Grafana).
