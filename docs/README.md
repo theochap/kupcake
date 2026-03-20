@@ -24,6 +24,7 @@ Comprehensive guides for operators and advanced users.
 - [Docker Images](user-guide/docker-images.md) - Using custom Docker images
 - [Monitoring](user-guide/monitoring.md) - Prometheus and Grafana setup
 - [MCP Integration](user-guide/mcp-integration.md) - Expose docs to AI assistants via MCP
+- [Network Interaction](user-guide/network-interaction.md) - Querying nodes, sending transactions, verifying health
 - [Cleanup and Restart](user-guide/cleanup-and-restart.md) - Lifecycle management
 - [Troubleshooting](user-guide/troubleshooting.md) - Common issues and solutions
 

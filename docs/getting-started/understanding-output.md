@@ -373,7 +373,7 @@ A Kupcake deployment creates:
 - **1 L1 chain** (Anvil)
 - **1 Contract deployment** (op-deployer)
 - **N L2 nodes** (op-reth + kona-node pairs)
-- **3 Infrastructure services** (batcher, proposer, challenger)
+- **1-3 Infrastructure services** (batcher, plus optional proposer and challenger)
 - **1 Coordinator** (op-conductor, if multiple sequencers)
 - **2 Monitoring services** (Prometheus, Grafana)
 
