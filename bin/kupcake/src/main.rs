@@ -15,7 +15,7 @@ use cli::{
 };
 use kupcake_deploy::{
     Deployer, DeployerBuilder, DeploymentResult, KupDocker, OutDataPath, SpamPreset,
-    cleanup_by_prefix,
+    cleanup_by_prefix, snapshot_download,
 };
 
 #[tokio::main]
@@ -392,6 +392,21 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         );
     }
 
+    // If --snapshot is a remote URL, download and extract it to a local directory
+    let snapshot_path = match args.snapshot {
+        Some(ref snapshot_str) if snapshot_download::is_remote_url(snapshot_str) => {
+            let url = snapshot_download::resolve_snapshot_url(snapshot_str);
+            let download_dir = std::env::temp_dir()
+                .join("kupcake-snapshots")
+                .join(format!("snapshot-{}", std::process::id()));
+            let local_path =
+                snapshot_download::download_and_extract_snapshot(&url, &download_dir).await?;
+            Some(local_path)
+        }
+        Some(ref path) => Some(PathBuf::from(path)),
+        None => None,
+    };
+
     // Determine L1 chain ID and RPC URL based on provided arguments
     // - None: local mode with random L1 chain ID
     // - Known chain (sepolia/mainnet): use known chain ID and public RPC
@@ -452,7 +467,7 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         .no_challenger(args.no_challenger)
         .flashblocks(args.flashblocks)
         .proofs_validators(args.proofs_validators)
-        .maybe_snapshot(args.snapshot.map(PathBuf::from))
+        .maybe_snapshot(snapshot_path)
         .copy_snapshot(args.copy_snapshot)
         .op_rbuilder_image(args.docker_images.op_rbuilder_image)
         .op_rbuilder_tag(args.docker_images.op_rbuilder_tag)

@@ -579,9 +579,9 @@ kupcake --l2-chain 42069
 kupcake --l2-chain 12345
 ```
 
-#### `--snapshot <PATH>`
+#### `--snapshot <PATH_OR_URL>`
 
-Restore the L2 network from an existing op-reth database snapshot instead of deploying contracts from scratch.
+Restore the L2 network from an existing op-reth database snapshot instead of deploying contracts from scratch. Accepts a local directory path or a remote URL.
 
 **Environment Variable**: `KUP_SNAPSHOT`
 
@@ -589,7 +589,15 @@ Restore the L2 network from an existing op-reth database snapshot instead of dep
 
 **Requires**: `--l1` (fork mode must be set)
 
-**Snapshot Directory Structure**:
+**Supported Input Formats**:
+- **Local path**: `./my-snapshot/` or `/path/to/snapshot`
+- **GCS URL**: `gs://oplabs-snapshots/kupcake/op-sepolia/latest.tar.gz`
+- **HTTPS URL**: `https://storage.googleapis.com/oplabs-snapshots/kupcake/...`
+- **Shorthand**: `op-sepolia/latest` (expands to the oplabs GCS bucket)
+
+When a remote URL is provided, the archive (`.tar.gz`) is downloaded and extracted to a temporary directory before restoring.
+
+**Snapshot Directory Structure** (local path or archive contents):
 ```
 snapshot-dir/
   rollup.json       # Required - rollup config for kona-node
@@ -608,8 +616,14 @@ snapshot-dir/
 
 **Examples**:
 ```bash
-# Restore from a snapshot directory
+# Restore from a local snapshot directory
 kupcake --l1 sepolia --snapshot /path/to/snapshot
+
+# Download and restore from a GCS URL
+kupcake --l1 sepolia --snapshot gs://oplabs-snapshots/kupcake/op-sepolia/latest.tar.gz
+
+# Use shorthand for the oplabs bucket
+kupcake --l1 sepolia --snapshot op-sepolia/latest
 
 # Restore with a full copy of the reth database
 kupcake --l1 sepolia --snapshot /path/to/snapshot --copy-snapshot
@@ -1454,8 +1468,11 @@ kupcake \
 ### Restore from Snapshot
 
 ```bash
-# Symlink reth database (fast, default)
+# From local directory (symlink reth database, fast default)
 kupcake --l1 sepolia --snapshot /path/to/snapshot
+
+# Download from GCS and restore
+kupcake --l1 sepolia --snapshot op-sepolia/latest
 
 # Copy reth database (independent copy)
 kupcake --l1 sepolia --snapshot /path/to/snapshot --copy-snapshot

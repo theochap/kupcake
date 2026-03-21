@@ -500,7 +500,13 @@ pub struct DeployArgs {
 
     /// Restore the L2 network from an existing op-reth database snapshot.
     ///
-    /// The snapshot directory must contain:
+    /// Accepts a local directory path or a remote URL:
+    /// - Local path: `./my-snapshot/`
+    /// - GCS URL: `gs://oplabs-snapshots/kupcake/op-sepolia/latest.tar.gz`
+    /// - HTTPS URL: `https://storage.googleapis.com/oplabs-snapshots/kupcake/...`
+    /// - Shorthand: `op-sepolia/latest` (expands to oplabs GCS bucket)
+    ///
+    /// The snapshot (or archive contents) must contain:
     /// - `rollup.json` — rollup config for kona-node
     /// - A subdirectory with the op-reth database
     /// - Optionally `intent.toml` (generated if missing)
