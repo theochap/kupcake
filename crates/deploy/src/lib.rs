@@ -36,6 +36,7 @@ pub mod health;
 pub mod node_lifecycle;
 pub mod rpc;
 pub mod services;
+pub mod snapshot_download;
 pub mod spam;
 pub mod status;
 pub use spam::SpamPreset;

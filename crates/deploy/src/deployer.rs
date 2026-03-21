@@ -15,6 +15,7 @@ use crate::{
     services::MonitoringHandler,
     services::anvil::AnvilInput,
     services::l2_node::{L2NodeBuilder, L2NodeHandler},
+    snapshot_download,
 };
 
 /// The default name for the kupcake configuration file.
@@ -884,42 +885,10 @@ impl Deployer {
         sequencer_container_name: &str,
         copy_snapshot: bool,
     ) -> Result<()> {
-        // Validate required files
-        let rollup_src = snapshot_path.join("rollup.json");
-        if !rollup_src.exists() {
-            anyhow::bail!(
-                "Snapshot directory is missing rollup.json: {}",
-                snapshot_path.display()
-            );
-        }
-
-        // Find the reth database subdirectory (expect exactly one)
-        let subdirs: Vec<_> = std::fs::read_dir(snapshot_path)
-            .context("Failed to read snapshot directory")?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
-            .collect();
-
-        let reth_db_dir = match subdirs.len() {
-            0 => anyhow::bail!(
-                "Snapshot directory has no subdirectory (expected reth database): {}",
-                snapshot_path.display()
-            ),
-            1 => subdirs
-                .into_iter()
-                .next()
-                .map(|e| e.path())
-                .context("unreachable")?,
-            n => anyhow::bail!(
-                "Snapshot directory has {} subdirectories, expected exactly one reth database directory. Found: {}",
-                n,
-                subdirs
-                    .iter()
-                    .map(|e| e.file_name().to_string_lossy().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        };
+        // Validate snapshot directory structure
+        let contents = snapshot_download::validate_snapshot_dir(snapshot_path)?;
+        let rollup_src = contents.rollup_json;
+        let reth_db_dir = contents.reth_db_dir;
 
         tracing::info!(
             snapshot = %snapshot_path.display(),
@@ -931,10 +900,9 @@ impl Deployer {
         fs::FsHandler::create_host_config_directory(l2_nodes_data_path)?;
 
         // Handle intent.toml: copy from snapshot if present, otherwise generate
-        let intent_src = snapshot_path.join("intent.toml");
-        if intent_src.exists() {
+        if let Some(ref intent_src) = contents.intent_toml {
             tracing::info!("Copying intent.toml from snapshot");
-            std::fs::copy(&intent_src, l2_nodes_data_path.join("intent.toml"))
+            std::fs::copy(intent_src, l2_nodes_data_path.join("intent.toml"))
                 .context("Failed to copy intent.toml from snapshot")?;
         } else {
             tracing::info!("Generating intent.toml via op-deployer init (standard-overrides)");
