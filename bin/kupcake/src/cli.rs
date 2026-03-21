@@ -477,9 +477,16 @@ pub struct CleanupArgs {
 /// Arguments for the deploy command.
 #[derive(Parser)]
 pub struct DeployArgs {
+    // ── Network Configuration ──
     /// A custom name for the network. If not provided, the network will be named:
     /// kup-<l1-chain-name>-<l2-chain-name>.
-    #[arg(short, long, visible_alias = "name", env = "KUP_NETWORK_NAME")]
+    #[arg(
+        short,
+        long,
+        visible_alias = "name",
+        env = "KUP_NETWORK_NAME",
+        help_heading = "Network Configuration"
+    )]
     pub network: Option<String>,
 
     /// The L1 chain source - either a chain name or RPC URL.
@@ -490,13 +497,176 @@ pub struct DeployArgs {
     ///
     /// If not provided, the L1 chain will run in local mode without forking
     /// and with a random chain ID.
-    #[arg(long, alias = "l1-chain", env = "KUP_L1")]
+    #[arg(
+        long,
+        alias = "l1-chain",
+        env = "KUP_L1",
+        help_heading = "Network Configuration"
+    )]
     pub l1: Option<L1Source>,
 
     /// The L2 chain info (chain ID or name).
     /// If not provided, the L2 chain id will be generated randomly.
-    #[arg(long, alias = "l2", env = "KUP_L2_CHAIN")]
+    #[arg(
+        long,
+        alias = "l2",
+        env = "KUP_L2_CHAIN",
+        help_heading = "Network Configuration"
+    )]
     pub l2_chain: Option<L2Chain>,
+
+    /// The block time in seconds for the L1 chain (Anvil) and L2 derivation.
+    ///
+    /// Defaults to 4 seconds to make the initial deployment faster.
+    #[arg(
+        long,
+        env = "KUP_BLOCK_TIME",
+        default_value_t = 4,
+        help_heading = "Network Configuration"
+    )]
+    pub block_time: u64,
+
+    /// Manually specify the L2 genesis timestamp (Unix timestamp in seconds).
+    ///
+    /// When forking from L1, the genesis timestamp is automatically calculated
+    /// as: latest_block_timestamp - (block_time * block_number)
+    /// This option overrides that calculation and sets an explicit genesis timestamp.
+    ///
+    /// Use this when you need a specific genesis timestamp for testing or alignment.
+    #[arg(
+        long,
+        env = "KUP_GENESIS_TIMESTAMP",
+        help_heading = "Network Configuration"
+    )]
+    pub genesis_timestamp: Option<u64>,
+
+    // ── L2 Nodes ──
+    /// The total number of L2 nodes to deploy.
+    ///
+    /// This is the sum of sequencers and validators.
+    /// Defaults to 5 (2 sequencers + 3 validators).
+    #[arg(
+        long,
+        alias = "nodes",
+        env = "KUP_L2_NODES",
+        default_value_t = 5,
+        help_heading = "L2 Nodes"
+    )]
+    pub l2_nodes: usize,
+
+    /// The number of sequencer nodes to deploy.
+    ///
+    /// If more than 1 sequencer is specified, op-conductor will be deployed
+    /// to coordinate the sequencers using Raft consensus.
+    /// Must be at least 1 and at most equal to l2_nodes.
+    /// Defaults to 2 (2 sequencers).
+    #[arg(
+        long,
+        alias = "sequencers",
+        env = "KUP_SEQUENCERS",
+        default_value_t = 2,
+        help_heading = "L2 Nodes"
+    )]
+    pub sequencer_count: usize,
+
+    /// Enable flashblocks support.
+    ///
+    /// When enabled, sequencer nodes use op-rbuilder (a fork of op-reth with
+    /// flashblocks capabilities) instead of op-reth. Kona-node's built-in
+    /// flashblocks relay connects the sequencer's op-rbuilder to validator nodes.
+    #[arg(long, env = "KUP_FLASHBLOCKS", help_heading = "L2 Nodes")]
+    pub flashblocks: bool,
+
+    /// Number of validators with historical proofs ExEx enabled.
+    ///
+    /// The first N validators will have the proofs history ExEx enabled,
+    /// which stores versioned trie nodes in a sidecar MDBX database for
+    /// fast `eth_getProof` on recent historical blocks.
+    /// Requires op-reth v1.11.3+.
+    #[arg(
+        long,
+        env = "KUP_PROOFS_VALIDATORS",
+        default_value_t = 0,
+        help_heading = "L2 Nodes"
+    )]
+    pub proofs_validators: usize,
+
+    // ── Deployment ──
+    /// Deployment target for OP Stack contracts.
+    ///
+    /// - "live" (default): Anvil starts first, then op-deployer deploys contracts to the live L1.
+    /// - "genesis": op-deployer deploys contracts into an in-memory L1 state, then Anvil boots
+    ///   from the resulting genesis. Only compatible with local Anvil (no --l1 fork).
+    #[arg(
+        long,
+        env = "KUP_DEPLOYMENT_TARGET",
+        default_value = "live",
+        value_enum,
+        help_heading = "Deployment"
+    )]
+    pub deployment_target: DeploymentTargetArg,
+
+    /// Path to an existing kupconf.toml configuration file to load.
+    ///
+    /// When provided, the deployment will use the configuration from this file
+    /// instead of generating a new one from CLI arguments.
+    #[arg(long, alias = "conf", env = "KUP_CONFIG", help_heading = "Deployment")]
+    pub config: Option<String>,
+
+    /// Redeploy all contracts.
+    /// If not provided and the deployer data directory exists, the contracts will not be redeployed.
+    #[arg(
+        long,
+        env = "KUP_REDEPLOY",
+        default_value_t = false,
+        help_heading = "Deployment"
+    )]
+    pub redeploy: bool,
+
+    /// Disable op-proposer deployment.
+    ///
+    /// When set, the op-proposer service will not be started as part of the L2 stack.
+    #[arg(long, env = "KUP_NO_PROPOSER", help_heading = "Deployment")]
+    pub no_proposer: bool,
+
+    /// Disable op-challenger deployment.
+    ///
+    /// When set, the op-challenger service will not be started as part of the L2 stack.
+    #[arg(long, env = "KUP_NO_CHALLENGER", help_heading = "Deployment")]
+    pub no_challenger: bool,
+
+    // ── State & Storage ──
+    /// The path to the output data directory.
+    ///
+    /// If not provided, the data will be stored at: ./data_<network-name>
+    #[arg(
+        long,
+        alias = "outdata",
+        env = "KUP_OUTDATA",
+        help_heading = "State & Storage"
+    )]
+    pub outdata: Option<OutData>,
+
+    /// Dump Anvil L1 state before cleanup so it can be restored on next boot.
+    ///
+    /// When enabled, Anvil state is dumped via the `anvil_dumpState` RPC method
+    /// before containers are stopped. On the next deployment with the same
+    /// configuration, the persisted state is restored automatically.
+    #[arg(
+        long,
+        env = "KUP_DUMP_STATE",
+        default_value_t = true,
+        help_heading = "State & Storage"
+    )]
+    pub dump_state: bool,
+
+    /// Load an external Anvil state file via `--load-state` on startup.
+    ///
+    /// Only valid in live deployment mode. When provided, Anvil will boot
+    /// from this state file instead of starting fresh or restoring from
+    /// a previous dump. Incompatible with genesis mode.
+    #[arg(long, env = "KUP_OVERRIDE_STATE", help_heading = "State & Storage")]
+    pub override_state: Option<String>,
 
     /// Restore the L2 network from an existing op-reth database snapshot.
     ///
@@ -507,49 +677,33 @@ pub struct DeployArgs {
     ///
     /// Requires `--l1` to be set (fork mode). Only the primary sequencer is
     /// restored from the snapshot; validators sync via P2P.
-    #[arg(long, env = "KUP_SNAPSHOT", conflicts_with = "redeploy")]
+    #[arg(
+        long,
+        env = "KUP_SNAPSHOT",
+        conflicts_with = "redeploy",
+        help_heading = "State & Storage"
+    )]
     pub snapshot: Option<String>,
 
     /// Copy the snapshot reth database instead of symlinking it.
     ///
     /// By default, a symlink is created to avoid duplicating large databases.
     /// Use this flag when you need an independent copy of the data.
-    #[arg(long, env = "KUP_COPY_SNAPSHOT", requires = "snapshot")]
+    #[arg(
+        long,
+        env = "KUP_COPY_SNAPSHOT",
+        requires = "snapshot",
+        help_heading = "State & Storage"
+    )]
     pub copy_snapshot: bool,
 
-    /// Redeploy all contracts.
-    /// If not provided and the deployer data directory exists, the contracts will not be redeployed.
-    #[arg(long, env = "KUP_REDEPLOY", default_value_t = false)]
-    pub redeploy: bool,
-
-    /// The path to the output data directory.
-    ///
-    /// If not provided, the data will be stored at: ./data_<network-name>
-    #[arg(long, alias = "outdata", env = "KUP_OUTDATA")]
-    pub outdata: Option<OutData>,
-
+    // ── Runtime Behavior ──
     /// Skips the cleanup of docker containers when the program exits.
-    #[arg(long, env = "KUP_NO_CLEANUP")]
+    #[arg(long, env = "KUP_NO_CLEANUP", help_heading = "Runtime Behavior")]
     pub no_cleanup: bool,
 
-    /// Dump Anvil L1 state before cleanup so it can be restored on next boot.
-    ///
-    /// When enabled, Anvil state is dumped via the `anvil_dumpState` RPC method
-    /// before containers are stopped. On the next deployment with the same
-    /// configuration, the persisted state is restored automatically.
-    #[arg(long, env = "KUP_DUMP_STATE", default_value_t = true)]
-    pub dump_state: bool,
-
-    /// Load an external Anvil state file via `--load-state` on startup.
-    ///
-    /// Only valid in live deployment mode. When provided, Anvil will boot
-    /// from this state file instead of starting fresh or restoring from
-    /// a previous dump. Incompatible with genesis mode.
-    #[arg(long, env = "KUP_OVERRIDE_STATE")]
-    pub override_state: Option<String>,
-
     /// Run in detached mode. Deploy the network and exit, leaving containers running.
-    #[arg(long, env = "KUP_DETACH")]
+    #[arg(long, env = "KUP_DETACH", help_heading = "Runtime Behavior")]
     pub detach: bool,
 
     /// Deploy and immediately start spamming with a named preset.
@@ -563,7 +717,8 @@ pub struct DeployArgs {
         default_missing_value = "medium",
         value_name = "PRESET",
         env = "KUP_SPAM",
-        conflicts_with = "detach"
+        conflicts_with = "detach",
+        help_heading = "Runtime Behavior"
     )]
     pub spam: Option<String>,
 
@@ -572,131 +727,51 @@ pub struct DeployArgs {
     /// When enabled, Docker will automatically assign random available ports on the host
     /// for all exposed container ports (equivalent to `docker run -P`).
     /// The custom Docker network is still used for container-to-container communication.
-    #[arg(long, env = "KUP_PUBLISH_ALL_PORTS")]
+    #[arg(long, env = "KUP_PUBLISH_ALL_PORTS", help_heading = "Runtime Behavior")]
     pub publish_all_ports: bool,
 
-    /// The block time in seconds for the L1 chain (Anvil) and L2 derivation.
-    ///
-    /// Defaults to 4 seconds to make the initial deployment faster.
-    #[arg(long, env = "KUP_BLOCK_TIME", default_value_t = 4)]
-    pub block_time: u64,
-
-    /// Manually specify the L2 genesis timestamp (Unix timestamp in seconds).
-    ///
-    /// When forking from L1, the genesis timestamp is automatically calculated
-    /// as: latest_block_timestamp - (block_time * block_number)
-    /// This option overrides that calculation and sets an explicit genesis timestamp.
-    ///
-    /// Use this when you need a specific genesis timestamp for testing or alignment.
-    #[arg(long, env = "KUP_GENESIS_TIMESTAMP")]
-    pub genesis_timestamp: Option<u64>,
-
-    /// The total number of L2 nodes to deploy.
-    ///
-    /// This is the sum of sequencers and validators.
-    /// Defaults to 5 (2 sequencers + 3 validators).
-    #[arg(long, alias = "nodes", env = "KUP_L2_NODES", default_value_t = 5)]
-    pub l2_nodes: usize,
-
-    /// The number of sequencer nodes to deploy.
-    ///
-    /// If more than 1 sequencer is specified, op-conductor will be deployed
-    /// to coordinate the sequencers using Raft consensus.
-    /// Must be at least 1 and at most equal to l2_nodes.
-    /// Defaults to 2 (2 sequencers).
-    #[arg(
-        long,
-        alias = "sequencers",
-        env = "KUP_SEQUENCERS",
-        default_value_t = 2
-    )]
-    pub sequencer_count: usize,
-
-    /// Disable op-proposer deployment.
-    ///
-    /// When set, the op-proposer service will not be started as part of the L2 stack.
-    #[arg(long, env = "KUP_NO_PROPOSER")]
-    pub no_proposer: bool,
-
-    /// Disable op-challenger deployment.
-    ///
-    /// When set, the op-challenger service will not be started as part of the L2 stack.
-    #[arg(long, env = "KUP_NO_CHALLENGER")]
-    pub no_challenger: bool,
-
-    /// Enable flashblocks support.
-    ///
-    /// When enabled, sequencer nodes use op-rbuilder (a fork of op-reth with
-    /// flashblocks capabilities) instead of op-reth. Kona-node's built-in
-    /// flashblocks relay connects the sequencer's op-rbuilder to validator nodes.
-    #[arg(long, env = "KUP_FLASHBLOCKS")]
-    pub flashblocks: bool,
-
-    /// Number of validators with historical proofs ExEx enabled.
-    ///
-    /// The first N validators will have the proofs history ExEx enabled,
-    /// which stores versioned trie nodes in a sidecar MDBX database for
-    /// fast `eth_getProof` on recent historical blocks.
-    /// Requires op-reth v1.11.3+.
-    #[arg(long, env = "KUP_PROOFS_VALIDATORS", default_value_t = 0)]
-    pub proofs_validators: usize,
-
+    // ── Logging & Monitoring ──
     /// Docker log file max size (e.g., "10m"). Enables json-file log driver with rotation.
-    #[arg(long, env = "KUP_LOG_MAX_SIZE")]
+    #[arg(long, env = "KUP_LOG_MAX_SIZE", help_heading = "Logging & Monitoring")]
     pub log_max_size: Option<String>,
 
     /// Max number of rotated Docker log files.
-    #[arg(long, env = "KUP_LOG_MAX_FILE")]
+    #[arg(long, env = "KUP_LOG_MAX_FILE", help_heading = "Logging & Monitoring")]
     pub log_max_file: Option<String>,
 
     /// Quiet verbose services: suppress anvil output, set services to INFO log level.
-    #[arg(long, env = "KUP_QUIET_SERVICES")]
+    #[arg(
+        long,
+        env = "KUP_QUIET_SERVICES",
+        help_heading = "Logging & Monitoring"
+    )]
     pub quiet_services: bool,
 
     /// Stream container logs to tracing::debug!() in background.
-    #[arg(long, env = "KUP_STREAM_LOGS")]
+    #[arg(long, env = "KUP_STREAM_LOGS", help_heading = "Logging & Monitoring")]
     pub stream_logs: bool,
 
     /// Shorthand for long-running sessions: --log-max-size=10m --log-max-file=3 --quiet-services.
     ///
     /// Explicit flags override the defaults set by --long-running.
-    #[arg(long, env = "KUP_LONG_RUNNING")]
+    #[arg(long, env = "KUP_LONG_RUNNING", help_heading = "Logging & Monitoring")]
     pub long_running: bool,
-
-    /// Deployment target for OP Stack contracts.
-    ///
-    /// - "live" (default): Anvil starts first, then op-deployer deploys contracts to the live L1.
-    /// - "genesis": op-deployer deploys contracts into an in-memory L1 state, then Anvil boots
-    ///   from the resulting genesis. Only compatible with local Anvil (no --l1 fork).
-    #[arg(
-        long,
-        env = "KUP_DEPLOYMENT_TARGET",
-        default_value = "live",
-        value_enum
-    )]
-    pub deployment_target: DeploymentTargetArg,
 
     /// Write deployment metrics to a TOML file.
     ///
     /// When provided, per-service deploy timings and image sizes
     /// are written in TOML format to the specified path after deployment.
-    #[arg(long, env = "KUP_METRICS_FILE")]
+    #[arg(long, env = "KUP_METRICS_FILE", help_heading = "Logging & Monitoring")]
     pub metrics_file: Option<String>,
 
     /// Write deployment endpoints to a TOML file.
     ///
     /// When provided, all service endpoints (both internal Docker network
     /// and host-accessible URLs) are written in TOML format to the specified path.
-    #[arg(long, env = "KUP_PORTS_FILE")]
+    #[arg(long, env = "KUP_PORTS_FILE", help_heading = "Logging & Monitoring")]
     pub ports_file: Option<String>,
 
-    /// Path to an existing kupconf.toml configuration file to load.
-    ///
-    /// When provided, the deployment will use the configuration from this file
-    /// instead of generating a new one from CLI arguments.
-    #[arg(long, alias = "conf", env = "KUP_CONFIG")]
-    pub config: Option<String>,
-
+    // ── Docker Images & Binaries ──
     /// Docker image overrides for all services.
     #[clap(flatten)]
     pub docker_images: DockerImageOverrides,
@@ -743,142 +818,159 @@ impl Default for DeployArgs {
 /// Docker image overrides for all services.
 #[derive(Debug, Clone, Parser)]
 pub struct DockerImageOverrides {
+    // ── Docker Images ──
     /// Docker image for Anvil (L1 chain).
-    #[arg(long, env = "KUP_ANVIL_IMAGE", default_value = ANVIL_DEFAULT_IMAGE)]
+    #[arg(long, env = "KUP_ANVIL_IMAGE", default_value = ANVIL_DEFAULT_IMAGE, help_heading = "Docker Images")]
     pub anvil_image: String,
 
     /// Docker tag for Anvil.
-    #[arg(long, env = "KUP_ANVIL_TAG", default_value = ANVIL_DEFAULT_TAG)]
+    #[arg(long, env = "KUP_ANVIL_TAG", default_value = ANVIL_DEFAULT_TAG, help_heading = "Docker Images")]
     pub anvil_tag: String,
 
     /// Docker image for op-reth (L2 execution client).
-    #[arg(long, env = "KUP_OP_RETH_IMAGE", default_value = OP_RETH_DEFAULT_IMAGE)]
+    #[arg(long, env = "KUP_OP_RETH_IMAGE", default_value = OP_RETH_DEFAULT_IMAGE, help_heading = "Docker Images")]
     pub op_reth_image: String,
 
     /// Docker tag for op-reth.
-    #[arg(long, env = "KUP_OP_RETH_TAG", default_value = OP_RETH_DEFAULT_TAG)]
+    #[arg(long, env = "KUP_OP_RETH_TAG", default_value = OP_RETH_DEFAULT_TAG, help_heading = "Docker Images")]
     pub op_reth_tag: String,
 
     /// Docker image for kona-node (L2 consensus client).
-    #[arg(long, env = "KUP_KONA_NODE_IMAGE", default_value = KONA_NODE_DEFAULT_IMAGE)]
+    #[arg(long, env = "KUP_KONA_NODE_IMAGE", default_value = KONA_NODE_DEFAULT_IMAGE, help_heading = "Docker Images")]
     pub kona_node_image: String,
 
     /// Docker tag for kona-node.
-    #[arg(long, env = "KUP_KONA_NODE_TAG", default_value = KONA_NODE_DEFAULT_TAG)]
+    #[arg(long, env = "KUP_KONA_NODE_TAG", default_value = KONA_NODE_DEFAULT_TAG, help_heading = "Docker Images")]
     pub kona_node_tag: String,
 
     /// Docker image for op-batcher.
-    #[arg(long, env = "KUP_OP_BATCHER_IMAGE", default_value = OP_BATCHER_DEFAULT_IMAGE)]
+    #[arg(long, env = "KUP_OP_BATCHER_IMAGE", default_value = OP_BATCHER_DEFAULT_IMAGE, help_heading = "Docker Images")]
     pub op_batcher_image: String,
 
     /// Docker tag for op-batcher.
-    #[arg(long, env = "KUP_OP_BATCHER_TAG", default_value = OP_BATCHER_DEFAULT_TAG)]
+    #[arg(long, env = "KUP_OP_BATCHER_TAG", default_value = OP_BATCHER_DEFAULT_TAG, help_heading = "Docker Images")]
     pub op_batcher_tag: String,
 
     /// Docker image for op-proposer.
-    #[arg(long, env = "KUP_OP_PROPOSER_IMAGE", default_value = OP_PROPOSER_DEFAULT_IMAGE)]
+    #[arg(long, env = "KUP_OP_PROPOSER_IMAGE", default_value = OP_PROPOSER_DEFAULT_IMAGE, help_heading = "Docker Images")]
     pub op_proposer_image: String,
 
     /// Docker tag for op-proposer.
-    #[arg(long, env = "KUP_OP_PROPOSER_TAG", default_value = OP_PROPOSER_DEFAULT_TAG)]
+    #[arg(long, env = "KUP_OP_PROPOSER_TAG", default_value = OP_PROPOSER_DEFAULT_TAG, help_heading = "Docker Images")]
     pub op_proposer_tag: String,
 
     /// Docker image for op-challenger.
-    #[arg(long, env = "KUP_OP_CHALLENGER_IMAGE", default_value = OP_CHALLENGER_DEFAULT_IMAGE)]
+    #[arg(long, env = "KUP_OP_CHALLENGER_IMAGE", default_value = OP_CHALLENGER_DEFAULT_IMAGE, help_heading = "Docker Images")]
     pub op_challenger_image: String,
 
     /// Docker tag for op-challenger.
-    #[arg(long, env = "KUP_OP_CHALLENGER_TAG", default_value = OP_CHALLENGER_DEFAULT_TAG)]
+    #[arg(long, env = "KUP_OP_CHALLENGER_TAG", default_value = OP_CHALLENGER_DEFAULT_TAG, help_heading = "Docker Images")]
     pub op_challenger_tag: String,
 
     /// Docker image for op-conductor.
-    #[arg(long, env = "KUP_OP_CONDUCTOR_IMAGE", default_value = OP_CONDUCTOR_DEFAULT_IMAGE)]
+    #[arg(long, env = "KUP_OP_CONDUCTOR_IMAGE", default_value = OP_CONDUCTOR_DEFAULT_IMAGE, help_heading = "Docker Images")]
     pub op_conductor_image: String,
 
     /// Docker tag for op-conductor.
-    #[arg(long, env = "KUP_OP_CONDUCTOR_TAG", default_value = OP_CONDUCTOR_DEFAULT_TAG)]
+    #[arg(long, env = "KUP_OP_CONDUCTOR_TAG", default_value = OP_CONDUCTOR_DEFAULT_TAG, help_heading = "Docker Images")]
     pub op_conductor_tag: String,
 
     /// Docker image for op-deployer.
-    #[arg(long, env = "KUP_OP_DEPLOYER_IMAGE", default_value = OP_DEPLOYER_DEFAULT_IMAGE)]
+    #[arg(long, env = "KUP_OP_DEPLOYER_IMAGE", default_value = OP_DEPLOYER_DEFAULT_IMAGE, help_heading = "Docker Images")]
     pub op_deployer_image: String,
 
     /// Docker tag for op-deployer.
-    #[arg(long, env = "KUP_OP_DEPLOYER_TAG", default_value = OP_DEPLOYER_DEFAULT_TAG)]
+    #[arg(long, env = "KUP_OP_DEPLOYER_TAG", default_value = OP_DEPLOYER_DEFAULT_TAG, help_heading = "Docker Images")]
     pub op_deployer_tag: String,
 
     /// Docker image for Prometheus.
-    #[arg(long, env = "KUP_PROMETHEUS_IMAGE", default_value = PROMETHEUS_DEFAULT_IMAGE)]
+    #[arg(long, env = "KUP_PROMETHEUS_IMAGE", default_value = PROMETHEUS_DEFAULT_IMAGE, help_heading = "Docker Images")]
     pub prometheus_image: String,
 
     /// Docker tag for Prometheus.
-    #[arg(long, env = "KUP_PROMETHEUS_TAG", default_value = PROMETHEUS_DEFAULT_TAG)]
+    #[arg(long, env = "KUP_PROMETHEUS_TAG", default_value = PROMETHEUS_DEFAULT_TAG, help_heading = "Docker Images")]
     pub prometheus_tag: String,
 
     /// Docker image for Grafana.
-    #[arg(long, env = "KUP_GRAFANA_IMAGE", default_value = GRAFANA_DEFAULT_IMAGE)]
+    #[arg(long, env = "KUP_GRAFANA_IMAGE", default_value = GRAFANA_DEFAULT_IMAGE, help_heading = "Docker Images")]
     pub grafana_image: String,
 
     /// Docker tag for Grafana.
-    #[arg(long, env = "KUP_GRAFANA_TAG", default_value = GRAFANA_DEFAULT_TAG)]
+    #[arg(long, env = "KUP_GRAFANA_TAG", default_value = GRAFANA_DEFAULT_TAG, help_heading = "Docker Images")]
     pub grafana_tag: String,
 
     /// Docker image for op-rbuilder (flashblocks-enabled execution client).
-    #[arg(long, env = "KUP_OP_RBUILDER_IMAGE", default_value = OP_RBUILDER_DEFAULT_IMAGE)]
+    #[arg(long, env = "KUP_OP_RBUILDER_IMAGE", default_value = OP_RBUILDER_DEFAULT_IMAGE, help_heading = "Docker Images")]
     pub op_rbuilder_image: String,
 
     /// Docker tag for op-rbuilder.
-    #[arg(long, env = "KUP_OP_RBUILDER_TAG", default_value = OP_RBUILDER_DEFAULT_TAG)]
+    #[arg(long, env = "KUP_OP_RBUILDER_TAG", default_value = OP_RBUILDER_DEFAULT_TAG, help_heading = "Docker Images")]
     pub op_rbuilder_tag: String,
 
-    // Binary path overrides (alternative to Docker images)
+    // ── Binary Overrides ──
     /// Path to a local op-reth binary to use instead of a Docker image.
     ///
     /// When provided, the binary will be copied into a lightweight Docker image.
     /// This is useful for testing local builds.
-    #[arg(long, env = "KUP_OP_RETH_BINARY")]
+    #[arg(long, env = "KUP_OP_RETH_BINARY", help_heading = "Binary Overrides")]
     pub op_reth_binary: Option<String>,
 
     /// Path to a local kona-node binary to use instead of a Docker image.
     ///
     /// When provided, the binary will be copied into a lightweight Docker image.
     /// This is useful for testing local builds.
-    #[arg(long, env = "KUP_KONA_NODE_BINARY")]
+    #[arg(long, env = "KUP_KONA_NODE_BINARY", help_heading = "Binary Overrides")]
     pub kona_node_binary: Option<String>,
 
     /// Path to a local op-batcher binary to use instead of a Docker image.
     ///
     /// When provided, the binary will be copied into a lightweight Docker image.
     /// This is useful for testing local builds.
-    #[arg(long, env = "KUP_OP_BATCHER_BINARY")]
+    #[arg(long, env = "KUP_OP_BATCHER_BINARY", help_heading = "Binary Overrides")]
     pub op_batcher_binary: Option<String>,
 
     /// Path to a local op-proposer binary to use instead of a Docker image.
     ///
     /// When provided, the binary will be copied into a lightweight Docker image.
     /// This is useful for testing local builds.
-    #[arg(long, env = "KUP_OP_PROPOSER_BINARY")]
+    #[arg(
+        long,
+        env = "KUP_OP_PROPOSER_BINARY",
+        help_heading = "Binary Overrides"
+    )]
     pub op_proposer_binary: Option<String>,
 
     /// Path to a local op-challenger binary to use instead of a Docker image.
     ///
     /// When provided, the binary will be copied into a lightweight Docker image.
     /// This is useful for testing local builds.
-    #[arg(long, env = "KUP_OP_CHALLENGER_BINARY")]
+    #[arg(
+        long,
+        env = "KUP_OP_CHALLENGER_BINARY",
+        help_heading = "Binary Overrides"
+    )]
     pub op_challenger_binary: Option<String>,
 
     /// Path to a local op-conductor binary to use instead of a Docker image.
     ///
     /// When provided, the binary will be copied into a lightweight Docker image.
     /// This is useful for testing local builds.
-    #[arg(long, env = "KUP_OP_CONDUCTOR_BINARY")]
+    #[arg(
+        long,
+        env = "KUP_OP_CONDUCTOR_BINARY",
+        help_heading = "Binary Overrides"
+    )]
     pub op_conductor_binary: Option<String>,
 
     /// Path to a local op-rbuilder binary to use instead of a Docker image.
     ///
     /// When provided, the binary will be copied into a lightweight Docker image.
     /// This is useful for testing local builds.
-    #[arg(long, env = "KUP_OP_RBUILDER_BINARY")]
+    #[arg(
+        long,
+        env = "KUP_OP_RBUILDER_BINARY",
+        help_heading = "Binary Overrides"
+    )]
     pub op_rbuilder_binary: Option<String>,
 }
 

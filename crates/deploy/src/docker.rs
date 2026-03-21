@@ -14,6 +14,7 @@ use std::{
 use sha2::{Digest, Sha256};
 
 use anyhow::{Context, Result};
+use backon::Retryable;
 use bollard::{
     Docker,
     container::{
@@ -596,23 +597,47 @@ impl KupDocker {
 
         tracing::debug!(image = %full_image, "Image not found locally, pulling...");
 
-        let mut stream = self.docker.create_image(
-            Some(CreateImageOptions {
-                from_image: image.to_string(),
-                tag: tag.to_string(),
-                ..Default::default()
-            }),
-            None,
-            None,
-        );
+        let docker = &self.docker;
+        let pull = || async {
+            let mut stream = docker.create_image(
+                Some(CreateImageOptions {
+                    from_image: image.to_string(),
+                    tag: tag.to_string(),
+                    ..Default::default()
+                }),
+                None,
+                None,
+            );
 
-        while let Some(result) = stream.next().await
-            && let Some(status) = result
-                .map_err(|e| anyhow::anyhow!("Failed to pull image '{}:{}': {}", image, tag, e))?
-                .status
-        {
-            tracing::trace!(status, "Image pull");
-        }
+            while let Some(result) = stream.next().await
+                && let Some(status) = result
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to pull image '{}:{}': {}", image, tag, e)
+                    })?
+                    .status
+            {
+                tracing::trace!(status, "Image pull");
+            }
+
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let backoff = backon::ExponentialBuilder::default()
+            .with_min_delay(std::time::Duration::from_secs(2))
+            .with_max_delay(std::time::Duration::from_secs(15))
+            .with_max_times(3);
+
+        pull.retry(backoff)
+            .notify(|err, dur| {
+                tracing::warn!(
+                    image = %full_image,
+                    error = %err,
+                    retry_in = ?dur,
+                    "Docker image pull failed, retrying..."
+                );
+            })
+            .await
+            .with_context(|| format!("Failed to pull image '{}' after retries", full_image))?;
 
         Ok(full_image)
     }

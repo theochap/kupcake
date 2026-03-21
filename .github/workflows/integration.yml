@@ -29,8 +29,8 @@ jobs:
         run: cargo build --release --bin kona-node
         working-directory: crates/deploy/tests/kona
 
-      - name: Archive integration test binary
-        run: cargo nextest archive --test integration_test --archive-file nextest-archive.tar.zst
+      - name: Archive integration test binaries
+        run: cargo nextest archive --tests --archive-file nextest-archive.tar.zst
 
       - uses: actions/upload-artifact@v4
         with:
@@ -72,8 +72,8 @@ jobs:
           path: bench-results.toml
           retention-days: 30
 
-  integration:
-    name: Integration Tests (${{ matrix.partition }}/6)
+  all-tests:
+    name: All Tests (${{ matrix.partition }}/6)
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -105,4 +105,5 @@ jobs:
           cargo nextest run \
             --archive-file nextest-archive.tar.zst \
             --no-capture \
-            --partition count:${{ matrix.partition }}/6
+            --partition count:${{ matrix.partition }}/6 \
+            -E 'not binary(network_redeploy_test)'

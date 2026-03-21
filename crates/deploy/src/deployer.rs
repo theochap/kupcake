@@ -369,10 +369,21 @@ impl Deployer {
             path.to_path_buf()
         };
 
-        let content = std::fs::read_to_string(config_path)
+        let content = std::fs::read_to_string(&config_path)
             .context(format!("Failed to read config from {}", path.display()))?;
-        let config: Self =
+
+        // Parse TOML, resolve any `include` directives, then deserialize
+        let mut value: toml::Value =
             toml::from_str(&content).context("Failed to parse config file as TOML")?;
+
+        let base_dir = config_path.parent().unwrap_or(Path::new("."));
+        crate::config_resolve::resolve_includes(&mut value, base_dir)
+            .context("Failed to resolve include directives in config")?;
+
+        let config: Self = value
+            .try_into()
+            .context("Failed to deserialize config after resolving includes")?;
+
         tracing::info!(path = %path.display(), "Configuration loaded");
         Ok(config)
     }
@@ -784,6 +795,94 @@ impl Deployer {
         }
 
         if let Some(ref challenger) = l2_stack.op_challenger {
+            targets.push(MetricsTarget {
+                job_name: "op-challenger".to_string(),
+                container_name: challenger.container_name.clone(),
+                port: CHALLENGER_METRICS_PORT,
+                service_label: "op-challenger".to_string(),
+                layer_label: "challenger".to_string(),
+            });
+        }
+
+        targets
+    }
+
+    /// Build metrics targets for Prometheus scraping from the deployer's builder config.
+    ///
+    /// This is used by node lifecycle operations (add/remove) where runtime handlers
+    /// are not available but Prometheus scrape targets need to be regenerated.
+    pub fn build_metrics_targets_from_config(&self) -> Vec<MetricsTarget> {
+        use services::kona_node::DEFAULT_METRICS_PORT as KONA_METRICS_PORT;
+        use services::op_batcher::DEFAULT_METRICS_PORT as BATCHER_METRICS_PORT;
+        use services::op_challenger::DEFAULT_METRICS_PORT as CHALLENGER_METRICS_PORT;
+        use services::op_proposer::DEFAULT_METRICS_PORT as PROPOSER_METRICS_PORT;
+        use services::op_reth::DEFAULT_METRICS_PORT as RETH_METRICS_PORT;
+
+        let mut targets = Vec::new();
+
+        for (i, node) in self.l2_stack.sequencers.iter().enumerate() {
+            let suffix = if i == 0 {
+                String::new()
+            } else {
+                format!("-sequencer-{}", i)
+            };
+
+            targets.push(MetricsTarget {
+                job_name: format!("op-reth{}", suffix),
+                container_name: node.op_reth.container_name.clone(),
+                port: RETH_METRICS_PORT,
+                service_label: "op-reth-sequencer".to_string(),
+                layer_label: "execution".to_string(),
+            });
+
+            targets.push(MetricsTarget {
+                job_name: format!("kona-node{}", suffix),
+                container_name: node.kona_node.container_name.clone(),
+                port: KONA_METRICS_PORT,
+                service_label: "kona-node-sequencer".to_string(),
+                layer_label: "consensus".to_string(),
+            });
+        }
+
+        for (i, node) in self.l2_stack.validators.iter().enumerate() {
+            let suffix = format!("-validator-{}", i + 1);
+
+            targets.push(MetricsTarget {
+                job_name: format!("op-reth{}", suffix),
+                container_name: node.op_reth.container_name.clone(),
+                port: RETH_METRICS_PORT,
+                service_label: "op-reth-validator".to_string(),
+                layer_label: "execution".to_string(),
+            });
+
+            targets.push(MetricsTarget {
+                job_name: format!("kona-node{}", suffix),
+                container_name: node.kona_node.container_name.clone(),
+                port: KONA_METRICS_PORT,
+                service_label: "kona-node-validator".to_string(),
+                layer_label: "consensus".to_string(),
+            });
+        }
+
+        targets.push(MetricsTarget {
+            job_name: "op-batcher".to_string(),
+            container_name: self.l2_stack.op_batcher.container_name.clone(),
+            port: BATCHER_METRICS_PORT,
+            service_label: "op-batcher".to_string(),
+            layer_label: "batcher".to_string(),
+        });
+
+        if let Some(ref proposer) = self.l2_stack.op_proposer {
+            targets.push(MetricsTarget {
+                job_name: "op-proposer".to_string(),
+                container_name: proposer.container_name.clone(),
+                port: PROPOSER_METRICS_PORT,
+                service_label: "op-proposer".to_string(),
+                layer_label: "proposer".to_string(),
+            });
+        }
+
+        if let Some(ref challenger) = self.l2_stack.op_challenger {
             targets.push(MetricsTarget {
                 job_name: "op-challenger".to_string(),
                 container_name: challenger.container_name.clone(),

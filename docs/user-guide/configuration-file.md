@@ -231,6 +231,43 @@ l2_nodes = 7         # Increased to match (3 seq + 4 val)
 Mainnet = []  # Changed from Sepolia
 ```
 
+## File Includes
+
+For large networks, you can split `Kupcake.toml` into multiple files using the `include` directive. Any TOML table can reference an external file instead of defining its contents inline:
+
+```toml
+# Kupcake.toml — main config references external files
+[l2_stack.op_batcher]
+include = "./configs/batcher.toml"
+
+[[l2_stack.sequencers]]
+include = "./configs/seq-0.toml"
+
+[[l2_stack.sequencers]]
+include = "./configs/seq-1.toml"
+
+# Validators can still be inline
+[[l2_stack.validators]]
+[l2_stack.validators.op_reth]
+container_name = "my-net-op-reth-validator-1"
+```
+
+The referenced file contains the full TOML content for that section:
+
+```toml
+# configs/batcher.toml
+container_name = "my-net-op-batcher"
+docker_image = { image = "custom-batcher", tag = "v1.0" }
+log_level = "INFO"
+```
+
+**Rules:**
+- Paths are resolved relative to the config file's directory (not the working directory)
+- Inline and `include` references can be mixed freely within arrays
+- Includes can be nested (an included file can itself use `include`)
+- Circular includes are detected and produce an error
+- When saving, Kupcake always writes the fully-resolved config (no `include` keys in output)
+
 ## Validation
 
 Kupcake validates the configuration file on load:
