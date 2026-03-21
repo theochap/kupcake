@@ -811,72 +811,79 @@ impl Deployer {
     ///
     /// This is used by node lifecycle operations (add/remove) where runtime handlers
     /// are not available but Prometheus scrape targets need to be regenerated.
+    /// All values (ports, job names, labels) are derived from the saved config.
     pub fn build_metrics_targets_from_config(&self) -> Vec<MetricsTarget> {
-        use services::kona_node::DEFAULT_METRICS_PORT as KONA_METRICS_PORT;
-        use services::op_batcher::DEFAULT_METRICS_PORT as BATCHER_METRICS_PORT;
-        use services::op_challenger::DEFAULT_METRICS_PORT as CHALLENGER_METRICS_PORT;
-        use services::op_proposer::DEFAULT_METRICS_PORT as PROPOSER_METRICS_PORT;
-        use services::op_reth::DEFAULT_METRICS_PORT as RETH_METRICS_PORT;
+        // Derive the network prefix from the Docker network name.
+        // E.g., "kup-mynet-network" → "kup-mynet-"
+        let network_prefix = self
+            .docker
+            .net_name
+            .strip_suffix("-network")
+            .unwrap_or(&self.docker.net_name);
+        let network_prefix = format!("{}-", network_prefix);
+
+        let job_name = |container_name: &str| -> String {
+            container_name
+                .strip_prefix(&network_prefix)
+                .unwrap_or(container_name)
+                .to_string()
+        };
 
         let mut targets = Vec::new();
 
-        for (i, node) in self.l2_stack.sequencers.iter().enumerate() {
-            let suffix = if i == 0 {
-                String::new()
-            } else {
-                format!("-sequencer-{}", i)
-            };
+        for node in &self.l2_stack.sequencers {
+            let role = node.role.to_string();
 
             targets.push(MetricsTarget {
-                job_name: format!("op-reth{}", suffix),
+                job_name: job_name(&node.op_reth.container_name),
                 container_name: node.op_reth.container_name.clone(),
-                port: RETH_METRICS_PORT,
-                service_label: "op-reth-sequencer".to_string(),
+                port: node.op_reth.metrics_port,
+                service_label: format!("op-reth-{}", role),
                 layer_label: "execution".to_string(),
             });
 
             targets.push(MetricsTarget {
-                job_name: format!("kona-node{}", suffix),
+                job_name: job_name(&node.kona_node.container_name),
                 container_name: node.kona_node.container_name.clone(),
-                port: KONA_METRICS_PORT,
-                service_label: "kona-node-sequencer".to_string(),
+                port: node.kona_node.metrics_port,
+                service_label: format!("kona-node-{}", role),
                 layer_label: "consensus".to_string(),
             });
         }
 
-        for (i, node) in self.l2_stack.validators.iter().enumerate() {
-            let suffix = format!("-validator-{}", i + 1);
+        for node in &self.l2_stack.validators {
+            let role = node.role.to_string();
 
             targets.push(MetricsTarget {
-                job_name: format!("op-reth{}", suffix),
+                job_name: job_name(&node.op_reth.container_name),
                 container_name: node.op_reth.container_name.clone(),
-                port: RETH_METRICS_PORT,
-                service_label: "op-reth-validator".to_string(),
+                port: node.op_reth.metrics_port,
+                service_label: format!("op-reth-{}", role),
                 layer_label: "execution".to_string(),
             });
 
             targets.push(MetricsTarget {
-                job_name: format!("kona-node{}", suffix),
+                job_name: job_name(&node.kona_node.container_name),
                 container_name: node.kona_node.container_name.clone(),
-                port: KONA_METRICS_PORT,
-                service_label: "kona-node-validator".to_string(),
+                port: node.kona_node.metrics_port,
+                service_label: format!("kona-node-{}", role),
                 layer_label: "consensus".to_string(),
             });
         }
 
         targets.push(MetricsTarget {
-            job_name: "op-batcher".to_string(),
+            job_name: job_name(&self.l2_stack.op_batcher.container_name),
             container_name: self.l2_stack.op_batcher.container_name.clone(),
-            port: BATCHER_METRICS_PORT,
+            port: self.l2_stack.op_batcher.metrics_port,
             service_label: "op-batcher".to_string(),
             layer_label: "batcher".to_string(),
         });
 
         if let Some(ref proposer) = self.l2_stack.op_proposer {
             targets.push(MetricsTarget {
-                job_name: "op-proposer".to_string(),
+                job_name: job_name(&proposer.container_name),
                 container_name: proposer.container_name.clone(),
-                port: PROPOSER_METRICS_PORT,
+                port: proposer.metrics_port,
                 service_label: "op-proposer".to_string(),
                 layer_label: "proposer".to_string(),
             });
@@ -884,9 +891,9 @@ impl Deployer {
 
         if let Some(ref challenger) = self.l2_stack.op_challenger {
             targets.push(MetricsTarget {
-                job_name: "op-challenger".to_string(),
+                job_name: job_name(&challenger.container_name),
                 container_name: challenger.container_name.clone(),
-                port: CHALLENGER_METRICS_PORT,
+                port: challenger.metrics_port,
                 service_label: "op-challenger".to_string(),
                 layer_label: "challenger".to_string(),
             });
