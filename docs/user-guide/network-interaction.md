@@ -161,19 +161,20 @@ A healthy Kupcake network has:
 3. **Batches being submitted** — `safe_l2` following `unsafe_l2`
 4. **L1 data finalizing** — `finalized_l2` advancing
 
-### Built-in Health Check
+### Built-in Inspection
 
-The easiest way to check network health is the `kupcake health` command, which verifies containers, chain IDs, and block production in one step:
+The easiest way to check network health is the `kupcake inspect` command, which shows container states, block heights, sync status, and more:
 
 ```bash
 # By network name
-kupcake health kup-nutty-songs
+kupcake inspect kup-nutty-songs
 
-# By config path
-kupcake health ./data-kup-nutty-songs/
+# With extended details
+kupcake inspect kup-nutty-songs --verbose
+
+# Machine-readable output
+kupcake inspect kup-nutty-songs --json
 ```
-
-The command exits with code `0` if healthy, `1` if unhealthy, making it suitable for CI/CD scripts.
 
 ### Manual Health Check
 

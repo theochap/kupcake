@@ -128,12 +128,6 @@ pub enum Commands {
     /// then removes the associated Docker network (<prefix>-network).
     Cleanup(CleanupArgs),
 
-    /// Check the health of a deployed network.
-    ///
-    /// Loads the Kupcake.toml configuration, verifies containers are running,
-    /// queries RPC endpoints, and checks that chain IDs and block production match expectations.
-    Health(HealthArgs),
-
     /// Send ETH to an L2 address via the OptimismPortal deposit mechanism.
     ///
     /// Bridges ETH from the L1 (Anvil) deployer account to a specified L2 address
@@ -159,10 +153,13 @@ pub enum Commands {
     /// on a deployed network without restarting the entire stack.
     Node(NodeArgs),
 
-    /// Show the status of a deployed network.
+    /// Inspect a deployed network in detail.
     ///
-    /// Lists all containers and their current state (running, paused, stopped).
-    Status(StatusArgs),
+    /// Shows container states, host URLs, block heights, sync status, and timestamps.
+    /// Use --verbose for extended details (gas price, peer count, L1 origin).
+    /// Use --json for machine-readable JSON output.
+    #[command(alias = "health", alias = "status")]
+    Inspect(InspectArgs),
 
     /// List all tracked devnets.
     List,
@@ -258,9 +255,9 @@ pub enum NodeAction {
     },
 }
 
-/// Arguments for the status command.
+/// Arguments for the inspect command.
 #[derive(Parser)]
-pub struct StatusArgs {
+pub struct InspectArgs {
     /// Network name or path to Kupcake.toml / outdata directory.
     ///
     /// If a network name is given (e.g. "kup-nutty-songs"), loads
@@ -268,6 +265,18 @@ pub struct StatusArgs {
     /// Otherwise treats the argument as a file/directory path.
     #[arg(required = true, add = ArgValueCandidates::new(RunningDevnetCompleter))]
     pub config: String,
+
+    /// Output as JSON instead of human-readable text.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Show extended details (gas price, peer count, pending txs, L1 origin).
+    #[arg(long)]
+    pub verbose: bool,
+
+    /// Filter output to a single service by name (e.g., "sequencer", "validator-1", "anvil", "op-batcher").
+    #[arg(long)]
+    pub service: Option<String>,
 }
 
 /// Arguments for the bench command.
@@ -320,18 +329,6 @@ pub struct BenchArgs {
     /// Docker image overrides for all services.
     #[clap(flatten)]
     pub docker_images: DockerImageOverrides,
-}
-
-/// Arguments for the health check command.
-#[derive(Parser)]
-pub struct HealthArgs {
-    /// Network name or path to Kupcake.toml / outdata directory.
-    ///
-    /// If a network name is given (e.g. "kup-nutty-songs"), loads
-    /// the config from the default path: ./data-<name>/Kupcake.toml
-    /// Otherwise treats the argument as a file/directory path.
-    #[arg(required = true, add = ArgValueCandidates::new(RunningDevnetCompleter))]
-    pub config: String,
 }
 
 /// Arguments for the faucet command.
