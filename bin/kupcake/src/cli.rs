@@ -1,4 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use clap_complete::engine::ArgValueCandidates;
+
+use crate::completions::{AllDevnetCompleter, RunningDevnetCompleter};
 use kupcake_deploy::{
     ANVIL_DEFAULT_IMAGE, ANVIL_DEFAULT_TAG, GRAFANA_DEFAULT_IMAGE, GRAFANA_DEFAULT_TAG,
     KONA_NODE_DEFAULT_IMAGE, KONA_NODE_DEFAULT_TAG, OP_BATCHER_DEFAULT_IMAGE,
@@ -98,7 +101,7 @@ pub enum OutData {
 }
 
 #[derive(Parser)]
-#[command(name = "kup")]
+#[command(name = "kupcake")]
 #[command(
     author,
     version,
@@ -166,6 +169,12 @@ pub enum Commands {
 
     /// Remove all stopped devnets and their data directories.
     Prune(PruneArgs),
+
+    /// Generate shell completion scripts.
+    ///
+    /// Prints the shell snippet needed to enable dynamic completions.
+    /// Source the output in your shell profile to activate.
+    Completions(CompletionsArgs),
 }
 
 /// Arguments for the prune command.
@@ -176,6 +185,22 @@ pub struct PruneArgs {
     pub yes: bool,
 }
 
+/// Shell type for completion script generation.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ShellArg {
+    Bash,
+    Zsh,
+    Fish,
+}
+
+/// Arguments for the completions command.
+#[derive(Parser)]
+pub struct CompletionsArgs {
+    /// Shell to generate completions for.
+    #[arg(value_enum)]
+    pub shell: ShellArg,
+}
+
 /// Arguments for managing L2 nodes on a running network.
 #[derive(Parser)]
 pub struct NodeArgs {
@@ -184,7 +209,7 @@ pub struct NodeArgs {
     /// If a network name is given (e.g. "kup-nutty-songs"), loads
     /// the config from the default path: ./data-<name>/Kupcake.toml
     /// Otherwise treats the argument as a file/directory path.
-    #[arg(required = true)]
+    #[arg(required = true, add = ArgValueCandidates::new(RunningDevnetCompleter))]
     pub config: String,
 
     /// The node management action to perform.
@@ -241,7 +266,7 @@ pub struct StatusArgs {
     /// If a network name is given (e.g. "kup-nutty-songs"), loads
     /// the config from the default path: ./data-<name>/Kupcake.toml
     /// Otherwise treats the argument as a file/directory path.
-    #[arg(required = true)]
+    #[arg(required = true, add = ArgValueCandidates::new(RunningDevnetCompleter))]
     pub config: String,
 }
 
@@ -305,7 +330,7 @@ pub struct HealthArgs {
     /// If a network name is given (e.g. "kup-nutty-songs"), loads
     /// the config from the default path: ./data-<name>/Kupcake.toml
     /// Otherwise treats the argument as a file/directory path.
-    #[arg(required = true)]
+    #[arg(required = true, add = ArgValueCandidates::new(RunningDevnetCompleter))]
     pub config: String,
 }
 
@@ -317,7 +342,7 @@ pub struct FaucetArgs {
     /// If a network name is given (e.g. "kup-nutty-songs"), loads
     /// the config from the default path: ./data-<name>/Kupcake.toml
     /// Otherwise treats the argument as a file/directory path.
-    #[arg(required = true)]
+    #[arg(required = true, add = ArgValueCandidates::new(RunningDevnetCompleter))]
     pub config: String,
 
     /// L2 address to receive the ETH (0x-prefixed, 40 hex chars).
@@ -341,7 +366,7 @@ pub struct SpamArgs {
     /// If a network name is given (e.g. "kup-nutty-songs"), loads
     /// the config from the default path: ./data-<name>/Kupcake.toml
     /// Otherwise treats the argument as a file/directory path.
-    #[arg(required = true)]
+    #[arg(required = true, add = ArgValueCandidates::new(RunningDevnetCompleter))]
     pub config: String,
 
     /// Scenario to run: built-in name (transfers, erc20, uni_v2) or path to a custom TOML file.
@@ -445,7 +470,7 @@ pub struct CleanupArgs {
     ///
     /// All containers starting with this prefix will be stopped and removed,
     /// and the network <prefix>-network will be removed.
-    #[arg(required = true)]
+    #[arg(required = true, add = ArgValueCandidates::new(AllDevnetCompleter))]
     pub prefix: String,
 }
 

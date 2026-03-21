@@ -1,15 +1,17 @@
 //! kupcake is a CLI tool to help you bootstrap a rust-based op-stack chain in a few clicks.
 
 mod cli;
+mod completions;
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::CompleteEnv;
 
 use cli::{
-    BenchArgs, CleanupArgs, Cli, Commands, DeployArgs, FaucetArgs, HealthArgs, L1Source,
-    NodeAction, NodeArgs, OutData, PruneArgs, SpamArgs, StatusArgs,
+    BenchArgs, CleanupArgs, Cli, Commands, CompletionsArgs, DeployArgs, FaucetArgs, HealthArgs,
+    L1Source, NodeAction, NodeArgs, OutData, PruneArgs, ShellArg, SpamArgs, StatusArgs,
 };
 use kupcake_deploy::{
     Deployer, DeployerBuilder, DeploymentResult, KupDocker, OutDataPath, SpamPreset,
@@ -18,6 +20,10 @@ use kupcake_deploy::{
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // If the shell is requesting completions (COMPLETE env var set),
+    // generate them and exit immediately.
+    CompleteEnv::with_factory(Cli::command).complete();
+
     let cli = Cli::parse();
 
     // Initialize the logger.
@@ -36,6 +42,7 @@ async fn main() -> Result<()> {
         Some(Commands::Status(args)) => run_status(args).await,
         Some(Commands::List) => run_list().await,
         Some(Commands::Prune(args)) => run_prune(args).await,
+        Some(Commands::Completions(args)) => run_completions(args),
         // Default to deploy with default args when no subcommand is provided
         None => run_deploy(DeployArgs::default()).await,
     }
@@ -61,6 +68,17 @@ async fn run_cleanup(args: CleanupArgs) -> Result<()> {
         tracing::info!("Cleanup completed successfully");
     }
 
+    Ok(())
+}
+
+fn run_completions(args: CompletionsArgs) -> Result<()> {
+    let bin_name = "kupcake";
+    let snippet = match args.shell {
+        ShellArg::Bash => format!(r#"eval "$(COMPLETE=bash {bin_name})""#),
+        ShellArg::Zsh => format!(r#"eval "$(COMPLETE=zsh {bin_name})""#),
+        ShellArg::Fish => format!("COMPLETE=fish {bin_name} | source"),
+    };
+    println!("{snippet}");
     Ok(())
 }
 
