@@ -2,20 +2,21 @@
 
 mod cli;
 mod completions;
+mod config;
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser};
+use clap::{CommandFactory, FromArgMatches};
 use clap_complete::CompleteEnv;
 
 use cli::{
     BenchArgs, CleanupArgs, Cli, Commands, CompletionsArgs, DeployArgs, FaucetArgs, HealthArgs,
-    L1Source, NodeAction, NodeArgs, OutData, PruneArgs, ShellArg, SpamArgs, StatusArgs,
+    L1Source, NodeAction, NodeArgs, PruneArgs, ShellArg, SpamArgs, StatusArgs,
 };
+use config::{apply_cli_overrides, deploy_config_to_builder, resolve_deploy_config};
 use kupcake_deploy::{
-    Deployer, DeployerBuilder, DeploymentResult, KupDocker, OutDataPath, SpamPreset,
-    cleanup_by_prefix,
+    Deployer, DeployerBuilder, DeploymentResult, KupDocker, SpamPreset, cleanup_by_prefix,
 };
 
 #[tokio::main]
@@ -24,7 +25,9 @@ async fn main() -> Result<()> {
     // generate them and exit immediately.
     CompleteEnv::with_factory(Cli::command).complete();
 
-    let cli = Cli::parse();
+    // Parse CLI with access to ArgMatches for value_source() introspection.
+    let raw_matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&raw_matches)?;
 
     // Initialize the logger.
     tracing_subscriber::fmt()
@@ -33,7 +36,14 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Cleanup(args)) => run_cleanup(args).await,
-        Some(Commands::Deploy(args)) => run_deploy(args).await,
+        Some(Commands::Deploy(args)) => {
+            // Extract the deploy subcommand's ArgMatches for figment integration
+            let deploy_matches = raw_matches
+                .subcommand_matches("deploy")
+                .cloned()
+                .unwrap_or_default();
+            run_deploy(args, &deploy_matches).await
+        }
         Some(Commands::Faucet(args)) => run_faucet(args).await,
         Some(Commands::Health(args)) => run_health(args).await,
         Some(Commands::Spam(args)) => run_spam_cmd(args).await,
@@ -44,7 +54,7 @@ async fn main() -> Result<()> {
         Some(Commands::Prune(args)) => run_prune(args).await,
         Some(Commands::Completions(args)) => run_completions(args),
         // Default to deploy with default args when no subcommand is provided
-        None => run_deploy(DeployArgs::default()).await,
+        None => run_deploy(DeployArgs::default(), &clap::ArgMatches::default()).await,
     }
 }
 
@@ -306,7 +316,7 @@ fn apply_image_overrides(
 /// 1. Explicit `--config` flag → use that path directly
 /// 2. `--network` name with an existing `data-{name}/Kupcake.toml` → auto-load it
 /// 3. Neither → returns `None` (new deployment)
-fn resolve_deploy_config(config: Option<&str>, network: Option<&str>) -> Option<PathBuf> {
+fn resolve_existing_config(config: Option<&str>, network: Option<&str>) -> Option<PathBuf> {
     if let Some(config) = config {
         return Some(PathBuf::from(config));
     }
@@ -332,7 +342,7 @@ fn resolve_deploy_config(config: Option<&str>, network: Option<&str>) -> Option<
     })
 }
 
-async fn run_deploy(args: DeployArgs) -> Result<()> {
+async fn run_deploy(args: DeployArgs, deploy_matches: &clap::ArgMatches) -> Result<()> {
     // Parse spam preset early so we fail fast on invalid names
     let spam_preset = args
         .spam
@@ -352,14 +362,22 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
         })
         .transpose()?;
 
+    // Resolve layered config: defaults → env vars → CLI args
+    let mut deploy_config = resolve_deploy_config(&args, deploy_matches)?;
+    deploy_config.resolve_long_running();
+
     let metrics_file = args.metrics_file.as_ref().map(PathBuf::from);
     let ports_file = args.ports_file.as_ref().map(PathBuf::from);
 
     // If a config file is provided, or a --network name matches an existing deployment, load it
-    let resolved_config = resolve_deploy_config(args.config.as_deref(), args.network.as_deref());
+    let resolved_config_path =
+        resolve_existing_config(args.config.as_deref(), args.network.as_deref());
 
-    if let Some(config_path) = resolved_config {
+    if let Some(config_path) = resolved_config_path {
         let mut deployer = Deployer::load_from_file(&config_path)?;
+
+        // Apply CLI overrides to the loaded config (new: CLI args no longer silently ignored)
+        apply_cli_overrides(&mut deployer, &deploy_config);
 
         tracing::info!(
             config_path = %config_path.display(),
@@ -386,108 +404,23 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
     }
 
     // Validate: --snapshot requires --l1 (fork mode)
-    if args.snapshot.is_some() && args.l1.is_none() {
+    if deploy_config.snapshot.is_some() && deploy_config.l1.is_none() {
         anyhow::bail!(
             "--snapshot requires --l1 to be set (fork mode is required to restore from a snapshot)"
         );
     }
 
-    // Determine L1 chain ID and RPC URL based on provided arguments
-    // - None: local mode with random L1 chain ID
-    // - Known chain (sepolia/mainnet): use known chain ID and public RPC
-    // - Custom RPC URL: detect chain ID via eth_chainId
-    let (l1_chain_id, l1_rpc_url) = resolve_l1_config(args.l1).await?;
+    // Determine L1 chain ID and RPC URL
+    let l1_source = args.l1;
+    let (l1_chain_id, l1_rpc_url) = resolve_l1_config(l1_source).await?;
 
-    // Force no_cleanup when spam (containers stay alive during spam) or detach mode
-    let no_cleanup = spam_preset.is_some() || args.no_cleanup || args.detach;
-
-    // Resolve --long-running defaults (explicit flags override)
-    let log_max_size = args
-        .log_max_size
-        .or_else(|| args.long_running.then(|| "10m".into()));
-    let log_max_file = args
-        .log_max_file
-        .or_else(|| args.long_running.then(|| "3".into()));
-    let quiet_services = args.quiet_services || args.long_running;
-    let stream_logs = args.stream_logs;
-
-    // Create a new deployment from CLI arguments
-    let mut deployer_builder = DeployerBuilder::new(l1_chain_id)
-        .maybe_l2_chain_id(args.l2_chain.map(|c| c.chain_id()))
-        .maybe_network_name(args.network)
-        .maybe_outdata(args.outdata.map(|o| match o {
-            OutData::TempDir => OutDataPath::TempDir,
-            OutData::Path(path) => OutDataPath::Path(PathBuf::from(path)),
-        }))
-        .maybe_l1_rpc_url(l1_rpc_url)
-        .no_cleanup(no_cleanup)
-        .dump_state(args.dump_state)
-        .maybe_override_state(args.override_state.map(PathBuf::from))
-        .detach(args.detach)
-        .publish_all_ports(args.publish_all_ports)
-        .block_time(args.block_time)
-        .maybe_genesis_timestamp(args.genesis_timestamp)
-        .l2_node_count(args.l2_nodes)
-        .sequencer_count(args.sequencer_count)
-        .maybe_log_max_size(log_max_size)
-        .maybe_log_max_file(log_max_file)
-        .quiet_services(quiet_services)
-        .stream_logs(stream_logs)
-        // Docker images
-        .anvil_image(args.docker_images.anvil_image)
-        .anvil_tag(args.docker_images.anvil_tag)
-        .op_reth_image(args.docker_images.op_reth_image)
-        .op_reth_tag(args.docker_images.op_reth_tag)
-        .kona_node_image(args.docker_images.kona_node_image)
-        .kona_node_tag(args.docker_images.kona_node_tag)
-        .op_batcher_image(args.docker_images.op_batcher_image)
-        .op_batcher_tag(args.docker_images.op_batcher_tag)
-        .op_proposer_image(args.docker_images.op_proposer_image)
-        .op_proposer_tag(args.docker_images.op_proposer_tag)
-        .op_challenger_image(args.docker_images.op_challenger_image)
-        .op_challenger_tag(args.docker_images.op_challenger_tag)
-        .op_conductor_image(args.docker_images.op_conductor_image)
-        .op_conductor_tag(args.docker_images.op_conductor_tag)
-        .no_proposer(args.no_proposer)
-        .no_challenger(args.no_challenger)
-        .flashblocks(args.flashblocks)
-        .proofs_validators(args.proofs_validators)
-        .maybe_snapshot(args.snapshot.map(PathBuf::from))
-        .copy_snapshot(args.copy_snapshot)
-        .op_rbuilder_image(args.docker_images.op_rbuilder_image)
-        .op_rbuilder_tag(args.docker_images.op_rbuilder_tag)
-        .deployment_target(args.deployment_target.into())
-        .op_deployer_image(args.docker_images.op_deployer_image)
-        .op_deployer_tag(args.docker_images.op_deployer_tag)
-        .prometheus_image(args.docker_images.prometheus_image)
-        .prometheus_tag(args.docker_images.prometheus_tag)
-        .grafana_image(args.docker_images.grafana_image)
-        .grafana_tag(args.docker_images.grafana_tag);
-
-    // Apply binary paths if provided (these override Docker images)
-    if let Some(path) = args.docker_images.op_reth_binary {
-        deployer_builder = deployer_builder.with_op_reth_binary(path);
-    }
-    if let Some(path) = args.docker_images.kona_node_binary {
-        deployer_builder = deployer_builder.with_kona_node_binary(path);
-    }
-    if let Some(path) = args.docker_images.op_batcher_binary {
-        deployer_builder = deployer_builder.with_op_batcher_binary(path);
-    }
-    if let Some(path) = args.docker_images.op_proposer_binary {
-        deployer_builder = deployer_builder.with_op_proposer_binary(path);
-    }
-    if let Some(path) = args.docker_images.op_challenger_binary {
-        deployer_builder = deployer_builder.with_op_challenger_binary(path);
-    }
-    if let Some(path) = args.docker_images.op_conductor_binary {
-        deployer_builder = deployer_builder.with_op_conductor_binary(path);
-    }
-    if let Some(path) = args.docker_images.op_rbuilder_binary {
-        deployer_builder = deployer_builder.with_op_rbuilder_binary(path);
+    // Force no_cleanup when spam or detach mode
+    if spam_preset.is_some() {
+        deploy_config.no_cleanup = Some(true);
     }
 
-    let deployer = deployer_builder
+    // Build the deployer via figment-resolved config
+    let deployer = deploy_config_to_builder(&deploy_config, l1_chain_id, l1_rpc_url)
         .dashboards_path(PathBuf::from("grafana/dashboards"))
         .build()
         .await?;
@@ -496,11 +429,15 @@ async fn run_deploy(args: DeployArgs) -> Result<()> {
     let config_path = deployer.save_config()?;
 
     if let Some(preset) = spam_preset {
-        // Deploy without waiting, then run spam
         let mut docker = KupDocker::new(deployer.docker.clone()).await?;
         let result = deployer.deploy(&mut docker, args.redeploy, false).await?;
         write_output_files(&result, &metrics_file, &ports_file)?;
-        return run_spam_after_deploy(&config_path, preset, args.no_cleanup).await;
+        return run_spam_after_deploy(
+            &config_path,
+            preset,
+            deploy_config.no_cleanup.unwrap_or(false),
+        )
+        .await;
     }
 
     let mut docker = KupDocker::new(deployer.docker.clone()).await?;
@@ -703,21 +640,21 @@ mod tests {
     #[test]
     fn test_resolve_deploy_config_explicit_config() {
         // --config always wins, even if the file doesn't exist
-        let result = resolve_deploy_config(Some("./my-config.toml"), None);
+        let result = resolve_existing_config(Some("./my-config.toml"), None);
         assert_eq!(result, Some(PathBuf::from("./my-config.toml")));
     }
 
     #[test]
     fn test_resolve_deploy_config_explicit_config_over_network() {
         // --config takes priority over --network
-        let result = resolve_deploy_config(Some("./my-config.toml"), Some("my-network"));
+        let result = resolve_existing_config(Some("./my-config.toml"), Some("my-network"));
         assert_eq!(result, Some(PathBuf::from("./my-config.toml")));
     }
 
     #[test]
     fn test_resolve_deploy_config_network_no_existing_dir() {
         // --network with no existing data directory returns None (new deployment)
-        let result = resolve_deploy_config(None, Some("nonexistent-network-12345"));
+        let result = resolve_existing_config(None, Some("nonexistent-network-12345"));
         assert_eq!(result, None);
     }
 
@@ -732,7 +669,7 @@ mod tests {
         let config_file = data_dir.join("Kupcake.toml");
         fs::write(&config_file, "# placeholder").unwrap();
 
-        let result = resolve_deploy_config(None, Some(&network_name));
+        let result = resolve_existing_config(None, Some(&network_name));
         assert_eq!(result, Some(config_file));
 
         // Cleanup
@@ -742,7 +679,7 @@ mod tests {
     #[test]
     fn test_resolve_deploy_config_none_when_no_args() {
         // No --config and no --network returns None
-        let result = resolve_deploy_config(None, None);
+        let result = resolve_existing_config(None, None);
         assert_eq!(result, None);
     }
 }

@@ -61,3 +61,5 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - name: Run unit tests
         run: cargo nextest run --lib --bins
+      - name: Run CLI tests
+        run: cargo nextest run --test network_redeploy_test

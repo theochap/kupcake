@@ -212,6 +212,17 @@ pub async fn add_validator(
         "Config updated and saved"
     );
 
+    // Restart Prometheus with updated scrape targets if monitoring is enabled
+    if deployer.monitoring.enabled {
+        let targets = deployer.build_metrics_targets_from_config();
+        let monitoring_path = deployer.outdata.join("monitoring");
+        deployer
+            .monitoring
+            .restart_prometheus(docker, &monitoring_path, &targets)
+            .await
+            .context("Failed to restart Prometheus after adding validator")?;
+    }
+
     Ok(handler)
 }
 

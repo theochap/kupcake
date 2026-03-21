@@ -14,6 +14,8 @@ pub use accounts::{ANVIL_DEFAULT_MNEMONIC, derive_accounts_from_mnemonic};
 mod builder;
 pub use builder::{DeployerBuilder, OutDataPath};
 
+mod config_resolve;
+
 pub mod metrics;
 pub mod service;
 pub use service::KupcakeService;
