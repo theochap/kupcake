@@ -4,7 +4,6 @@ use std::fmt;
 
 use anyhow::{Context, Result};
 use bollard::Docker;
-use comfy_table::{Attribute, Cell, Color, Table};
 
 use crate::{Deployer, docker::ContainerState};
 
@@ -171,99 +170,71 @@ pub async fn network_status(deployer: &Deployer) -> Result<NetworkStatus> {
     })
 }
 
-// -- Display helpers --
+// -- Display implementations --
 
-fn state_cell(state: ContainerState) -> Cell {
-    let (text, color) = match state {
-        ContainerState::Running => ("Running", Color::Green),
-        ContainerState::Paused => ("Paused", Color::Yellow),
-        ContainerState::Stopped => ("Stopped", Color::Red),
-        ContainerState::Restarting => ("Restarting", Color::Yellow),
-        ContainerState::NotFound => ("Not Found", Color::Red),
-    };
-    Cell::new(text).fg(color)
-}
-
-fn header(text: &str) -> Cell {
-    Cell::new(text).add_attribute(Attribute::Bold)
+fn state_icon(state: ContainerState) -> &'static str {
+    match state {
+        ContainerState::Running => "[ok]",
+        ContainerState::Paused => "[PAUSED]",
+        ContainerState::Stopped => "[STOPPED]",
+        ContainerState::Restarting => "[RESTARTING]",
+        ContainerState::NotFound => "[NOT FOUND]",
+    }
 }
 
 impl fmt::Display for NetworkStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Network: {}", self.network_name)?;
+        writeln!(f)?;
 
-        // L1 table
-        {
-            writeln!(f)?;
-            writeln!(f, "L1")?;
-            let mut table = Table::new();
-            table.set_header(vec![
-                header("Service"),
-                header("Container"),
-                header("State"),
-            ]);
-            table.add_row(vec![
-                Cell::new(&self.l1.label),
-                Cell::new(&self.l1.container_name),
-                state_cell(self.l1.state),
-            ]);
-            writeln!(f, "{table}")?;
-        }
+        writeln!(f, "=== L1 ===")?;
+        writeln!(
+            f,
+            "  {} {} ({})",
+            state_icon(self.l1.state),
+            self.l1.label,
+            self.l1.container_name
+        )?;
+        writeln!(f)?;
 
-        // L2 Nodes table
-        if !self.nodes.is_empty() {
-            writeln!(f)?;
-            writeln!(f, "L2 Nodes")?;
-            let mut table = Table::new();
-            table.set_header(vec![
-                header("Node"),
-                header("Layer"),
-                header("Container"),
-                header("State"),
-            ]);
-            for node in &self.nodes {
-                table.add_row(vec![
-                    Cell::new(&node.label).add_attribute(Attribute::Bold),
-                    Cell::new(&node.execution.label),
-                    Cell::new(&node.execution.container_name),
-                    state_cell(node.execution.state),
-                ]);
-                table.add_row(vec![
-                    Cell::new(""),
-                    Cell::new(&node.consensus.label),
-                    Cell::new(&node.consensus.container_name),
-                    state_cell(node.consensus.state),
-                ]);
-                if let Some(ref cond) = node.conductor {
-                    table.add_row(vec![
-                        Cell::new(""),
-                        Cell::new(&cond.label),
-                        Cell::new(&cond.container_name),
-                        state_cell(cond.state),
-                    ]);
-                }
+        writeln!(f, "=== L2 Nodes ===")?;
+        for node in &self.nodes {
+            writeln!(f, "  [{}] ({})", node.label, node.role)?;
+            writeln!(
+                f,
+                "    {} {} ({})",
+                state_icon(node.execution.state),
+                node.execution.label,
+                node.execution.container_name
+            )?;
+            writeln!(
+                f,
+                "    {} {} ({})",
+                state_icon(node.consensus.state),
+                node.consensus.label,
+                node.consensus.container_name
+            )?;
+            if let Some(ref cond) = node.conductor {
+                writeln!(
+                    f,
+                    "    {} {} ({})",
+                    state_icon(cond.state),
+                    cond.label,
+                    cond.container_name
+                )?;
             }
-            writeln!(f, "{table}")?;
         }
+        writeln!(f)?;
 
-        // Services table
-        if !self.services.is_empty() {
-            writeln!(f)?;
-            writeln!(f, "Services")?;
-            let mut table = Table::new();
-            table.set_header(vec![
-                header("Service"),
-                header("Container"),
-                header("State"),
-            ]);
-            for svc in &self.services {
-                table.add_row(vec![
-                    Cell::new(&svc.label),
-                    Cell::new(&svc.container_name),
-                    state_cell(svc.state),
-                ]);
-            }
-            writeln!(f, "{table}")?;
+        writeln!(f, "=== Services ===")?;
+        for svc in &self.services {
+            writeln!(
+                f,
+                "  {} {} ({})",
+                state_icon(svc.state),
+                svc.label,
+                svc.container_name
+            )?;
         }
 
         Ok(())

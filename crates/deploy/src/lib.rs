@@ -35,7 +35,6 @@ pub mod registry;
 pub use registry::{DevnetEntry, DevnetRegistry, DevnetState};
 mod fs;
 pub mod health;
-pub mod inspect;
 pub mod node_lifecycle;
 pub mod rpc;
 pub mod services;

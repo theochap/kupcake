@@ -33,7 +33,6 @@ backon.workspace = true
 fs2.workspace = true
 dirs.workspace = true
 chrono.workspace = true
-comfy-table.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

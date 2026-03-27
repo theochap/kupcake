@@ -108,8 +108,8 @@ Monitoring stack is ready!
 #### Check Container Status
 
 ```bash
-# Using Kupcake's built-in inspect command
-kupcake inspect my-first-l2
+# Using Kupcake's built-in status command
+kupcake status my-first-l2
 
 # Or using Docker directly
 docker ps --filter name=my-first-l2

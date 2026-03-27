@@ -526,8 +526,8 @@ async fn test_status_command() -> Result<()> {
     // Verify display formatting works
     let display = format!("{}", net_status);
     assert!(
-        display.contains("Running"),
-        "Status should show Running for running containers"
+        display.contains("[ok]"),
+        "Status should show [ok] for running containers"
     );
     assert!(
         display.contains("sequencer"),

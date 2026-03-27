@@ -44,4 +44,3 @@ figment = { version = "0.10", features = ["toml", "env"] }
 fs2 = "0.4"
 dirs = "6.0"
 chrono = { version = "0.4", default-features = false, features = ["now"] }
-comfy-table = "7"

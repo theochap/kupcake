@@ -34,8 +34,7 @@ use url::Url;
 const DOCKER_DROP_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// State of a Docker container.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "PascalCase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContainerState {
     /// Container is running normally.
     Running,
