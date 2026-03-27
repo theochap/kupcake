@@ -10,9 +10,9 @@ test:
 test-integration *args:
     cargo test --test integration_test -- {{args}}
 
-# Run health check against a deployed network
-health config:
-    cargo run -- health {{config}}
+# Inspect a deployed network
+inspect config:
+    cargo run -- inspect {{config}}
 
 # Kill all kupcake networks and containers
 kill-all:

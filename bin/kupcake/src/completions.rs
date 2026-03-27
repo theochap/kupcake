@@ -27,7 +27,7 @@ fn devnet_candidates(filter: impl Fn(&DevnetEntry) -> bool) -> Vec<CompletionCan
 
 /// Completer that suggests only **Running** devnet names.
 ///
-/// Used for commands that operate on a live network: `health`, `faucet`, `spam`, `node`, `status`.
+/// Used for commands that operate on a live network: `inspect`, `faucet`, `spam`, `node`.
 #[derive(Clone)]
 pub struct RunningDevnetCompleter;
 

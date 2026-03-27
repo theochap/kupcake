@@ -4,6 +4,7 @@ use std::fmt;
 
 use anyhow::{Context, Result};
 use bollard::Docker;
+use comfy_table::{Attribute, Cell, Color, Table};
 use serde_json::Value;
 
 use crate::{Deployer, rpc};
@@ -344,105 +345,141 @@ async fn query_sync_status(
     )
 }
 
-// -- Display implementations for printing health reports --
+// -- Display helpers --
+
+fn running_cell(running: bool) -> Cell {
+    if running {
+        Cell::new("OK").fg(Color::Green)
+    } else {
+        Cell::new("DOWN").fg(Color::Red)
+    }
+}
+
+fn chain_id_cell(chain_id: Option<u64>, expected: u64) -> Cell {
+    match chain_id {
+        Some(cid) if cid == expected => Cell::new(format!("{cid}")).fg(Color::Green),
+        Some(cid) => Cell::new(format!("{cid} (expected {expected})")).fg(Color::Red),
+        None => Cell::new("-"),
+    }
+}
+
+fn header(text: &str) -> Cell {
+    Cell::new(text).add_attribute(Attribute::Bold)
+}
+
+fn val_or_dash<T: fmt::Display>(opt: Option<T>) -> String {
+    opt.map(|v| v.to_string()).unwrap_or_else(|| "-".into())
+}
 
 impl fmt::Display for HealthReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let status = if self.healthy { "HEALTHY" } else { "UNHEALTHY" };
-        writeln!(f, "Network Status: {}", status)?;
-        writeln!(f)?;
+        // Status header
+        let mut status_table = Table::new();
+        status_table.set_header(vec![header("Network Status")]);
+        let (status_text, status_color) = if self.healthy {
+            ("HEALTHY", Color::Green)
+        } else {
+            ("UNHEALTHY", Color::Red)
+        };
+        status_table.add_row(vec![Cell::new(status_text).fg(status_color)]);
+        writeln!(f, "{status_table}")?;
 
-        writeln!(f, "=== L1 (Anvil) ===")?;
-        writeln!(f, "{}", self.l1)?;
-
-        writeln!(f, "=== L2 Nodes ===")?;
-        for node in &self.nodes {
-            writeln!(f, "{}", node)?;
+        // L1 table
+        {
+            writeln!(f)?;
+            writeln!(f, "L1 (Anvil)")?;
+            let mut table = Table::new();
+            table.set_header(vec![
+                header("Container"),
+                header("Status"),
+                header("Chain ID"),
+                header("Block"),
+            ]);
+            table.add_row(vec![
+                Cell::new(&self.l1.container_name),
+                running_cell(self.l1.running),
+                chain_id_cell(self.l1.chain_id, self.l1.expected_chain_id),
+                Cell::new(val_or_dash(self.l1.block_number)),
+            ]);
+            writeln!(f, "{table}")?;
         }
 
-        writeln!(f, "=== Services ===")?;
-        for service in &self.services {
-            writeln!(f, "{}", service)?;
+        // L2 Nodes table
+        if !self.nodes.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "L2 Nodes")?;
+            let mut table = Table::new();
+            table.set_header(vec![
+                header("Node"),
+                header("Layer"),
+                header("Container"),
+                header("Status"),
+                header("Chain ID / Heads"),
+                header("Block"),
+            ]);
+            for node in &self.nodes {
+                let ex = &node.execution;
+                table.add_row(vec![
+                    Cell::new(&node.label).add_attribute(Attribute::Bold),
+                    Cell::new("op-reth"),
+                    Cell::new(&ex.container_name),
+                    running_cell(ex.running),
+                    chain_id_cell(ex.chain_id, ex.expected_chain_id),
+                    Cell::new(val_or_dash(ex.block_number)),
+                ]);
+
+                let cn = &node.consensus;
+                let heads = [
+                    cn.unsafe_l2.map(|v| format!("U:{v}")),
+                    cn.safe_l2.map(|v| format!("S:{v}")),
+                    cn.finalized_l2.map(|v| format!("F:{v}")),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" ");
+
+                table.add_row(vec![
+                    Cell::new(""),
+                    Cell::new("kona-node"),
+                    Cell::new(&cn.container_name),
+                    running_cell(cn.running),
+                    Cell::new(if heads.is_empty() { "-" } else { &heads }),
+                    Cell::new(""),
+                ]);
+            }
+            writeln!(f, "{table}")?;
+        }
+
+        // Services table
+        if !self.services.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "Services")?;
+            let mut table = Table::new();
+            table.set_header(vec![
+                header("Service"),
+                header("Container"),
+                header("Status"),
+                header("Note"),
+            ]);
+            for svc in &self.services {
+                let note = if !svc.running && NON_CRITICAL_SERVICES.contains(&svc.name.as_str()) {
+                    "non-critical"
+                } else {
+                    ""
+                };
+                table.add_row(vec![
+                    Cell::new(&svc.name),
+                    Cell::new(&svc.container_name),
+                    running_cell(svc.running),
+                    Cell::new(note),
+                ]);
+            }
+            writeln!(f, "{table}")?;
         }
 
         Ok(())
     }
-}
-
-impl fmt::Display for L1Health {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let status = status_icon(self.running);
-        write!(f, "  {} {} ", status, self.container_name)?;
-
-        if let Some(chain_id) = self.chain_id {
-            let cid_status = if self.chain_id_match() {
-                "ok"
-            } else {
-                "MISMATCH"
-            };
-            write!(f, "chain_id={} ({}) ", chain_id, cid_status)?;
-        }
-
-        if let Some(bn) = self.block_number {
-            write!(f, "block={}", bn)?;
-        }
-
-        Ok(())
-    }
-}
-
-impl fmt::Display for NodeHealth {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "  [{}]", self.label)?;
-
-        // Execution
-        let ex = &self.execution;
-        let status = status_icon(ex.running);
-        write!(f, "    {} {} ", status, ex.container_name)?;
-        if let Some(chain_id) = ex.chain_id {
-            let cid_status = if ex.chain_id_match() {
-                "ok"
-            } else {
-                "MISMATCH"
-            };
-            write!(f, "chain_id={} ({}) ", chain_id, cid_status)?;
-        }
-        if let Some(bn) = ex.block_number {
-            write!(f, "block={}", bn)?;
-        }
-        writeln!(f)?;
-
-        // Consensus
-        let cn = &self.consensus;
-        let status = status_icon(cn.running);
-        write!(f, "    {} {} ", status, cn.container_name)?;
-        if let Some(v) = cn.unsafe_l2 {
-            write!(f, "unsafe={} ", v)?;
-        }
-        if let Some(v) = cn.safe_l2 {
-            write!(f, "safe={} ", v)?;
-        }
-        if let Some(v) = cn.finalized_l2 {
-            write!(f, "finalized={}", v)?;
-        }
-
-        Ok(())
-    }
-}
-
-impl fmt::Display for ServiceHealth {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let status = status_icon(self.running);
-        write!(f, "  {} {} ({})", status, self.name, self.container_name)?;
-        if !self.running && NON_CRITICAL_SERVICES.contains(&self.name.as_str()) {
-            write!(f, " [non-critical]")?;
-        }
-        Ok(())
-    }
-}
-
-fn status_icon(running: bool) -> &'static str {
-    if running { "[ok]" } else { "[DOWN]" }
 }
 
 #[cfg(test)]

@@ -107,7 +107,7 @@ cargo clippy --fix
 3. **KupDocker** (`crates/deploy/src/docker.rs`) - Docker client wrapper using [bollard](https://crates.io/crates/bollard) for container management
 4. **Services** (`crates/deploy/src/services/`) - Individual service handlers for each component
 5. **Node Lifecycle** (`crates/deploy/src/node_lifecycle.rs`) - Add/remove/pause/unpause/restart L2 nodes on a live network
-6. **Status** (`crates/deploy/src/status.rs`) - Network status reporting (container states)
+6. **Inspect** (`crates/deploy/src/inspect.rs`) - Network inspection (container states, block heights, sync status, URLs)
 
 ### Service Architecture
 
