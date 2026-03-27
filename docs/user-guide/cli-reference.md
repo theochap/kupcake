@@ -22,36 +22,6 @@ kupcake deploy [OPTIONS]
 kupcake [OPTIONS]  # deploy is implicit
 ```
 
-### `health`
-
-Check the health of a deployed network.
-
-```bash
-kupcake health <CONFIG>
-```
-
-**Arguments**:
-- `<CONFIG>` - Network name or path to `Kupcake.toml` / outdata directory
-
-**Behavior**:
-- Loads the `Kupcake.toml` configuration
-- Verifies all expected containers are running via Docker
-- Queries L1 and L2 RPC endpoints to check chain IDs match the config
-- Queries kona-node `optimism_syncStatus` for each consensus client
-- Exits with code `0` if healthy, `1` if unhealthy
-
-**Examples**:
-```bash
-# By network name (loads ./data-kup-nutty-songs/Kupcake.toml)
-kupcake health kup-nutty-songs
-
-# By directory path
-kupcake health ./data-kup-nutty-songs/
-
-# By config file path
-kupcake health ./data-kup-nutty-songs/Kupcake.toml
-```
-
 ### `faucet`
 
 Send ETH to an L2 address via the OptimismPortal deposit mechanism.
@@ -278,40 +248,68 @@ kupcake node my-network restart validator-1
 - `sequencer-N` — sequencer at index N (0-based)
 - `validator-N` — validator at index N (1-based)
 
-### `status`
+### `inspect`
 
-Show the status of a deployed network. Lists all containers and their current Docker state (running, paused, stopped, not found).
+Inspect a deployed network in detail. Shows container states, host URLs, block heights, sync status, and timestamps for each service.
+
+> **Aliases**: `kupcake status` and `kupcake health` are aliases for `kupcake inspect`.
 
 ```bash
-kupcake status <CONFIG>
+kupcake inspect <CONFIG> [--json] [--verbose] [--service <NAME>]
 ```
 
 **Arguments**:
 - `<CONFIG>` - Network name or path to `Kupcake.toml` / outdata directory
 
-**Example**:
+**Flags**:
+- `--json` - Output as machine-readable JSON instead of human-readable text
+- `--verbose` - Show extended details (gas price, peer count, pending txs, L1 origin)
+- `--service <NAME>` - Filter output to a single service (e.g., "sequencer", "validator-1", "anvil", "op-batcher")
+
+**Examples**:
 ```bash
-kupcake status my-network
+# Basic inspection
+kupcake inspect my-network
+
+# JSON output for scripting
+kupcake inspect my-network --json
+
+# Extended details
+kupcake inspect my-network --verbose
+
+# Inspect a specific service
+kupcake inspect my-network --service sequencer
 ```
 
-**Output**:
+**Output** (colored in terminal, state is green/yellow/red):
 ```
-Network: my-network
+Network: my-network (L1: 11155111, L2: 42069)
 
-=== L1 ===
-  [ok] anvil (my-network-anvil)
+L1 (Anvil)
++-----------------------+---------+-------+----------------------+-----------------------+
+| Container             | State   | Block | Timestamp            | URL                   |
++-----------------------+---------+-------+----------------------+-----------------------+
+| my-network-anvil      | Running | 1234  | 2026-03-20T12:34:56Z | http://localhost:8545/ |
++-----------------------+---------+-------+----------------------+-----------------------+
 
-=== L2 Nodes ===
-  [sequencer] (sequencer)
-    [ok] op-reth (my-network-op-reth)
-    [ok] kona-node (my-network-kona-node)
-  [validator-1] (validator)
-    [ok] op-reth (my-network-op-reth-validator-1)
-    [ok] kona-node (my-network-kona-node-validator-1)
+L2 Nodes
++------------+-----------+-----------------------+---------+-------------------+----------------+-----------------------+
+| Node       | Layer     | Container             | State   | Block / Heads     | Info           | URL                   |
++------------+-----------+-----------------------+---------+-------------------+----------------+-----------------------+
+| sequencer  | op-reth   | my-network-op-reth    | Running | 567               | Syncing: false | http://localhost:9545/ |
+|            | kona-node | my-network-kona-node  | Running | U:567 S:550 F:500 |                | http://localhost:7545/ |
++------------+-----------+-----------------------+---------+-------------------+----------------+-----------------------+
 
-=== Services ===
-  [ok] op-batcher (my-network-op-batcher)
+Services
++----------------+--------------------------+---------+-----------------------+
+| Service        | Container                | State   | URL                   |
++----------------+--------------------------+---------+-----------------------+
+| op-batcher     | my-network-op-batcher    | Running | http://localhost:6545/ |
+| op-proposer    | my-network-op-proposer   | Running | http://localhost:6546/ |
++----------------+--------------------------+---------+-----------------------+
 ```
+
+With `--verbose`, additional columns appear when data is available (Gas, Peers, Pending Txs, L1 Head, L1 Current).
 
 ### `list`
 
@@ -321,12 +319,14 @@ List all tracked devnets from the global registry (`~/.kupcake/devnets.toml`).
 kupcake list
 ```
 
-**Output**:
+**Output** (colored in terminal, state is green/red):
 ```
-NAME                           STATE      DATADIR                                            CREATED
-----------------------------------------------------------------------------------------------------
-kup-happy-turtle               running    /Users/theo/kupcake-2/data-kup-happy-turtle         2026-03-20T10:30:00Z
-kup-nutty-songs                stopped    /Users/theo/data-kup-nutty-songs                    2026-03-19T14:00:00Z
++--------------------+---------+----------------------------------------------+----------------------+
+| NAME               | STATE   | DATADIR                                      | CREATED              |
++--------------------+---------+----------------------------------------------+----------------------+
+| kup-happy-turtle   | Running | /Users/theo/kupcake-2/data-kup-happy-turtle   | 2026-03-20T10:30:00Z |
+| kup-nutty-songs    | Stopped | /Users/theo/data-kup-nutty-songs              | 2026-03-19T14:00:00Z |
++--------------------+---------+----------------------------------------------+----------------------+
 ```
 
 ### `prune`
@@ -383,14 +383,14 @@ kupcake completions fish | source
 **Behavior**:
 - When tab-completing, the shell reinvokes `kupcake` with a special `COMPLETE` env var
 - The binary reads the devnet registry and returns matching network names as candidates
-- Commands operating on running networks (`health`, `faucet`, `spam`, `node`, `status`) suggest only **Running** devnets
+- Commands operating on running networks (`inspect`, `faucet`, `spam`, `node`) suggest only **Running** devnets
 - The `cleanup` command suggests **all** devnets (Running and Stopped)
 - Standard subcommand and flag completions also work
 
 **Examples**:
 ```bash
 # After deploying a network called "my-testnet":
-kupcake health <TAB>    # suggests "my-testnet"
+kupcake inspect <TAB>   # suggests "my-testnet"
 kupcake cleanup <TAB>   # suggests "my-testnet" (even if stopped)
 ```
 ## Global Options
