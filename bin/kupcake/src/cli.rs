@@ -167,6 +167,12 @@ pub enum Commands {
     /// Remove all stopped devnets and their data directories.
     Prune(PruneArgs),
 
+    /// Create a snapshot archive from a deployed network.
+    ///
+    /// Packages rollup.json, intent.toml (if present), and the primary sequencer's
+    /// reth database into a .tar.gz archive compatible with --snapshot restore.
+    Snapshot(SnapshotArgs),
+
     /// Generate shell completion scripts.
     ///
     /// Prints the shell snippet needed to enable dynamic completions.
@@ -180,6 +186,22 @@ pub struct PruneArgs {
     /// Skip confirmation prompt.
     #[arg(long, short)]
     pub yes: bool,
+}
+
+/// Arguments for the snapshot command.
+#[derive(Parser)]
+pub struct SnapshotArgs {
+    /// Network name or path to Kupcake.toml / outdata directory.
+    /// If a network name is given (e.g. "kup-nutty-songs"), loads
+    /// the config from the default path: ./data-<name>/Kupcake.toml
+    /// Otherwise treats the argument as a file/directory path.
+    #[arg(required = true, add = ArgValueCandidates::new(AllDevnetCompleter))]
+    pub config: String,
+
+    /// Output path for the snapshot archive.
+    /// Defaults to ./<network-name>-snapshot.tar.gz in the current directory.
+    #[arg(long, short)]
+    pub output: Option<std::path::PathBuf>,
 }
 
 /// Shell type for completion script generation.

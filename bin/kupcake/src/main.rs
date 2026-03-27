@@ -13,7 +13,7 @@ use comfy_table::{Attribute, Cell, Table};
 
 use cli::{
     BenchArgs, CleanupArgs, Cli, Commands, CompletionsArgs, DeployArgs, FaucetArgs, InspectArgs,
-    L1Source, NodeAction, NodeArgs, PruneArgs, ShellArg, SpamArgs,
+    L1Source, NodeAction, NodeArgs, PruneArgs, ShellArg, SnapshotArgs, SpamArgs,
 };
 use config::{apply_cli_overrides, deploy_config_to_builder, resolve_deploy_config};
 use kupcake_deploy::{
@@ -52,6 +52,7 @@ async fn main() -> Result<()> {
         Some(Commands::Node(args)) => run_node(args).await,
         Some(Commands::List) => run_list().await,
         Some(Commands::Prune(args)) => run_prune(args).await,
+        Some(Commands::Snapshot(args)) => run_snapshot(args).await,
         Some(Commands::Completions(args)) => run_completions(args),
         // Default to deploy with default args when no subcommand is provided
         None => run_deploy(DeployArgs::default(), &clap::ArgMatches::default()).await,
@@ -77,6 +78,110 @@ async fn run_cleanup(args: CleanupArgs) -> Result<()> {
         }
         tracing::info!("Cleanup completed successfully");
     }
+
+    Ok(())
+}
+
+async fn run_snapshot(args: SnapshotArgs) -> Result<()> {
+    let config_path = resolve_config_path(&args.config);
+    let deployer = Deployer::load_from_file(&config_path)?;
+
+    let l2_stack_path = deployer.outdata.join("l2-stack");
+
+    // Validate rollup.json exists
+    let rollup_path = l2_stack_path.join("rollup.json");
+    if !rollup_path.exists() {
+        anyhow::bail!(
+            "rollup.json not found at {}. Is this a valid deployment?",
+            rollup_path.display()
+        );
+    }
+
+    // Find primary sequencer's reth-data directory
+    let sequencer_name = &deployer.l2_stack.sequencers[0].op_reth.container_name;
+    let reth_data_path = l2_stack_path.join(format!("reth-data-{}", sequencer_name));
+    if !reth_data_path.exists() {
+        anyhow::bail!(
+            "Reth data directory not found at {}",
+            reth_data_path.display()
+        );
+    }
+
+    // Resolve the reth-data path (follow symlinks to get real path)
+    let reth_data_path = reth_data_path
+        .canonicalize()
+        .context("Failed to resolve reth data path")?;
+
+    // Determine output path
+    let network_name = deployer
+        .docker
+        .net_name
+        .strip_suffix("-network")
+        .unwrap_or(&deployer.docker.net_name);
+    let output_path = args
+        .output
+        .unwrap_or_else(|| PathBuf::from(format!("{}-snapshot.tar.gz", network_name)));
+
+    tracing::info!(
+        output = %output_path.display(),
+        "Creating snapshot archive"
+    );
+
+    // Build tar.gz archive
+    let file = std::fs::File::create(&output_path)
+        .with_context(|| format!("Failed to create {}", output_path.display()))?;
+    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+
+    // Add rollup.json
+    archive
+        .append_path_with_name(&rollup_path, "rollup.json")
+        .context("Failed to add rollup.json to archive")?;
+
+    // Add genesis.json if present
+    let genesis_path = l2_stack_path.join("genesis.json");
+    if genesis_path.exists() {
+        archive
+            .append_path_with_name(&genesis_path, "genesis.json")
+            .context("Failed to add genesis.json to archive")?;
+    }
+
+    // Add intent.toml if present
+    let intent_path = l2_stack_path.join("intent.toml");
+    if intent_path.exists() {
+        archive
+            .append_path_with_name(&intent_path, "intent.toml")
+            .context("Failed to add intent.toml to archive")?;
+    }
+
+    // Add Anvil state if present (needed for L1 history on restore)
+    let anvil_state_path = deployer.outdata.join("anvil/state.json");
+    if anvil_state_path.exists() {
+        archive
+            .append_path_with_name(&anvil_state_path, "anvil-state.json")
+            .context("Failed to add anvil state to archive")?;
+    }
+
+    // Add reth-data directory
+    let reth_dir_name = reth_data_path
+        .file_name()
+        .context("Invalid reth data directory name")?;
+    archive
+        .append_dir_all(reth_dir_name, &reth_data_path)
+        .context("Failed to add reth data directory to archive")?;
+
+    // Finalize the archive
+    let encoder = archive.into_inner().context("Failed to finalize archive")?;
+    encoder.finish().context("Failed to finish gzip encoding")?;
+
+    let file_size = std::fs::metadata(&output_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    tracing::info!(
+        path = %output_path.display(),
+        size_mb = file_size / (1024 * 1024),
+        "Snapshot created"
+    );
 
     Ok(())
 }
