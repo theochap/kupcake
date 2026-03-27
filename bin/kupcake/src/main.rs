@@ -9,10 +9,11 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches};
 use clap_complete::CompleteEnv;
+use comfy_table::{Attribute, Cell, Table};
 
 use cli::{
-    BenchArgs, CleanupArgs, Cli, Commands, CompletionsArgs, DeployArgs, FaucetArgs, HealthArgs,
-    L1Source, NodeAction, NodeArgs, PruneArgs, ShellArg, SpamArgs, StatusArgs,
+    BenchArgs, CleanupArgs, Cli, Commands, CompletionsArgs, DeployArgs, FaucetArgs, InspectArgs,
+    L1Source, NodeAction, NodeArgs, PruneArgs, ShellArg, SpamArgs,
 };
 use config::{apply_cli_overrides, deploy_config_to_builder, resolve_deploy_config};
 use kupcake_deploy::{
@@ -45,11 +46,10 @@ async fn main() -> Result<()> {
             run_deploy(args, &deploy_matches).await
         }
         Some(Commands::Faucet(args)) => run_faucet(args).await,
-        Some(Commands::Health(args)) => run_health(args).await,
+        Some(Commands::Inspect(args)) => run_inspect(args).await,
         Some(Commands::Spam(args)) => run_spam_cmd(args).await,
         Some(Commands::Bench(args)) => run_bench(args).await,
         Some(Commands::Node(args)) => run_node(args).await,
-        Some(Commands::Status(args)) => run_status(args).await,
         Some(Commands::List) => run_list().await,
         Some(Commands::Prune(args)) => run_prune(args).await,
         Some(Commands::Completions(args)) => run_completions(args),
@@ -104,24 +104,20 @@ fn resolve_config_path(config: &str) -> PathBuf {
     }
 }
 
-async fn run_health(args: HealthArgs) -> Result<()> {
+async fn run_inspect(args: InspectArgs) -> Result<()> {
     let config_path = resolve_config_path(&args.config);
-
     let deployer = Deployer::load_from_file(&config_path)?;
 
-    tracing::info!(
-        config = %config_path.display(),
-        l1_chain_id = deployer.l1_chain_id,
-        l2_chain_id = deployer.l2_chain_id,
-        "Running health check..."
-    );
+    let report =
+        kupcake_deploy::inspect::inspect_network(&deployer, args.verbose, args.service.as_deref())
+            .await?;
 
-    let report = kupcake_deploy::health::health_check(&deployer).await?;
-
-    println!("{}", report);
-
-    if !report.healthy {
-        std::process::exit(1);
+    if args.json {
+        let json =
+            serde_json::to_string_pretty(&report).context("Failed to serialize inspect report")?;
+        println!("{json}");
+    } else {
+        print!("{report}");
     }
 
     Ok(())
@@ -180,16 +176,6 @@ async fn run_node(args: NodeArgs) -> Result<()> {
             kupcake_deploy::node_lifecycle::restart_node(&deployer, &docker, &identifier).await?;
         }
     }
-
-    Ok(())
-}
-
-async fn run_status(args: StatusArgs) -> Result<()> {
-    let config_path = resolve_config_path(&args.config);
-    let deployer = Deployer::load_from_file(&config_path)?;
-
-    let status = kupcake_deploy::status::network_status(&deployer).await?;
-    println!("{}", status);
 
     Ok(())
 }
@@ -456,21 +442,30 @@ async fn run_list() -> Result<()> {
         return Ok(());
     }
 
-    let header = format!(
-        "{:<30} {:<10} {:<50} {}",
-        "NAME", "STATE", "DATADIR", "CREATED"
-    );
-    println!("{header}");
-    println!("{}", "-".repeat(100));
+    let mut table = Table::new();
+    table.set_header(vec![
+        Cell::new("NAME").add_attribute(Attribute::Bold),
+        Cell::new("STATE").add_attribute(Attribute::Bold),
+        Cell::new("DATADIR").add_attribute(Attribute::Bold),
+        Cell::new("CREATED").add_attribute(Attribute::Bold),
+    ]);
     for entry in &entries {
-        println!(
-            "{:<30} {:<10} {:<50} {}",
-            entry.name,
-            entry.state,
-            entry.datadir.display(),
-            entry.created_at,
-        );
+        let state_cell = match entry.state {
+            kupcake_deploy::DevnetState::Running => {
+                Cell::new("Running").fg(comfy_table::Color::Green)
+            }
+            kupcake_deploy::DevnetState::Stopped => {
+                Cell::new("Stopped").fg(comfy_table::Color::Red)
+            }
+        };
+        table.add_row(vec![
+            Cell::new(&entry.name),
+            state_cell,
+            Cell::new(entry.datadir.display().to_string()),
+            Cell::new(&entry.created_at),
+        ]);
     }
+    println!("{table}");
 
     Ok(())
 }

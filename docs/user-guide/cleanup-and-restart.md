@@ -175,32 +175,13 @@ kupcake --network my-network
 
 ## Checking Network Status
 
-Use the `status` command to see the state of all containers in a deployment:
+Use the `inspect` command to see the state of all containers in a deployment:
 
 ```bash
-kupcake status my-network
+kupcake inspect my-network
 ```
 
-**Output**:
-```
-Network: my-network
-
-=== L1 ===
-  [ok] anvil (my-network-anvil)
-
-=== L2 Nodes ===
-  [sequencer] (sequencer)
-    [ok] op-reth (my-network-op-reth)
-    [ok] kona-node (my-network-kona-node)
-  [validator-1] (validator)
-    [ok] op-reth (my-network-op-reth-validator-1)
-    [ok] kona-node (my-network-kona-node-validator-1)
-
-=== Services ===
-  [ok] op-batcher (my-network-op-batcher)
-```
-
-**Container States**: `[ok]` (running), `[PAUSED]` (frozen), `[STOPPED]` (exited), `[RESTARTING]`, `[NOT FOUND]`.
+See the [CLI reference](cli-reference.md#inspect) for full output format and options. Use `--verbose` for extended details or `--json` for machine-readable output.
 
 ## Managing Individual Nodes
 
@@ -331,7 +312,7 @@ rm -rf ./data-ci-test
 kupcake --long-running --no-cleanup --network prod-test
 # Press Ctrl+C
 # Check status later
-kupcake status prod-test
+kupcake inspect prod-test
 # Manually stop when needed
 docker stop $(docker ps -q --filter name=prod-test)
 ```

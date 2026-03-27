@@ -63,7 +63,7 @@ Kupcake is a Rust CLI tool that orchestrates Docker containers to deploy a compl
 - Load environment variables
 - Invoke DeployerBuilder
 - Node lifecycle management (`node` command: add/remove/pause/unpause/restart)
-- Network status reporting (`status` command)
+- Network inspection (`inspect` command)
 
 ### 2. Deployment Layer (`crates/deploy`)
 
