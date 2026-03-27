@@ -496,17 +496,79 @@ impl Deployer {
         crate::anvil_accounts_from_infos(account_infos).context("Failed to create named accounts")
     }
 
-    /// Deploy contracts at genesis and start Anvil with the resulting L1 state.
+    /// Resolve Anvil init mode from the filesystem.
     ///
-    /// 1. Derive accounts from mnemonic (Anvil isn't running yet)
-    /// 2. Deploy contracts in-memory via op-deployer (if needed)
-    /// 3. Extract L1 genesis from state dump
-    /// 4. Start Anvil with `--init`
-    /// 5. Patch rollup.json with Anvil's actual genesis block hash
-    #[allow(clippy::too_many_arguments)]
-    async fn deploy_with_genesis_target(
+    /// Shared by snapshot restore, genesis restart, and live restart:
+    /// 1. `state.json` exists → `LoadState` (resume from persisted state)
+    /// 2. `l1-genesis.json` exists → `Init` (boot from genesis)
+    /// 3. Neither → `None` (fresh Anvil, e.g. live mode with remote fork)
+    fn resolve_anvil_init_mode(anvil_data_path: &Path) -> Option<crate::AnvilInitMode> {
+        if anvil_data_path.join("state.json").exists() {
+            tracing::info!("Found persisted Anvil state, restoring via --load-state");
+            Some(crate::AnvilInitMode::LoadState(
+                "/data/state.json".to_string(),
+            ))
+        } else if anvil_data_path.join("l1-genesis.json").exists() {
+            tracing::info!("Booting Anvil from L1 genesis");
+            Some(crate::AnvilInitMode::Init(
+                "/data/l1-genesis.json".to_string(),
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Start Anvil and patch rollup.json with the actual genesis block hash.
+    ///
+    /// This is the shared "Phase 2" used by snapshot restore, genesis restart,
+    /// and fresh genesis deployments. The genesis hash must be patched because
+    /// Anvil recomputes it on every start.
+    async fn start_anvil_and_patch_rollup(
         docker: &mut KupDocker,
         anvil_config: AnvilConfig,
+        anvil_data_path: &Path,
+        l1_chain_id: u64,
+        init_mode: Option<crate::AnvilInitMode>,
+        l2_nodes_data_path: &Path,
+    ) -> Result<AnvilHandler> {
+        let accounts = Self::derive_accounts()?;
+
+        tracing::info!(anvil_config = ?anvil_config, "Starting Anvil...");
+        let anvil = anvil_config
+            .deploy(
+                docker,
+                anvil_data_path,
+                AnvilInput {
+                    chain_id: l1_chain_id,
+                    init_mode,
+                    accounts,
+                },
+            )
+            .await
+            .context("Failed to start Anvil")?;
+
+        let rollup_json_path = l2_nodes_data_path.join("rollup.json");
+        if rollup_json_path.exists() {
+            let anvil_host_url = anvil
+                .l1_host_url
+                .as_ref()
+                .context("Anvil host URL required for genesis hash patching")?;
+            crate::l1_genesis::patch_rollup_l1_genesis_hash(&rollup_json_path, anvil_host_url)
+                .await
+                .context("Failed to patch rollup.json with actual L1 genesis hash")?;
+        }
+
+        Ok(anvil)
+    }
+
+    /// Deploy contracts at genesis and prepare Anvil init mode.
+    ///
+    /// Returns `(deployed, init_mode, op_deployer_duration)` where `deployed`
+    /// indicates whether contracts were freshly deployed (vs reused).
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_genesis_deployment(
+        docker: &mut KupDocker,
+        anvil_config: &AnvilConfig,
         op_deployer: &OpDeployerConfig,
         l2_nodes_data_path: &Path,
         anvil_data_path: &Path,
@@ -514,9 +576,7 @@ impl Deployer {
         l2_chain_id: u64,
         force_deploy: bool,
         current_hash: &str,
-    ) -> Result<(AnvilHandler, Duration)> {
-        let accounts = Self::derive_accounts()?;
-
+    ) -> Result<(bool, Option<crate::AnvilInitMode>, Duration)> {
         let timestamp = match anvil_config.timestamp {
             Some(t) => t,
             None => std::time::SystemTime::now()
@@ -525,7 +585,7 @@ impl Deployer {
                 .as_secs(),
         };
 
-        let deploy_accounts = accounts.clone();
+        let accounts = Self::derive_accounts()?;
         let mut op_deployer_duration = Duration::ZERO;
         let op_deployer_start = Instant::now();
         let deployed =
@@ -536,7 +596,7 @@ impl Deployer {
                     .deploy_contracts_at_genesis(
                         docker,
                         l2_nodes_data_path,
-                        &deploy_accounts,
+                        &accounts,
                         l1_chain_id,
                         l2_chain_id,
                         timestamp,
@@ -555,7 +615,6 @@ impl Deployer {
                 Ok(())
             })
             .await?;
-        // Capture contract deployment time (before Anvil starts)
         op_deployer_duration += op_deployer_start.elapsed();
 
         if !deployed {
@@ -572,34 +631,11 @@ impl Deployer {
             tracing::info!("Removed stale anvil state.json after contract redeployment");
         }
 
-        // If a persisted state exists (from a previous run), use --load-state to restore it.
-        // The RPC-based state dump (configured in deploy()) handles persisting state
-        // before cleanup. Otherwise, boot fresh from genesis with --init.
-        let init_mode = if !deployed && state_json_path.exists() {
-            tracing::info!("Found persisted Anvil state, restoring via --load-state");
-            Some(crate::AnvilInitMode::LoadState(
-                "/data/state.json".to_string(),
-            ))
-        } else {
-            Some(crate::AnvilInitMode::Init(
-                "/data/l1-genesis.json".to_string(),
-            ))
-        };
+        // Resolve Anvil init mode: state.json was removed above if stale,
+        // so this naturally picks persisted state (restart) or l1-genesis.json (fresh deploy).
+        let init_mode = Self::resolve_anvil_init_mode(anvil_data_path);
 
-        tracing::info!(anvil_config = ?anvil_config, "Starting Anvil with genesis state...");
-        let anvil = anvil_config
-            .deploy(
-                docker,
-                anvil_data_path,
-                AnvilInput {
-                    chain_id: l1_chain_id,
-                    init_mode,
-                    accounts,
-                },
-            )
-            .await
-            .context("Failed to start Anvil with genesis state")?;
-
+        // Generate L2 config files if freshly deployed
         if deployed {
             let l2_config_start = Instant::now();
             op_deployer
@@ -609,70 +645,47 @@ impl Deployer {
             op_deployer_duration += l2_config_start.elapsed();
         }
 
-        // Patch rollup.json with Anvil's actual genesis block hash.
-        // Anvil's --init flag doesn't include the alloc state root in the genesis
-        // block header, so the hash differs from what op-deployer computed.
-        // This must run on every start since Anvil recomputes the hash each time.
-        let rollup_json_path = l2_nodes_data_path.join("rollup.json");
-        let anvil_host_url = anvil
-            .l1_host_url
-            .as_ref()
-            .context("Anvil host URL required for genesis hash patching")?;
-        crate::l1_genesis::patch_rollup_l1_genesis_hash(&rollup_json_path, anvil_host_url)
-            .await
-            .context("Failed to patch rollup.json with actual L1 genesis hash")?;
-
-        Ok((anvil, op_deployer_duration))
+        Ok((deployed, init_mode, op_deployer_duration))
     }
 
-    /// Start Anvil and deploy contracts to the live L1 (or restore from snapshot).
+    /// Start Anvil and deploy contracts to the live L1.
     #[allow(clippy::too_many_arguments)]
     async fn deploy_with_live_target(
         docker: &mut KupDocker,
         anvil_config: AnvilConfig,
         op_deployer: &OpDeployerConfig,
-        l2_stack: &L2StackBuilder,
         l2_nodes_data_path: &Path,
         anvil_data_path: &Path,
         l1_chain_id: u64,
         l2_chain_id: u64,
         force_deploy: bool,
         current_hash: &str,
-        snapshot: Option<&PathBuf>,
-        copy_snapshot: bool,
         override_state: Option<&PathBuf>,
     ) -> Result<(AnvilHandler, Duration)> {
         let accounts = Self::derive_accounts()?;
 
         // Determine init mode for live deployment:
         // 1. --override-state takes precedence: copy file into anvil data dir, use --load-state
-        // 2. Existing state.json from previous run: use --load-state
+        // 2. Existing state.json from previous run: use --load-state (shared with snapshot/genesis restart)
         // 3. Otherwise: fresh start (no init mode, Anvil starts empty or forks)
-        let init_mode = match override_state {
-            Some(override_path) => {
-                let dest = anvil_data_path.join("override-state.json");
-                std::fs::copy(override_path, &dest).with_context(|| {
-                    format!(
-                        "Failed to copy override state from {} to {}",
-                        override_path.display(),
-                        dest.display()
-                    )
-                })?;
-                tracing::info!(
-                    source = %override_path.display(),
-                    "Loading external Anvil state via --load-state"
-                );
-                Some(crate::AnvilInitMode::LoadState(
-                    "/data/override-state.json".to_string(),
-                ))
-            }
-            None if anvil_data_path.join("state.json").exists() => {
-                tracing::info!("Found persisted Anvil state, restoring via --load-state");
-                Some(crate::AnvilInitMode::LoadState(
-                    "/data/state.json".to_string(),
-                ))
-            }
-            None => None,
+        let init_mode = if let Some(override_path) = override_state {
+            let dest = anvil_data_path.join("override-state.json");
+            std::fs::copy(override_path, &dest).with_context(|| {
+                format!(
+                    "Failed to copy override state from {} to {}",
+                    override_path.display(),
+                    dest.display()
+                )
+            })?;
+            tracing::info!(
+                source = %override_path.display(),
+                "Loading external Anvil state via --load-state"
+            );
+            Some(crate::AnvilInitMode::LoadState(
+                "/data/override-state.json".to_string(),
+            ))
+        } else {
+            Self::resolve_anvil_init_mode(anvil_data_path)
         };
 
         tracing::info!(anvil_config = ?anvil_config, "Starting Anvil...");
@@ -690,30 +703,14 @@ impl Deployer {
             .await?;
 
         let op_deployer_start = Instant::now();
-        if let Some(snapshot_path) = snapshot {
-            let sequencer_name = l2_stack.sequencers[0].op_reth.container_name.clone();
-            Self::restore_from_snapshot(
-                docker,
-                op_deployer,
-                &l2_nodes_data_path.to_path_buf(),
-                snapshot_path,
-                l1_chain_id,
-                l2_chain_id,
-                &sequencer_name,
-                copy_snapshot,
-            )
-            .await
-            .context("Failed to restore from snapshot")?;
-        } else {
-            Self::with_deployment_check(force_deploy, l2_nodes_data_path, current_hash, || async {
-                tracing::info!("Deploying L1 contracts...");
+        Self::with_deployment_check(force_deploy, l2_nodes_data_path, current_hash, || async {
+            tracing::info!("Deploying L1 contracts...");
 
-                op_deployer
-                    .deploy_contracts(docker, l2_nodes_data_path, &anvil, l1_chain_id, l2_chain_id)
-                    .await
-            })
-            .await?;
-        }
+            op_deployer
+                .deploy_contracts(docker, l2_nodes_data_path, &anvil, l1_chain_id, l2_chain_id)
+                .await
+        })
+        .await?;
         let op_deployer_duration = op_deployer_start.elapsed();
 
         Ok((anvil, op_deployer_duration))
@@ -1056,12 +1053,19 @@ impl Deployer {
                 .context("Failed to generate intent.toml for snapshot restore")?;
         }
 
-        // Generate genesis.json from intent
-        tracing::info!("Generating genesis.json via op-deployer inspect genesis");
-        op_deployer
-            .inspect_config(docker, l2_nodes_data_path, l2_chain_id, "genesis")
-            .await
-            .context("Failed to generate genesis.json for snapshot restore")?;
+        // Handle genesis.json: copy from snapshot if present, otherwise generate
+        let genesis_src = snapshot_path.join("genesis.json");
+        if genesis_src.exists() {
+            tracing::info!("Copying genesis.json from snapshot");
+            std::fs::copy(&genesis_src, l2_nodes_data_path.join("genesis.json"))
+                .context("Failed to copy genesis.json from snapshot")?;
+        } else {
+            tracing::info!("Generating genesis.json via op-deployer inspect genesis");
+            op_deployer
+                .inspect_config(docker, l2_nodes_data_path, l2_chain_id, "genesis")
+                .await
+                .context("Failed to generate genesis.json for snapshot restore")?;
+        }
 
         // Copy rollup.json from snapshot
         tracing::info!("Copying rollup.json from snapshot");
@@ -1137,45 +1141,94 @@ impl Deployer {
         let l2_nodes_data_path = self.outdata.join("l2-stack");
         let anvil_data_path = self.outdata.join("anvil");
 
-        // Deploy contracts and start Anvil. The order depends on the deployment target:
-        // - Live: Start Anvil first, then deploy contracts to the live L1
-        // - Genesis: Deploy contracts first (in-memory), extract L1 genesis, start Anvil with --init
+        // Phase 1: Prepare L2 artifacts + determine Anvil init mode.
+        // Phase 2: Start Anvil + patch rollup.json (shared across snapshot/genesis paths).
+        // Live mode is different: Anvil starts before contracts.
         let anvil_docker_image = self.anvil.docker_image.clone();
         let op_deployer_image = self.op_deployer.docker_image.clone();
         let op_deployer_name = self.op_deployer.container_name.clone();
         let anvil_start = Instant::now();
-        let (anvil, op_deployer_duration) = match self.deployment_target {
-            DeploymentTarget::Genesis => {
-                Self::deploy_with_genesis_target(
-                    docker,
-                    self.anvil,
-                    &self.op_deployer,
-                    &l2_nodes_data_path,
-                    &anvil_data_path,
-                    self.l1_chain_id,
-                    self.l2_chain_id,
-                    force_deploy,
-                    &current_hash,
-                )
-                .await?
+        let (anvil, op_deployer_duration) = if let Some(ref snapshot_path) = self.snapshot {
+            // Snapshot: restore L2 files + Anvil state from snapshot, then start Anvil
+            let op_deployer_start = Instant::now();
+            let sequencer_name = self.l2_stack.sequencers[0].op_reth.container_name.clone();
+            Self::restore_from_snapshot(
+                docker,
+                &self.op_deployer,
+                &l2_nodes_data_path.to_path_buf(),
+                snapshot_path,
+                self.l1_chain_id,
+                self.l2_chain_id,
+                &sequencer_name,
+                self.copy_snapshot,
+            )
+            .await
+            .context("Failed to restore from snapshot")?;
+            let op_deployer_duration = op_deployer_start.elapsed();
+
+            // Copy Anvil state from snapshot if present
+            let anvil_state_src = snapshot_path.join("anvil-state.json");
+            if anvil_state_src.exists() {
+                fs::FsHandler::create_host_config_directory(&anvil_data_path.to_path_buf())?;
+                tracing::info!("Copying Anvil state from snapshot");
+                std::fs::copy(&anvil_state_src, anvil_data_path.join("state.json"))
+                    .context("Failed to copy Anvil state from snapshot")?;
             }
-            DeploymentTarget::Live => {
-                Self::deploy_with_live_target(
-                    docker,
-                    self.anvil,
-                    &self.op_deployer,
-                    &self.l2_stack,
-                    &l2_nodes_data_path,
-                    &anvil_data_path,
-                    self.l1_chain_id,
-                    self.l2_chain_id,
-                    force_deploy,
-                    &current_hash,
-                    self.snapshot.as_ref(),
-                    self.copy_snapshot,
-                    self.override_state.as_ref(),
-                )
-                .await?
+
+            let init_mode = Self::resolve_anvil_init_mode(&anvil_data_path);
+            let anvil = Self::start_anvil_and_patch_rollup(
+                docker,
+                self.anvil,
+                &anvil_data_path,
+                self.l1_chain_id,
+                init_mode,
+                &l2_nodes_data_path,
+            )
+            .await?;
+            (anvil, op_deployer_duration)
+        } else {
+            match self.deployment_target {
+                DeploymentTarget::Genesis => {
+                    let (_deployed, init_mode, op_deployer_duration) =
+                        Self::prepare_genesis_deployment(
+                            docker,
+                            &self.anvil,
+                            &self.op_deployer,
+                            &l2_nodes_data_path,
+                            &anvil_data_path,
+                            self.l1_chain_id,
+                            self.l2_chain_id,
+                            force_deploy,
+                            &current_hash,
+                        )
+                        .await?;
+
+                    let anvil = Self::start_anvil_and_patch_rollup(
+                        docker,
+                        self.anvil,
+                        &anvil_data_path,
+                        self.l1_chain_id,
+                        init_mode,
+                        &l2_nodes_data_path,
+                    )
+                    .await?;
+                    (anvil, op_deployer_duration)
+                }
+                DeploymentTarget::Live => {
+                    Self::deploy_with_live_target(
+                        docker,
+                        self.anvil,
+                        &self.op_deployer,
+                        &l2_nodes_data_path,
+                        &anvil_data_path,
+                        self.l1_chain_id,
+                        self.l2_chain_id,
+                        force_deploy,
+                        &current_hash,
+                        self.override_state.as_ref(),
+                    )
+                    .await?
+                }
             }
         };
 

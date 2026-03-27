@@ -743,12 +743,6 @@ impl DeployerBuilder {
                      Genesis mode deploys contracts into the L1 genesis state and requires a local Anvil instance."
                 );
             }
-            if self.snapshot.is_some() {
-                anyhow::bail!(
-                    "Genesis deployment mode is incompatible with snapshots (--snapshot). \
-                     Genesis mode always deploys fresh contracts."
-                );
-            }
             if self.override_state.is_some() {
                 anyhow::bail!(
                     "Genesis deployment mode is incompatible with --override-state. \
